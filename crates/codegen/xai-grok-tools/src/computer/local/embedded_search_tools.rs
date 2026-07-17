@@ -130,36 +130,38 @@ fn resolved_tools() -> &'static ResolvedTools {
 /// Write embedded `bytes` to `~/.grok/vendor/<versioned_name>` (chmod 755) on
 /// first use and return the path; reused on later runs. Versioned so bumping the
 /// bundled version writes a fresh file instead of reusing a stale one.
+#[cfg(any(all(test, unix), bundle_bfs, bundle_ugrep))]
+fn publish_completed_candidate(candidate: &Path, dest: &Path) -> std::io::Result<()> {
+    match std::fs::hard_link(candidate, dest) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && dest.is_file() => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(any(bundle_bfs, bundle_ugrep))]
 fn extract_bundled(versioned_name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
+
     let dir = crate::util::grok_home().join("vendor");
     let dest = dir.join(versioned_name);
     if !dest.exists() {
         std::fs::create_dir_all(&dir)?;
-        // Write to a unique temp then atomically rename, so a concurrent first
-        // use (or an interrupted write) can't leave a half-written binary that
-        // gets cached and exec'd.
-        let tmp = dir.join(format!(
-            "{versioned_name}.tmp.{}.{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::write(&tmp, bytes)?;
-        let mut perms = std::fs::metadata(&tmp)?.permissions();
+        let mut candidate = tempfile::Builder::new()
+            .prefix(&format!("{versioned_name}.tmp."))
+            .tempfile_in(&dir)?;
+        candidate.write_all(bytes)?;
+        let mut perms = candidate.as_file().metadata()?.permissions();
         perms.set_mode(0o755);
-        std::fs::set_permissions(&tmp, perms)?;
-        // Rename is atomic on the same filesystem. If another process won the
-        // race, `dest` already exists and is correct — drop our temp copy.
-        if let Err(e) = std::fs::rename(&tmp, &dest) {
-            let _ = std::fs::remove_file(&tmp);
-            if !dest.exists() {
-                return Err(e);
-            }
-        }
+        candidate.as_file().set_permissions(perms)?;
+        candidate.as_file().sync_all()?;
+
+        // Close the writable file before publishing it. A hard link in the same
+        // directory atomically creates `dest` without replacing a concurrent
+        // winner, so an executable already in use can never be overwritten.
+        let candidate = candidate.into_temp_path();
+        publish_completed_candidate(candidate.as_ref(), &dest)?;
     }
     Ok(dest)
 }
@@ -534,6 +536,24 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publishing_candidate_does_not_replace_existing_winner() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("tool");
+        let candidate = dir.path().join("candidate");
+        std::fs::write(&dest, b"winner").unwrap();
+        std::fs::write(&candidate, b"loser").unwrap();
+        let winner_inode = std::fs::metadata(&dest).unwrap().ino();
+
+        publish_completed_candidate(&candidate, &dest).unwrap();
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"winner");
+        assert_eq!(std::fs::metadata(&dest).unwrap().ino(), winner_inode);
     }
 
     /// Only compiled when the binaries are actually bundled (release pipeline, or
