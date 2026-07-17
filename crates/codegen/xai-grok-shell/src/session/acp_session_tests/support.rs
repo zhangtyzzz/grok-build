@@ -174,6 +174,8 @@ pub(crate) async fn create_test_actor_ex(
         vec![],
         xai_grok_sampling_types::SamplingConfig {
             base_url: "http://localhost".to_string(),
+            model_ref: None,
+            route_ref: None,
             model: "test".to_string(),
             max_completion_tokens: None,
             temperature: None,
@@ -184,6 +186,7 @@ pub(crate) async fn create_test_actor_ex(
                 .expect("test context_window must be non-zero"),
             reasoning_effort: None,
             stream_tool_calls: None,
+            prompt_cache: Default::default(),
         },
         Box::new(xai_chat_state::NullChatPersistence),
         chat_event_tx,
@@ -466,10 +469,33 @@ pub(crate) async fn build_actor() -> (
 ) {
     let (gateway_tx, gateway_rx) =
         tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
-    let (persistence_tx, _prx) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+    let (persistence_tx, persistence_rx) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+    spawn_test_persistence_acknowledger(persistence_rx);
     let actor =
         std::sync::Arc::new(create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await);
     (actor, gateway_rx)
+}
+
+/// Drain the mock persistence channel and complete durable barriers.
+///
+/// Tests that need to assert ordering should install their own recorder
+/// instead; the normal actor fixture only needs a successful persistence
+/// boundary and must not leave ACK-bearing messages unread.
+#[cfg(test)]
+pub(crate) fn spawn_test_persistence_acknowledger(
+    mut persistence_rx: tokio::sync::mpsc::UnboundedReceiver<PersistenceMsg>,
+) {
+    tokio::task::spawn_local(async move {
+        while let Some(message) = persistence_rx.recv().await {
+            match message {
+                PersistenceMsg::CurrentModelAndAck { respond_to, .. }
+                | PersistenceMsg::PlanModeStateAndAck { respond_to, .. } => {
+                    let _ = respond_to.send(Ok(()));
+                }
+                _ => {}
+            }
+        }
+    });
 }
 /// A small valid inline PNG content block (survives normalization —
 /// 32×32 = 1024 px clears the API's 512-total-pixel floor).

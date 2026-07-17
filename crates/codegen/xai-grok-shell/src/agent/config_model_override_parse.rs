@@ -269,7 +269,8 @@ mod tests {
     use super::*;
     use crate::sampling::ApiBackend;
     use xai_grok_sampling_types::{
-        CompactionAtTokens, CompactionsRemaining, ReasoningEffort, ReasoningEffortOption,
+        CompactionAtTokens, CompactionsRemaining, PromptCachePolicy, ReasoningEffort,
+        ReasoningEffortOption,
     };
 
     fn parse_cfg(toml_str: &str) -> crate::agent::config::Config {
@@ -499,6 +500,7 @@ mod tests {
     /// here until the drift-guard tests cover it.
     fn fully_populated_override() -> ConfigModelOverride {
         ConfigModelOverride {
+            provider: Some("provider-a".into()),
             model: Some("m".into()),
             base_url: Some("https://example.com".into()),
             name: Some("Model M".into()),
@@ -510,6 +512,7 @@ mod tests {
             temperature: Some(0.5),
             top_p: Some(0.9),
             api_backend: Some(ApiBackend::Messages),
+            prompt_cache: Some(PromptCachePolicy::STABLE_PREFIX_1H),
             extra_headers: [("x-team".to_owned(), "codegen".to_owned())]
                 .into_iter()
                 .collect(),

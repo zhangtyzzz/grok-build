@@ -87,10 +87,8 @@ xai-file-utils = { path = "../xai-file-utils" }
 
 [target.'cfg(unix)'.dependencies]
 command-fds = { version = "0.3", features = ["tokio"] }
-nix = { workspace = true, features = ["signal", "process", "fs"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
 libc = { workspace = true }
+nix = { workspace = true, features = ["signal", "process", "fs"] }
 
 # windows: util::spawn uses Win32 Job Objects (CreateJobObjectW,
 # AssignProcessToJobObject, TerminateJobObject) and process creation flags
@@ -106,6 +104,7 @@ wiremock = { workspace = true }
 xai-test-utils = { workspace = true }
 
 [build-dependencies]
+dunce = { workspace = true }
 reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
 flate2 = { workspace = true }
 tar = { workspace = true }

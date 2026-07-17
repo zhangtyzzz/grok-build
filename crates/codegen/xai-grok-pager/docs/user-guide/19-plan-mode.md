@@ -13,7 +13,13 @@ When plan mode is active, the agent:
 3. May use `ask_user_question` to clarify specific questions
 4. Calls `exit_plan_mode` to present the plan for your approval
 
-Plan mode is read-only except for the plan file: plan-file edits (`plan.md` in the session directory) are auto-approved, and edits to any other file are rejected outright — the tool call fails with a short message naming the plan file as the only editable path. This holds in every permission mode, including always-approve. Separating planning from implementation lets you review and correct the approach before any code is written.
+Plan mode is read-only except for the plan file: plan-file edits (`plan.md` in
+the session directory) are auto-approved, and edits to any other file are
+rejected outright. Commands and tools with unknown or external side effects
+(including Bash, write-capable subagents, MCP/meta tools, and generators) are
+also rejected fail-closed. This holds in every permission mode, including
+always-approve. Purpose-built read, list, search, memory, LSP, and web-fetch
+tools remain available.
 
 ---
 
@@ -48,9 +54,64 @@ After a plan exists, run **`/view-plan`** (aliases `/show-plan`, `/plan-view`) t
 
 ---
 
+## Use a Dedicated Planning Model and Skills
+
+Plan mode can apply a session-scoped model, instructions, and skills without
+changing the model selected for other live sessions:
+
+```toml
+[provider.anthropic]
+base_url = "https://api.anthropic.com/v1"
+api_backend = "messages"
+auth = "x_api_key"
+env_key = "ANTHROPIC_API_KEY"
+extra_headers = { "anthropic-version" = "2023-06-01" }
+prompt_cache = { mode = "stable_prefix", ttl = "1h" }
+
+[model.claude-planner]
+provider = "anthropic"
+model = "claude-sonnet"
+context_window = 200000
+
+[model_route.planner]
+candidates = ["claude-planner"]
+
+[modes.plan]
+model = "route:planner"
+skills = ["architecture"]
+instructions = "Produce an implementation-ready plan with explicit verification."
+restore_model = true
+```
+
+The mode profile is applied to the existing session; it does not create a
+separate planner conversation. Skill bodies and instructions are injected only
+into plan turns. On exit, Grok restores the model that was active on entry only
+if the session is still using the plan-owned model. A manual `/model` switch
+made during planning therefore wins. The model scope is persisted so a resumed
+session can safely reconcile an interrupted exit.
+
+Because this is the same conversation, the selected planning provider receives
+the session transcript and any read/search results included in the planning
+request. A planning model is not a privacy boundary. Configure only providers
+that are allowed to receive that project and conversation data.
+
+`model_route` candidates are evaluated in order before a request starts.
+Missing models or missing provider credentials move to the next candidate;
+Grok never switches provider after a request has begun.
+
+---
+
 ## The Plan File
 
 The plan is written to `plan.md` inside the session directory (`~/.grok/sessions/<cwd>/<session-id>/plan.md`, where `<cwd>` is an encoded directory name, not the literal path).
+
+On Unix, the session-owned plan path is accessed through a descriptor-relative
+no-follow boundary: a symbolic link, linked parent directory, non-regular file,
+or multiply-linked destination is rejected instead of being followed.
+Successful writes replace the file atomically. The non-Unix fallback rejects
+links seen during validation, but does not yet provide the same guarantee
+against a concurrent reparse-point swap; do not treat it as a hostile-writer
+security boundary.
 
 The plan file contains:
 
@@ -129,9 +190,17 @@ During active plan mode, edits to the plan file are auto-approved without prompt
 
 This enforcement is independent of the permission mode:
 
-- **Always-approve (yolo) stays armed underneath plan mode.** Non-edit tools (bash commands, reads, MCP tools) still auto-run, but file edits are blocked until you approve exiting plan mode. Once the plan is approved, always-approve resumes for implementation.
-- Bash commands are not inspected for file writes — plan mode blocks the edit tools, not shell redirection.
-- Subagents are not covered by the parent session's plan-mode edit gate. Each subagent starts with a fresh plan-mode tracker (`Inactive`), so a `general-purpose` (or other write-capable) subagent can edit files while the parent is still in plan mode — and it inherits the parent's permission mode (including always-approve). Read-only types such as `explore` remain limited by their own toolset.
+- **Always-approve (yolo) stays armed underneath plan mode**, but it cannot
+  bypass the plan gate. Once the plan is approved, always-approve resumes for
+  implementation.
+- Bash and monitor commands are rejected rather than heuristically classified;
+  shell redirection therefore cannot write around the gate.
+- Starting a subagent is rejected while plan mode is active, because a child
+  could have a broader toolset than the parent.
+- MCP, dynamic/meta-dispatch, scheduler mutation, and media-generation tools
+  are rejected because their side effects cannot be proven locally.
+- Purpose-built read/search tools and the configured plan skills stay
+  available. The plan file remains the sole writable path.
 
 The status flag shows `plan` while plan mode is active. If always-approve is enabled underneath, its flag reappears when plan mode exits.
 

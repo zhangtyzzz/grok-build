@@ -318,9 +318,28 @@ pub enum PersistenceMsg {
         agent_name: Option<String>,
         reasoning_effort: Option<Option<ReasoningEffort>>,
     },
+    /// Durably persist the current model and report the actual storage result.
+    ///
+    /// Plan Mode uses this after its write-ahead scope is durable and before
+    /// committing that scope. Unlike the legacy fire-and-forget variant, a
+    /// failed write/sync is observable and therefore cannot be reported to the
+    /// tool loop as a successful transition.
+    CurrentModelAndAck {
+        model_id: acp::ModelId,
+        agent_name: Option<String>,
+        reasoning_effort: Option<Option<ReasoningEffort>>,
+        respond_to: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
     PlanState(TodoState),
     /// Plan mode lifecycle state to persist
     PlanModeState(crate::session::plan_mode::PlanModeSnapshot),
+    /// Durably persist plan-mode lifecycle state and return the exact I/O
+    /// outcome. This is the write-ahead/commit barrier for scoped planner model
+    /// transitions.
+    PlanModeStateAndAck {
+        state: crate::session::plan_mode::PlanModeSnapshot,
+        respond_to: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
     /// A rewind point to persist
     RewindPoint(RewindPoint),
     /// Truncate rewind points from a specific prompt index (inclusive).
@@ -1621,6 +1640,32 @@ impl SessionPersistence {
                         sync.set_model_id(model_id.0.to_string());
                     }
                 }
+                PersistenceMsg::CurrentModelAndAck {
+                    model_id,
+                    agent_name,
+                    reasoning_effort,
+                    respond_to,
+                } => {
+                    let result = async {
+                        self.storage
+                            .update_current_model_and_agent(
+                                &self.info,
+                                &model_id,
+                                agent_name.as_deref(),
+                                reasoning_effort,
+                            )
+                            .await?;
+                        self.storage.sync_session_files(&self.info).await
+                    }
+                    .await
+                    .map_err(|error| error.to_string());
+                    if let Err(error) = &result {
+                        tracing::error!(%error, "failed durable current-model update");
+                    } else if let Some(sync) = &self.remote_sync {
+                        sync.set_model_id(model_id.0.to_string());
+                    }
+                    let _ = respond_to.send(result);
+                }
                 PersistenceMsg::PlanState(state) => {
                     if let Err(e) = self.storage.write_plan_state(&self.info, &state).await {
                         tracing::warn!(?e, "failed to write plan state");
@@ -1630,6 +1675,20 @@ impl SessionPersistence {
                     if let Err(e) = self.storage.write_plan_mode_state(&self.info, &state).await {
                         tracing::warn!(?e, "failed to write plan mode state");
                     }
+                }
+                PersistenceMsg::PlanModeStateAndAck { state, respond_to } => {
+                    let result = async {
+                        self.storage
+                            .write_plan_mode_state(&self.info, &state)
+                            .await?;
+                        self.storage.sync_session_files(&self.info).await
+                    }
+                    .await
+                    .map_err(|error| error.to_string());
+                    if let Err(error) = &result {
+                        tracing::error!(%error, "failed durable plan-mode state update");
+                    }
+                    let _ = respond_to.send(result);
                 }
                 PersistenceMsg::GoalModeState(state) => {
                     if let Err(e) = self.storage.write_goal_mode_state(&self.info, &state).await {
@@ -2183,6 +2242,147 @@ pub async fn new_with_explicit_dir(
     });
 
     Ok(handle)
+}
+
+#[cfg(test)]
+mod durable_plan_persistence_tests {
+    use super::*;
+    use crate::session::plan_mode::{
+        PlanModeSnapshot, PlanModeState, PlanModeTracker, PlanModelLocator,
+    };
+
+    fn sampling_client() -> OaiCompatClient {
+        crate::sampling::Client::new(xai_grok_sampler::SamplerConfig {
+            api_key: Some("test-key".to_owned()),
+            base_url: "http://localhost".to_owned(),
+            model: "test-model".to_owned(),
+            context_window: 100_000,
+            ..Default::default()
+        })
+        .expect("test sampling client")
+    }
+
+    async fn actor_for(session_dir: &Path) -> (Info, PersistenceHandle) {
+        let info = Info {
+            id: acp::SessionId::new("durable-plan-test"),
+            cwd: session_dir.to_string_lossy().into_owned(),
+        };
+        let handle = new_with_explicit_dir(
+            &info,
+            session_dir.to_path_buf(),
+            acp::ModelId::new("executor"),
+            sampling_client(),
+            crate::test_support::TEST_MODEL.to_owned(),
+        )
+        .await
+        .expect("persistence actor starts");
+        (info, handle)
+    }
+
+    async fn persist_plan(
+        handle: &PersistenceHandle,
+        state: PlanModeSnapshot,
+    ) -> Result<(), String> {
+        let (respond_to, response) = tokio::sync::oneshot::channel();
+        handle
+            .tx
+            .send(PersistenceMsg::PlanModeStateAndAck { state, respond_to })
+            .expect("persistence actor remains available");
+        tokio::time::timeout(std::time::Duration::from_secs(2), response)
+            .await
+            .expect("durable acknowledgement must not hang")
+            .expect("persistence actor returns an outcome")
+    }
+
+    #[tokio::test]
+    async fn ack_means_plan_and_model_records_are_on_disk() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_dir = temp.path().join("session");
+        let (_info, handle) = actor_for(&session_dir).await;
+
+        let mut tracker = PlanModeTracker::new(session_dir.clone());
+        assert!(tracker.activate_from_tool());
+        assert!(tracker.prepare_model_scope(
+            PlanModelLocator {
+                route_ref: None,
+                model_ref: Some("executor".to_owned()),
+                model: "executor-upstream".to_owned(),
+                base_url: "http://localhost".to_owned(),
+            },
+            PlanModelLocator {
+                route_ref: None,
+                model_ref: Some("planner".to_owned()),
+                model: "planner-upstream".to_owned(),
+                base_url: "http://localhost".to_owned(),
+            },
+        ));
+        persist_plan(&handle, tracker.snapshot())
+            .await
+            .expect("write-ahead snapshot is durable");
+
+        let persisted: PlanModeSnapshot =
+            serde_json::from_slice(&std::fs::read(session_dir.join("plan_mode.json")).unwrap())
+                .unwrap();
+        assert_eq!(persisted.state, PlanModeState::Active);
+        assert!(persisted.pending_model_scope.is_some());
+        let restored = PlanModeTracker::from_snapshot(session_dir.clone(), persisted);
+        assert!(
+            restored.pending_model_scope().is_some(),
+            "a crash before the model write retains the retryable WAL record"
+        );
+
+        let (respond_to, response) = tokio::sync::oneshot::channel();
+        handle
+            .tx
+            .send(PersistenceMsg::CurrentModelAndAck {
+                model_id: acp::ModelId::new("planner"),
+                agent_name: None,
+                reasoning_effort: None,
+                respond_to,
+            })
+            .unwrap();
+        response
+            .await
+            .expect("model acknowledgement channel")
+            .expect("current model is durable");
+        let summary: Summary =
+            serde_json::from_slice(&std::fs::read(session_dir.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary.current_model_id.0.as_ref(), "planner");
+    }
+
+    #[tokio::test]
+    async fn write_failure_is_returned_to_the_barrier() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_dir = temp.path().join("session");
+        let (_info, handle) = actor_for(&session_dir).await;
+        std::fs::create_dir(session_dir.join("plan_mode.json")).unwrap();
+
+        let tracker = PlanModeTracker::new(session_dir);
+        let error = persist_plan(&handle, tracker.snapshot())
+            .await
+            .expect_err("a directory cannot be replaced by the state file");
+        assert!(!error.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sync_failure_is_returned_to_the_barrier() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_dir = temp.path().join("session");
+        let (_info, handle) = actor_for(&session_dir).await;
+        let updates = session_dir.join("updates.jsonl");
+        if updates.exists() {
+            std::fs::remove_file(&updates).unwrap();
+        }
+        std::fs::create_dir(updates).unwrap();
+
+        let tracker = PlanModeTracker::new(session_dir);
+        let error = persist_plan(&handle, tracker.snapshot())
+            .await
+            .expect_err("syncing a directory through a writable file handle must fail");
+        assert!(!error.is_empty());
+    }
 }
 
 pub struct PersistedInfo {

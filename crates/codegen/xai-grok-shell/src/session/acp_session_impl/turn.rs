@@ -86,6 +86,8 @@ struct TurnSpanTotals {
     input_tokens: i64,
     output_tokens: i64,
     cache_read_tokens: i64,
+    cache_write_5m_input_tokens: i64,
+    cache_write_1h_input_tokens: i64,
     has_tool_call: bool,
 }
 impl TurnSpanTotals {
@@ -97,9 +99,19 @@ impl TurnSpanTotals {
             self.input_tokens += i64::from(u.prompt_tokens);
             self.output_tokens += i64::from(u.completion_tokens);
             self.cache_read_tokens += i64::from(u.cached_prompt_tokens);
+            self.cache_write_5m_input_tokens += i64::from(u.cache_write_5m_input_tokens);
+            self.cache_write_1h_input_tokens += i64::from(u.cache_write_1h_input_tokens);
             span.record("input_tokens", self.input_tokens);
             span.record("output_tokens", self.output_tokens);
             span.record("cache_read_tokens", self.cache_read_tokens);
+            span.record(
+                "cache_write_5m_input_tokens",
+                self.cache_write_5m_input_tokens,
+            );
+            span.record(
+                "cache_write_1h_input_tokens",
+                self.cache_write_1h_input_tokens,
+            );
         }
         if let Some(sr) = response.stop_reason {
             span.record("stop_reason", sr.as_str());
@@ -244,7 +256,7 @@ impl SessionActor {
         *self.turn_start_prompt_mode.lock() = prompt_mode;
         *self.turn_prompt_mode.lock() = prompt_mode;
         self.signals_handle().increment_turn();
-        self.reconcile_plan_mode_with_prompt(prompt_mode);
+        self.reconcile_plan_mode_with_prompt(prompt_mode).await?;
         let _turn_active_guard =
             TurnActiveGuard::activate(self.tool_context.is_turn_active.as_ref());
         let _session_turn_active_guard = TurnActiveGuard::activate(Some(&self.session_turn_active));
@@ -621,7 +633,7 @@ impl SessionActor {
         self.maybe_inject_mcp_reminder().await;
         self.maybe_inject_mcp_connecting_reminder().await;
         self.maybe_inject_date_rollover_reminder().await;
-        self.inject_plan_mode_reminders().await;
+        self.inject_plan_mode_reminders().await?;
         self.inject_resumed_tasks_reminder();
         self.drain_between_turn_completions().await;
         let user_message = if user_images.is_empty() {
@@ -1676,6 +1688,8 @@ impl SessionActor {
             input_tokens = tracing::field::Empty,
             output_tokens = tracing::field::Empty,
             cache_read_tokens = tracing::field::Empty,
+            cache_write_5m_input_tokens = tracing::field::Empty,
+            cache_write_1h_input_tokens = tracing::field::Empty,
             stop_reason = tracing::field::Empty,
             response.has_tool_call = tracing::field::Empty,
             request_id = tracing::field::Empty,
@@ -1698,6 +1712,8 @@ impl SessionActor {
         json_schema: Option<serde_json::Value>,
     ) -> Result<TurnOutcome, acp::Error> {
         let conv_turn_start = std::time::Instant::now();
+        self.refresh_token_if_expired().await;
+        self.preflight_active_route_for_request().await?;
         self.maybe_refresh_model_metadata_on_resume().await;
         self.maybe_compact_on_model_switch().await;
         self.chat_state_handle
@@ -1774,31 +1790,15 @@ impl SessionActor {
             jsonschema::validator_for(schema).map_err(|e| format!("invalid output schema: {e}"))
         });
         let schema_ok = matches!(structured_output_validator, Some(Ok(_)));
-        let native_backend = if json_schema.is_some() {
-            match self.chat_state_handle.get_sampling_config().await {
-                Some(c) => c.api_backend.supports_native_schema(),
-                None => {
-                    tracing::warn!(
-                        "structured output: no sampling config; using StructuredOutput tool"
-                    );
-                    false
-                }
-            }
-        } else {
-            false
-        };
-        let structured_output_native = schema_ok && native_backend;
-        let structured_output_tool = schema_ok && !native_backend;
-        if structured_output_tool {
-            self.push_system_reminder(
-                "A response schema is required. After any tool use, call the \
-                 `StructuredOutput` tool exactly once with your final answer as its \
-                 arguments; do not return the answer as text.",
-            );
-        }
+        let mut structured_output_reminder_injected = false;
+        let mut retry_same_route_candidate = false;
         loop {
             self.emit_event(crate::session::events::Event::LoopStarted { loop_index });
             loop_index += 1;
+            if !retry_same_route_candidate {
+                self.refresh_token_if_expired().await;
+                self.preflight_active_route_for_request().await?;
+            }
             self.drain_pending_interjections().await;
             self.flush_pending_skill_reminders().await;
             self.inject_pending_monitor_events().await;
@@ -1828,6 +1828,34 @@ impl SessionActor {
                 && let Err(e) = self.run_compact_only(trigger_info).await
             {
                 tracing::error!(error = % e, "Pre-sampling auto-compaction failed");
+            }
+            if retry_same_route_candidate {
+                self.refresh_sampler_for_retry().await;
+            } else {
+                self.prepare_sampler_for_turn().await?;
+            }
+            let native_backend = if json_schema.is_some() {
+                match self.chat_state_handle.get_sampling_config().await {
+                    Some(c) => c.api_backend.supports_native_schema(),
+                    None => {
+                        tracing::warn!(
+                            "structured output: no sampling config; using StructuredOutput tool"
+                        );
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+            let structured_output_native = schema_ok && native_backend;
+            let structured_output_tool = schema_ok && !native_backend;
+            if structured_output_tool && !structured_output_reminder_injected {
+                self.push_system_reminder(
+                    "A response schema is required. After any tool use, call the \
+                     `StructuredOutput` tool exactly once with your final answer as its \
+                     arguments; do not return the answer as text.",
+                );
+                structured_output_reminder_injected = true;
             }
             let use_backend_search =
                 self.agent.borrow().backend_search_enabled() && self.supports_backend_search.get();
@@ -1916,6 +1944,7 @@ impl SessionActor {
                 SamplerTurnOutcome::Response(r, latency) => (r, latency),
                 SamplerTurnOutcome::CompactAndResubmit => {
                     auth_retry_schedule.reset();
+                    retry_same_route_candidate = false;
                     continue;
                 }
                 SamplerTurnOutcome::RefreshAuthAndResubmit => {
@@ -1944,6 +1973,7 @@ impl SessionActor {
                         ))
                         .await;
                         sleep(delay).await;
+                        retry_same_route_candidate = true;
                         continue;
                     }
                     let msg = format!(
@@ -1957,11 +1987,14 @@ impl SessionActor {
                     ));
                 }
             };
+            retry_same_route_candidate = false;
             auth_retry_schedule.reset();
             let model_elapsed_ms = model_timer.elapsed().as_millis() as u64;
             let usage = response.usage.as_ref();
             let prompt_tokens = usage.map(|u| u.prompt_tokens);
             let cached_prompt_tokens = usage.map(|u| u.cached_prompt_tokens);
+            let cache_write_5m_input_tokens = usage.map(|u| u.cache_write_5m_input_tokens);
+            let cache_write_1h_input_tokens = usage.map(|u| u.cache_write_1h_input_tokens);
             let completion_tokens = usage.map(|u| u.completion_tokens);
             let reasoning_tokens = usage.map(|u| u.reasoning_tokens);
             let ttft_ms = latency.time_to_first_token_ms;
@@ -1987,7 +2020,9 @@ impl SessionActor {
                     .elapsed().as_millis() as u64, "ttft_ms" : ttft_ms, "itl_p50_ms"
                     : latency.itl_p50_ms, "attempts" : latency.attempts,
                     "prompt_tokens" : prompt_tokens, "cached_prompt_tokens" :
-                    cached_prompt_tokens, "completion_tokens" : completion_tokens,
+                    cached_prompt_tokens, "cache_write_5m_input_tokens" :
+                    cache_write_5m_input_tokens, "cache_write_1h_input_tokens" :
+                    cache_write_1h_input_tokens, "completion_tokens" : completion_tokens,
                     "reasoning_tokens" : reasoning_tokens, "tokens_per_sec" :
                     tokens_per_sec, }
                 )),

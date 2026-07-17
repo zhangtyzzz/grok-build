@@ -42,6 +42,31 @@ pub(super) async fn run_session(
 ) {
     let (completion_tx, mut completion_rx) =
         mpsc::unbounded_channel::<(String, PromptTurnResult)>();
+    // Reconcile the scoped model write-ahead record before accepting prompts.
+    // Active sessions finish/retry entry; collapsed transient states restore
+    // or release the scope. This closes both sides of a crash between the
+    // plan_mode.json and CurrentModel persistence records.
+    let plan_scope_recovery = {
+        let tracker = session.plan_mode.lock();
+        match tracker.state() {
+            crate::session::plan_mode::PlanModeState::Active => Some(true),
+            crate::session::plan_mode::PlanModeState::Inactive if tracker.has_any_model_scope() => {
+                Some(false)
+            }
+            _ => None,
+        }
+    };
+    if let Some(entering) = plan_scope_recovery
+        && let Err(error) = session.apply_plan_model_scope(entering, false).await
+    {
+        tracing::error!(
+            session_id = %session.session_info.id.0,
+            ?error,
+            entering,
+            "Session startup stopped: Plan mode model recovery is not durable"
+        );
+        return;
+    }
     tracing::debug!("fs_notify_config: {:?}", fs_notify_config);
     let mut replay_buffer = ReplayBuffer::new(session.buffering_settings.clone());
     let event_tx_for_flush_timer = session.event_tx.clone();
@@ -302,8 +327,19 @@ pub(super) async fn run_session(
             .cancel_turn_for_send_now(& mut replay_buffer). await; }
             SessionActor::maybe_start_running_task(session.clone(), completion_tx
             .clone()). await; } SessionCommand::SessionMode { session_mode, responds_to }
-            => { session.handle_session_mode(session_mode). await; let _ = responds_to
-            .send(()); } SessionCommand::SetSessionModel { sampling_config, use_concise,
+            => { let outcome = session.handle_session_mode(session_mode). await
+            .map_err(|error| error.to_string()); if outcome.is_err() && session.state
+            .lock().await.running_task.is_some() { if let Some(notification) =
+            replay_buffer.flush() { session.emit_buffered(notification).await; } session
+            .cancel_running_task(false, false, false,
+            Some("plan_transition_failed".to_owned())).await; } let _ = responds_to
+            .send(outcome); } SessionCommand::ApplyPlanToolTransition { entering, responds_to }
+            => { let outcome = session.apply_plan_tool_transition(entering). await
+            .map(| _ | ()).map_err(| error | error.to_string()); match responds_to {
+            Some(tx) => { let _ = tx.send(outcome); } None => { if let Err(error) =
+            outcome { tracing::error!(%error, entering,
+            "fire-and-forget Plan Mode transition failed durable barrier"); } } } }
+            SessionCommand::SetSessionModel { sampling_config, use_concise,
             apply_prompt_override, skip_prompt_rewrite, auto_compact_threshold_percent,
             responds_to } => { let updated_model_id = session
             .handle_set_session_model(sampling_config, use_concise,
@@ -312,25 +348,40 @@ pub(super) async fn run_session(
             SessionCommand::RebuildAgentForDefinition { definition, responds_to } => {
             let outcome = session.handle_rebuild_agent_for_definition(definition). await;
             let _ = responds_to.send(outcome); } SessionCommand::OverrideModelName {
-            model_name, extra_headers, context_window } => { if let Some(mut cfg) =
-            session.chat_state_handle.get_sampling_config(). await {
+            model_name, extra_headers, context_window } => { if let Some((mut cfg,
+            existing)) = session.chat_state_handle
+            .get_sampling_config_and_credentials(). await {
             tracing::info!(target : SESSION_LOG, session_id = % session.session_info.id,
             old_model = % cfg.model, new_model = % model_name, extra_header_count =
             extra_headers.len(), old_context_window = cfg.context_window.get(),
             new_context_window = ? context_window.map(| cw | cw.get()),
-            "OVERRIDE_MODEL: changing model name in sampling config"); session
-            .signals_handle().set_primary_model(& model_name); cfg.model = model_name
-            .clone(); cfg.extra_headers.extend(extra_headers); if let Some(cw) =
+            "OVERRIDE_MODEL: changing model name in sampling config"); cfg.model = model_name
+            .clone(); cfg.model_ref = None; cfg.route_ref = None; cfg.extra_headers.extend(extra_headers); if let Some(cw) =
             context_window && session.compaction.context_window_override.is_none() { cfg
-            .context_window = cw; } session.chat_state_handle
-            .update_sampling_config(cfg); let existing = session.chat_state_handle
-            .get_credentials(). await; if let Some(r) = crate
-            ::agent::config::try_resolve_model_credentials(model_name.as_str(), existing
-            .api_key.as_deref()) { session.chat_state_handle
-            .update_credentials(xai_chat_state::Credentials { api_key : r.api_key,
-            auth_type : r.auth_type, alpha_test_key : existing.alpha_test_key,
-            client_version : existing.client_version, }); } session.model_auth_facts
-            .replace(None); } } SessionCommand::GetCurrentModel { responds_to } => { let
+            .context_window = cw; } let model_base_url = cfg.base_url.clone(); let
+            provider_auth_scheme = session.models_manager.models().values().find(| entry |
+            entry.provider.is_some() && entry.info().model == model_name && entry
+            .info().base_url == model_base_url).map(| entry | entry.info().auth_scheme); let
+            provider_bound_target = provider_auth_scheme.is_some(); let session_key
+            = session.auth_manager.as_ref().and_then(| manager | manager
+            .current_or_expired().map(| auth | auth.key)); let resolved_credentials = crate
+            ::agent::config::try_resolve_model_credentials(None, model_name.as_str(),
+            model_base_url.as_str(), session_key.as_deref()).map(| r |
+            xai_chat_state::Credentials { api_key : r.api_key,
+            auth_type : r.auth_type, alpha_test_key : existing.alpha_test_key.clone(),
+            client_version : existing.client_version.clone(), }).unwrap_or_else(|| { if
+            provider_bound_target { xai_chat_state::Credentials { api_key : None, auth_type :
+            xai_chat_state::AuthType::ApiKey, alpha_test_key : existing.alpha_test_key,
+            client_version : existing.client_version, } } else { existing } }); if
+            session.chat_state_handle.replace_sampling_config_and_credentials(cfg,
+            resolved_credentials). await.is_some() { session
+            .signals_handle().set_primary_model(& model_name); let auth_facts =
+            provider_auth_scheme.map(| auth_scheme | (format!("\0{}\0{}",
+            model_name, model_base_url), crate::agent::config::ModelAuthFacts { byok : crate
+            ::agent::auth_method::ModelByok::Byok, auth_scheme, })); session.model_auth_facts
+            .replace(auth_facts); } else { tracing::error!(session_id = % session.session_info.id,
+            "OVERRIDE_MODEL: chat-state actor unavailable; override was not acknowledged"); } }
+            } SessionCommand::GetCurrentModel { responds_to } => { let
             model = session.chat_state_handle.get_sampling_config(). await .map(| c | c
             .model).unwrap_or_default(); let _ = responds_to.send(model); }
             SessionCommand::GetCurrentPromptMode { responds_to } => { let mode = *
@@ -741,7 +792,21 @@ pub(super) async fn run_session(
             tracing::info!("Queued mid-turn interjection"); } else { session
             .queue_interjection_fallback_prompt(text, images, true). await;
             SessionActor::maybe_start_running_task(session.clone(), completion_tx
-            .clone(),). await; } } SessionCommand::GoalSummaryTurn { prompt_text } => {
+            .clone(),). await; } } SessionCommand::ExternalNotify {
+            notification_id, kind, text, wake, respond_to } => { let text =
+            format_external_notification(& kind, & notification_id, & text); session
+            .broadcast_interjection(& text, Some(& notification_id)); let turn_running =
+            session.state.lock(). await.running_task.is_some();
+            if turn_running { session.pending_interjections.push(PendingInterjection {
+            text, attachments : Vec::new(), }); tracing::info!(notification_id = %
+            notification_id, kind = % kind,
+            "Queued external notification for the active turn"); } else { session
+            .queue_interjection_fallback_prompt(text, Vec::new(), true). await; if wake {
+            SessionActor::maybe_start_running_task(session.clone(), completion_tx
+            .clone(),). await; } tracing::info!(notification_id = % notification_id,
+            kind = % kind, wake, "Queued external notification for an idle session"); }
+            let _ = respond_to.send(ExternalNotifyAck { turn_running, will_wake : !
+            turn_running && wake, }); } SessionCommand::GoalSummaryTurn { prompt_text } => {
             let prompt_id = format!("goal-summary-{}", uuid::Uuid::now_v7()); let
             prompt_blocks =
             vec![acp::ContentBlock::Text(acp::TextContent::new(prompt_text))]; let

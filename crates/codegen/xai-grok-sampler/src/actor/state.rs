@@ -83,6 +83,8 @@ mod tests {
         SamplerConfig {
             api_key: None,
             base_url: "https://example.test".into(),
+            model_ref: None,
+            route_ref: None,
             model: "test-model".into(),
             max_completion_tokens: None,
             temperature: None,
@@ -95,6 +97,7 @@ mod tests {
             max_retries: None,
             stream_tool_calls: false,
             idle_timeout_secs: None,
+            prompt_cache: Default::default(),
             reasoning_effort: None,
             origin_client: None,
             client_identifier: None,

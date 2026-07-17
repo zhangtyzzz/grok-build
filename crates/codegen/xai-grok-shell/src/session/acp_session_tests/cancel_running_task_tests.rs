@@ -41,6 +41,8 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
             let sampling_client = crate::sampling::Client::new(xai_grok_sampler::SamplerConfig {
                 api_key: Some("test-key".to_string()),
                 base_url: "http://localhost".to_string(),
+                model_ref: None,
+                route_ref: None,
                 model: "test".to_string(),
                 max_completion_tokens: None,
                 temperature: None,
@@ -54,6 +56,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 max_retries: None,
                 stream_tool_calls: false,
                 idle_timeout_secs: None,
+                prompt_cache: Default::default(),
                 client_identifier: None,
                 reasoning_effort: None,
                 deployment_id: None,
@@ -88,6 +91,8 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 vec![],
                 xai_grok_sampling_types::SamplingConfig {
                     base_url: "http://localhost".to_string(),
+                    model_ref: None,
+                    route_ref: None,
                     model: "test".to_string(),
                     max_completion_tokens: None,
                     temperature: None,
@@ -97,6 +102,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                     context_window: std::num::NonZeroU64::new(100_000).unwrap(),
                     reasoning_effort: None,
                     stream_tool_calls: None,
+                    prompt_cache: Default::default(),
                 },
                 Box::new(
                     crate::session::chat_persistence::ChannelChatPersistence::new(
@@ -321,7 +327,15 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                     .any(|item| item.text_content().contains("hello persist")),
                 "loaded chat history should contain the just-persisted prompt"
             );
-            let _ = prompt_task.await.expect("prompt task should complete");
+            // The contract under test ends at the pre-inference persistence
+            // barrier. Do not couple it to the sampler's localhost error path.
+            prompt_task.abort();
+            assert!(
+                prompt_task
+                    .await
+                    .expect_err("prompt task should be cancelled")
+                    .is_cancelled()
+            );
         })
         .await;
 }
@@ -338,6 +352,8 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
             let sampling_client = crate::sampling::Client::new(xai_grok_sampler::SamplerConfig {
                 api_key: Some("test-key".to_string()),
                 base_url: "http://localhost".to_string(),
+                model_ref: None,
+                route_ref: None,
                 model: "test-model".to_string(),
                 max_completion_tokens: None,
                 extra_headers: Default::default(),
@@ -351,6 +367,7 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
                 max_retries: None,
                 stream_tool_calls: false,
                 idle_timeout_secs: None,
+                prompt_cache: Default::default(),
                 client_identifier: None,
                 reasoning_effort: None,
                 deployment_id: None,
@@ -386,6 +403,8 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
                 ],
                 xai_grok_sampling_types::SamplingConfig {
                     base_url: "http://localhost".to_string(),
+                    model_ref: None,
+                    route_ref: None,
                     model: "test".to_string(),
                     max_completion_tokens: None,
                     temperature: None,
@@ -395,6 +414,7 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
                     context_window: std::num::NonZeroU64::new(100_000).unwrap(),
                     reasoning_effort: None,
                     stream_tool_calls: None,
+                    prompt_cache: Default::default(),
                 },
                 Box::new(
                     crate::session::chat_persistence::ChannelChatPersistence::new(
@@ -472,6 +492,8 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
             let sampling_client = crate::sampling::Client::new(xai_grok_sampler::SamplerConfig {
                 api_key: Some("test-key".to_string()),
                 base_url: "http://localhost".to_string(),
+                model_ref: None,
+                route_ref: None,
                 model: "test-model".to_string(),
                 max_completion_tokens: None,
                 extra_headers: Default::default(),
@@ -485,6 +507,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 max_retries: None,
                 stream_tool_calls: false,
                 idle_timeout_secs: None,
+                prompt_cache: Default::default(),
                 client_identifier: None,
                 reasoning_effort: None,
                 deployment_id: None,
@@ -524,6 +547,8 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 initial_conversation.clone(),
                 xai_grok_sampling_types::SamplingConfig {
                     base_url: "http://localhost".to_string(),
+                    model_ref: None,
+                    route_ref: None,
                     model: "test".to_string(),
                     max_completion_tokens: None,
                     temperature: None,
@@ -533,6 +558,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                     context_window: std::num::NonZeroU64::new(100_000).unwrap(),
                     reasoning_effort: None,
                     stream_tool_calls: None,
+                    prompt_cache: Default::default(),
                 },
                 Box::new(
                     crate::session::chat_persistence::ChannelChatPersistence::new(
@@ -1791,6 +1817,8 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
             let cfg = xai_grok_sampler::SamplerConfig {
                 api_key: Some("test-key".to_string()),
                 base_url: format!("http://{addr}/v1"),
+                model_ref: None,
+                route_ref: None,
                 model: "test-model".to_string(),
                 max_completion_tokens: None,
                 temperature: None,
@@ -1804,6 +1832,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 max_retries: Some(0),
                 stream_tool_calls: false,
                 idle_timeout_secs: Some(60),
+                prompt_cache: Default::default(),
                 client_identifier: None,
                 reasoning_effort: None,
                 deployment_id: None,

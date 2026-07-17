@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "protoc": {
+    "version": "29.3",
+    "license": "BSD-3-Clause",
+    "assets": {
+      "aarch64-apple-darwin": {
+        "archive": "protoc-29.3-osx-aarch_64.zip",
+        "sha256": "2b8a3403cd097f95f3ba656e14b76c732b6b26d7f183330b11e36ef2bc028765"
+      },
+      "x86_64-apple-darwin": {
+        "archive": "protoc-29.3-osx-x86_64.zip",
+        "sha256": "9a788036d8f9854f7b03c305df4777cf0e54e5b081e25bf15252da87e0e90875"
+      },
+      "aarch64-unknown-linux-gnu": {
+        "archive": "protoc-29.3-linux-aarch_64.zip",
+        "sha256": "6427349140e01f06e049e707a58709a4f221ae73ab9a0425bc4a00c8d0e1ab32"
+      },
+      "x86_64-unknown-linux-gnu": {
+        "archive": "protoc-29.3-linux-x86_64.zip",
+        "sha256": "3e866620c5be27664f3d2fa2d656b5f3e09b5152b42f1bedbf427b333e90021a"
+      },
+      "aarch64-pc-windows-msvc": {
+        "archive": "protoc-29.3-win64.zip",
+        "sha256": "57ea59e9f551ad8d71ffaa9b5cfbe0ca1f4e720972a1db7ec2d12ab44bff9383"
+      },
+      "x86_64-pc-windows-msvc": {
+        "archive": "protoc-29.3-win64.zip",
+        "sha256": "57ea59e9f551ad8d71ffaa9b5cfbe0ca1f4e720972a1db7ec2d12ab44bff9383"
+      }
+    }
+  },
+  "ripgrep": {
+    "version": "15.1.0",
+    "license": "Unlicense OR MIT",
+    "assets": {
+      "aarch64-apple-darwin": {
+        "archive": "ripgrep-15.1.0-aarch64-apple-darwin.tar.gz",
+        "sha256": "378e973289176ca0c6054054ee7f631a065874a352bf43f0fa60ef079b6ba715"
+      },
+      "x86_64-apple-darwin": {
+        "archive": "ripgrep-15.1.0-x86_64-apple-darwin.tar.gz",
+        "sha256": "64811cb24e77cac3057d6c40b63ac9becf9082eedd54ca411b475b755d334882"
+      },
+      "aarch64-unknown-linux-gnu": {
+        "archive": "ripgrep-15.1.0-aarch64-unknown-linux-gnu.tar.gz",
+        "sha256": "2b661c6ef508e902f388e9098d9c4c5aca72c87b55922d94abdba830b4dc885e"
+      },
+      "x86_64-unknown-linux-gnu": {
+        "archive": "ripgrep-15.1.0-x86_64-unknown-linux-musl.tar.gz",
+        "sha256": "1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599"
+      },
+      "aarch64-pc-windows-msvc": {
+        "archive": "ripgrep-15.1.0-aarch64-pc-windows-msvc.zip",
+        "sha256": "00d931fb5237c9696ca49308818edb76d8eb6fc132761cb2a1bd616b2df02f8e"
+      },
+      "x86_64-pc-windows-msvc": {
+        "archive": "ripgrep-15.1.0-x86_64-pc-windows-msvc.zip",
+        "sha256": "124510b94b6baa3380d051fdf4650eaa80a302c876d611e9dba0b2e18d87493a"
+      }
+    }
+  },
+  "bfs": {
+    "version": "4.1.4",
+    "license": "0BSD",
+    "source": "https://github.com/tavianator/bfs/archive/refs/tags/4.1.4.tar.gz",
+    "sha256": "0cac6849efb8a9447268fb273de3fab38f8460adb26a1770934e3f325fab8f5d"
+  },
+  "ugrep": {
+    "version": "7.8.2",
+    "license": "BSD-3-Clause",
+    "source": "https://github.com/Genivia/ugrep/archive/refs/tags/v7.8.2.tar.gz",
+    "sha256": "f991cc6c61dbc5af5a3b3939083e917df4113509549670fb400d121f639f69f6"
+  }
+}

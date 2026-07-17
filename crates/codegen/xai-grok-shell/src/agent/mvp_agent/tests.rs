@@ -2083,6 +2083,7 @@ fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
         info: config::ModelInfo {
             user_selectable: true,
             id: None,
+            model_ref: None,
             model: model.to_string(),
             base_url: String::new(),
             name: None,
@@ -2091,6 +2092,7 @@ fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
             temperature: None,
             top_p: None,
             api_backend: crate::sampling::ApiBackend::default(),
+            prompt_cache: Default::default(),
             auth_scheme: Default::default(),
             extra_headers: IndexMap::new(),
             context_window: std::num::NonZeroU64::new(200_000).unwrap(),
@@ -2115,6 +2117,7 @@ fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
         api_key: None,
         env_key: None,
         api_base_url: None,
+        provider: None,
     };
     let mut models = indexmap::IndexMap::new();
     models.insert("a".to_string(), entry("target"));
@@ -3025,6 +3028,161 @@ fn make_live_session_handle(
     }
     (handle, cmd_tx, cmd_rx)
 }
+
+/// Drive the real extension dispatch against a resident session handle. This
+/// proves notification deduplication happens around actor-mailbox delivery,
+/// including the ambiguous case where the mailbox accepted the command but
+/// the actor closed the ACK channel.
+#[test]
+fn session_notify_extension_delivers_once_and_retains_unknown_outcomes() {
+    use crate::extensions::session_notify::{SessionNotifyResponse, SessionNotifyStatus};
+    use crate::session::ExternalNotifyAck;
+    use acp::Agent as _;
+
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let sid = acp::SessionId::new("sess-notify-live-extension-fixture-a");
+        let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
+        agent.sessions.borrow_mut().insert(sid.clone(), handle);
+
+        let make_request = |notification_id: &str| {
+            let params = serde_json::json!({
+                "sessionId": sid.0.as_ref(),
+                "notificationId": notification_id,
+                "kind": "reviewer",
+                "text": "No blocking findings.",
+                "wake": true,
+            });
+            acp::ExtRequest::new(
+                "x.ai/session/notify",
+                std::sync::Arc::from(serde_json::value::to_raw_value(&params).unwrap()),
+            )
+        };
+
+        let first_id = "review:live-extension:accepted-fixture-a";
+        let mut first_request = Box::pin(agent.ext_method(make_request(first_id)));
+        let command = tokio::select! {
+            command = cmd_rx.recv() => command.expect("actor command"),
+            response = &mut first_request => {
+                panic!("extension responded before its actor ACK: {response:?}")
+            }
+        };
+        let TestSessionCommand::ExternalNotify {
+            notification_id,
+            kind,
+            text,
+            wake,
+            respond_to,
+        } = command
+        else {
+            panic!("expected ExternalNotify command");
+        };
+        assert_eq!(notification_id, first_id);
+        assert_eq!(kind, "reviewer");
+        assert_eq!(text, "No blocking findings.");
+        assert!(wake);
+
+        let pending_error = agent
+            .ext_method(make_request(first_id))
+            .await
+            .expect_err("an in-flight retry must not claim accepted duplicate");
+        assert!(
+            pending_error
+                .data
+                .as_ref()
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|data| data.contains("delivery is pending")),
+            "pending delivery must be explicit: {pending_error:?}"
+        );
+        assert!(
+            matches!(
+                cmd_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "an in-flight retry must not enqueue another actor command"
+        );
+
+        respond_to
+            .send(ExternalNotifyAck {
+                turn_running: false,
+                will_wake: true,
+            })
+            .expect("extension is awaiting the actor ACK");
+        let first_response = first_request.await;
+        let first_response: SessionNotifyResponse = serde_json::from_str(
+            first_response
+                .expect("accepted notification response")
+                .0
+                .get(),
+        )
+        .expect("typed notification response");
+        assert_eq!(first_response.status, SessionNotifyStatus::Queued);
+        assert!(first_response.will_wake);
+
+        let duplicate: SessionNotifyResponse = serde_json::from_str(
+            agent
+                .ext_method(make_request(first_id))
+                .await
+                .expect("duplicate response")
+                .0
+                .get(),
+        )
+        .expect("typed duplicate response");
+        assert_eq!(duplicate.status, SessionNotifyStatus::Duplicate);
+        assert!(
+            matches!(
+                cmd_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "a duplicate must not enqueue another actor command"
+        );
+
+        let unknown_id = "review:live-extension:unknown-fixture-a";
+        let unknown_request = agent.ext_method(make_request(unknown_id));
+        let actor_drops_ack = async {
+            let command = cmd_rx.recv().await.expect("actor command");
+            let TestSessionCommand::ExternalNotify {
+                notification_id,
+                respond_to,
+                ..
+            } = command
+            else {
+                panic!("expected ExternalNotify command");
+            };
+            assert_eq!(notification_id, unknown_id);
+            drop(respond_to);
+        };
+        let (unknown_response, ()) = tokio::join!(unknown_request, actor_drops_ack);
+        let error = unknown_response.expect_err("closed ACK has an unknown outcome");
+        assert!(
+            error
+                .data
+                .as_ref()
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|data| data.contains("delivery outcome is unknown")),
+            "unknown delivery must be explicit: {error:?}"
+        );
+
+        let retry: SessionNotifyResponse = serde_json::from_str(
+            agent
+                .ext_method(make_request(unknown_id))
+                .await
+                .expect("unknown-outcome retry is deduplicated")
+                .0
+                .get(),
+        )
+        .expect("typed retry response");
+        assert_eq!(retry.status, SessionNotifyStatus::Duplicate);
+        assert!(
+            matches!(
+                cmd_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "an unknown-outcome retry must not enqueue the same notification twice"
+        );
+    });
+}
+
 /// Spawn a minimal fake session actor on the `LocalSet` that answers
 /// `SessionCommand::IsBusy` with `busy` and forwards every other command to
 /// the returned receiver so a test can assert on them (e.g. `Shutdown`).

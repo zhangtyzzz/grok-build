@@ -501,7 +501,7 @@ impl acp::Agent for MvpAgent {
                         .models_manager
                         .models()
                         .values()
-                        .any(|m| m.has_own_credentials())
+                        .any(|m| m.opts_out_of_ambient_credentials())
                     {
                         emit_login_span(false, "api_key", None, Some("no_credentials"));
                         return Err(
@@ -3107,10 +3107,14 @@ impl acp::Agent for MvpAgent {
                     responds_to: tx,
                 });
         }
-        let _ = rx
+        rx
             .await
             .map_err(|_| {
                 acp::Error::internal_error().data("response to set session failed")
+            })?
+            .map_err(|error| {
+                acp::Error::internal_error()
+                    .data(format!("session mode transition failed: {error}"))
             })?;
         Ok(acp::SetSessionModeResponse::new())
     }
@@ -3195,6 +3199,9 @@ impl acp::Agent for MvpAgent {
                 crate::extensions::session_admin::handle(self, &args).await
             }
             "x.ai/session/repair" => crate::extensions::repair::handle(self, &args).await,
+            "x.ai/session/notify" => {
+                crate::extensions::session_notify::handle(self, &args).await
+            }
             "x.ai/memory/flush" | "x.ai/memory/rewrite" => {
                 crate::extensions::memory::handle(self, &args).await
             }
@@ -3631,11 +3638,22 @@ impl acp::Agent for MvpAgent {
                         session_mode: next_mode_id.clone(),
                         responds_to: tx,
                     });
-                if rx.await.is_err() {
-                    tracing::warn!(
-                        session_id = % session_id_str, mode_id = % next_mode_id.0,
-                        "toggle_plan_mode: session mode update failed"
-                    );
+                match rx.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        tracing::warn!(
+                            session_id = %session_id_str,
+                            mode_id = %next_mode_id.0,
+                            %error,
+                            "toggle_plan_mode: durable session mode transition failed"
+                        );
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            session_id = % session_id_str, mode_id = % next_mode_id.0,
+                            "toggle_plan_mode: session mode update failed"
+                        );
+                    }
                 }
             } else {
                 tracing::warn!(

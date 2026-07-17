@@ -2714,6 +2714,7 @@ fn catalog_with(
                 api_key: None,
                 env_key: None,
                 api_base_url: None,
+                provider: None,
             },
         );
     }

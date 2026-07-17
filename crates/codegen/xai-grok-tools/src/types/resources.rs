@@ -411,6 +411,26 @@ pub struct Cwd(pub PathBuf);
 /// tool falls back to `Cwd/.grok/plan.md`.
 #[derive(Debug, Clone)]
 pub struct PlanFilePath(pub PathBuf);
+/// Session-installed marker for the one plan path that must use the protected
+/// no-follow filesystem boundary. Kept separate from [`PlanFilePath`] so
+/// standalone tool tests and embedders do not unexpectedly bypass their
+/// injected filesystem merely by setting a display path.
+#[derive(Debug, Clone)]
+pub struct ProtectedPlanFilePath(pub PathBuf);
+/// Wrap `fs` so the session-owned plan path uses the no-follow host-local
+/// boundary. Without the session-installed marker this is a no-op.
+pub fn guard_protected_plan_file_system(
+    res: &Resources,
+    fs: Arc<dyn AsyncFileSystem>,
+) -> Arc<dyn AsyncFileSystem> {
+    match res.get::<ProtectedPlanFilePath>() {
+        Some(path) => Arc::new(
+            crate::computer::protected_plan_file::GuardedPlanFileSystem::new(fs, path.0.clone()),
+        ),
+        None => fs,
+    }
+}
+
 /// Default plan-file path (relative to the workspace root) used when no
 /// explicit [`PlanFilePath`] is set. Shared by the plan-mode tools.
 pub const PLAN_FILE_RELATIVE_PATH: &str = ".grok/plan.md";

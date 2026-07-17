@@ -45,12 +45,14 @@ impl MvpAgent {
             alpha_test_key,
             client_version,
         ) {
-            Some(mut cfg) => {
-                cfg.client_identifier = primary.client_identifier.clone();
-                cfg.attribution_callback = primary.attribution_callback.clone();
-                cfg.bearer_resolver = primary.bearer_resolver.clone();
-                cfg.max_retries = primary.max_retries;
-                cfg
+            Some(mut resolved) => {
+                crate::agent::config::stamp_session_local_sampler_fields(
+                    &mut resolved,
+                    primary,
+                    primary.client_identifier.clone(),
+                    primary.max_retries,
+                );
+                resolved.config
             }
             None => {
                 let mut fallback = primary.clone();
@@ -1064,6 +1066,15 @@ impl MvpAgent {
         requested: &acp::ModelId,
     ) -> Result<ModelEntry, acp::Error> {
         let requested_str = requested.0.as_ref();
+        if requested_str.starts_with("route:") {
+            return self
+                .models_manager
+                .resolve_model_ref_entry(requested_str)
+                .ok_or_else(|| {
+                    acp::Error::invalid_params()
+                        .data("model route has no preflight-available candidate")
+                });
+        }
         let models = self.models_manager.models();
         let Some(catalog_key) = resolve_catalog_key(&models, requested) else {
             tracing::debug!(
@@ -1091,6 +1102,34 @@ impl MvpAgent {
         model: &ModelEntry,
         origin_client: Option<crate::http::OriginClientInfo>,
     ) -> SamplingConfig {
+        // Route entries in the catalog are only placeholders. Re-run route
+        // preflight immediately before constructing a sampler config so live
+        // environment credentials choose the provider for this request.
+        let route_ref = model
+            .info
+            .id
+            .as_deref()
+            .filter(|model_ref| model_ref.starts_with("route:"));
+        let resolved_route = route_ref.map(|model_ref| {
+            self.models_manager
+                .resolve_model_ref_entry(model_ref)
+                .unwrap_or_else(|| {
+                // This path is defensive for callers that retained a stale
+                // route placeholder instead of going through
+                // `resolve_model_id`. Keep it network-fail-closed.
+                tracing::error!(
+                    route = %model_ref,
+                    "model route lost all preflight candidates before sampler construction"
+                );
+                    let mut entry = model.clone();
+                    entry.info.base_url.clear();
+                    entry.api_base_url = None;
+                    entry.api_key = None;
+                    entry.env_key = None;
+                    entry
+                })
+        });
+        let model = resolved_route.as_ref().unwrap_or(model);
         let preferred = self.cfg.borrow().grok_com_config.preferred_method;
         let session = match preferred {
             Some(crate::auth::PreferredAuthMethod::ApiKey) => None,
@@ -1103,19 +1142,21 @@ impl MvpAgent {
             session.as_ref().map(|a| a.key.as_str()),
         );
         if matches!(preferred, Some(crate ::auth::PreferredAuthMethod::Oidc))
-            && !model.has_own_credentials()
+            && !model.opts_out_of_ambient_credentials()
             && credentials.auth_type == xai_chat_state::AuthType::ApiKey
         {
             credentials.api_key = None;
             credentials.auth_type = xai_chat_state::AuthType::SessionToken;
         }
-        crate::agent::config::enforce_disable_api_key_auth(
-            &mut credentials,
-            self.cfg.borrow().grok_com_config.api_key_auth_disabled(),
-            session.as_ref().map(|a| a.key.as_str()),
-        );
+        if model.provider.is_none() {
+            crate::agent::config::enforce_disable_api_key_auth(
+                &mut credentials,
+                self.cfg.borrow().grok_com_config.api_key_auth_disabled(),
+                session.as_ref().map(|a| a.key.as_str()),
+            );
+        }
         if !has_session_key && credentials.auth_type == xai_chat_state::AuthType::ApiKey
-            && !model.has_own_credentials() && self.is_session_based_auth()
+            && !model.opts_out_of_ambient_credentials() && self.is_session_based_auth()
         {
             tracing::info!(
                 model = model.info().model.as_str(),
@@ -1128,7 +1169,7 @@ impl MvpAgent {
             );
             credentials.auth_type = xai_chat_state::AuthType::SessionToken;
         }
-        if !has_session_key && !model.has_own_credentials() {
+        if !has_session_key && !model.opts_out_of_ambient_credentials() {
             tracing::warn!(
                 model = model.info().model.as_str(), is_expired = self.auth_manager
                 .is_expired(), auth_type = ? credentials.auth_type,
@@ -2354,8 +2395,21 @@ impl MvpAgent {
     /// shared mutable state).
     pub(super) fn seed_client_config_auth_if_available(&self) {
         let mut sampling_config = self.sampling_config.borrow_mut();
+        let models = self.models_manager.models();
+        let owns_auth_boundary = crate::agent::config::find_model_by_locator(
+            &models,
+            sampling_config.model_ref.as_deref(),
+            sampling_config.model.as_str(),
+            sampling_config.base_url.as_str(),
+        )
+        .is_some_and(|model| model.opts_out_of_ambient_credentials());
         if sampling_config.api_key.is_none() {
-            if let Some(auth) = self.auth_manager.current_or_expired() {
+            if owns_auth_boundary {
+                tracing::debug!(
+                    model = %sampling_config.model,
+                    "auth: provider-bound client config declined ambient session credentials"
+                );
+            } else if let Some(auth) = self.auth_manager.current_or_expired() {
                 sampling_config.api_key = Some(auth.key);
                 tracing::debug!("auth: seed_client_config set auth (SessionToken)");
                 xai_grok_telemetry::unified_log::debug(
@@ -2363,12 +2417,7 @@ impl MvpAgent {
                     None,
                     None,
                 );
-            } else if !self
-                .models_manager
-                .models()
-                .values()
-                .any(|m| m.has_own_credentials())
-            {
+            } else if !models.values().any(|m| m.has_own_credentials()) {
                 tracing::warn!(
                     "No credentials found: no login token and no model api_key/env_key"
                 );
@@ -3321,15 +3370,17 @@ impl MvpAgent {
             let cfg = self.cfg.borrow();
             resolve_inference_idle_timeout_secs(
                 &models,
+                sampling_config.model_ref.as_deref(),
                 &sampling_config.model,
                 cfg.remote_settings.as_ref(),
             )
         };
-        let model_max_retries = self
-            .models_manager
-            .models()
-            .values()
-            .find(|entry| entry.info.model == sampling_config.model)
+        let models = self.models_manager.models();
+        let model_max_retries = sampling_config
+            .model_ref
+            .as_deref()
+            .and_then(|model_ref| models.get(model_ref))
+            .or_else(|| config::find_model_by_id(&models, &sampling_config.model))
             .and_then(|entry| entry.info.max_retries);
         let origin_client = self.origin_client_info_from_meta(init.meta.as_ref());
         let web_search_sampling_config = self.prepare_web_search_sampling_config();
@@ -3415,13 +3466,27 @@ impl MvpAgent {
         let (mut handle, permission_events_rx, agent_system_prompt, session_thread) = {
             let _timer = crate::instrumentation_timer!("session.spawn_actor_call");
             let session_key = self.auth_manager.current_or_expired().map(|a| a.key);
+            let model_catalog = self.models_manager.models();
+            let owns_auth_boundary = crate::agent::config::find_model_by_locator(
+                    &model_catalog,
+                    sampling_config.model_ref.as_deref(),
+                    sampling_config.model.as_str(),
+                    sampling_config.base_url.as_str(),
+                )
+                .is_some_and(|entry| entry.opts_out_of_ambient_credentials());
             let credentials = xai_chat_state::Credentials {
                 api_key: sampling_config.api_key.clone(),
-                auth_type: crate::agent::config::resolve_chat_state_auth_type(
-                    sampling_config.model.as_str(),
-                    session_key.as_deref(),
-                    self.auth_type(),
-                ),
+                auth_type: if owns_auth_boundary {
+                    xai_chat_state::AuthType::ApiKey
+                } else {
+                    crate::agent::config::resolve_chat_state_auth_type(
+                        sampling_config.model_ref.as_deref(),
+                        sampling_config.model.as_str(),
+                        sampling_config.base_url.as_str(),
+                        session_key.as_deref(),
+                        self.auth_type(),
+                    )
+                },
                 alpha_test_key: self.alpha_test_key(),
                 client_version: sampling_config.client_version.clone(),
             };

@@ -125,7 +125,9 @@ impl xai_tool_runtime::Tool for ExitPlanModeTool {
 
             // Read the plan file from disk via the FileSystem abstraction.
             let content = if let Some(fs) = res.get::<FileSystem>() {
-                match fs.0.read_file(&plan_path).await {
+                let fs =
+                    crate::types::resources::guard_protected_plan_file_system(&res, fs.0.clone());
+                match fs.read_file(&plan_path).await {
                     Ok(bytes) => {
                         let text = String::from_utf8_lossy(&bytes).into_owned();
                         if text.trim().is_empty() {
@@ -137,10 +139,25 @@ impl xai_tool_runtime::Tool for ExitPlanModeTool {
                     Err(_) => None,
                 }
             } else {
-                // Fallback: try tokio::fs if no FileSystem resource is available.
-                match tokio::fs::read_to_string(&plan_path).await {
-                    Ok(text) if !text.trim().is_empty() => Some(text),
-                    _ => None,
+                // Session-installed protected paths must never fall back to a
+                // generic path open, which would follow a planted symlink.
+                if res
+                    .get::<crate::types::resources::ProtectedPlanFilePath>()
+                    .is_some()
+                {
+                    match crate::computer::protected_plan_file::read(&plan_path).await {
+                        Ok(bytes) if !String::from_utf8_lossy(&bytes).trim().is_empty() => {
+                            Some(String::from_utf8_lossy(&bytes).into_owned())
+                        }
+                        _ => None,
+                    }
+                } else {
+                    // Standalone embedders without the session marker retain
+                    // the legacy host-filesystem fallback.
+                    match tokio::fs::read_to_string(&plan_path).await {
+                        Ok(text) if !text.trim().is_empty() => Some(text),
+                        _ => None,
+                    }
                 }
             };
 

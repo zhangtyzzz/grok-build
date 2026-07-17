@@ -92,6 +92,10 @@ pub struct TextBlock {
 pub struct CacheControl {
     #[serde(rename = "type")]
     pub r#type: String, // "ephemeral"
+    /// Anthropic defaults an omitted TTL to five minutes. Keep that default
+    /// wire shape byte-compatible and only serialize the explicit one-hour TTL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<crate::PromptCacheTtl>,
 }
 
 /// Content blocks used in both requests and responses
@@ -233,6 +237,18 @@ pub struct MessagesUsage {
     pub cache_creation_input_tokens: u32,
     #[serde(default)]
     pub cache_read_input_tokens: u32,
+    /// Detailed cache-write buckets emitted by Anthropic. Older compatible
+    /// providers may omit this while still reporting the aggregate above.
+    #[serde(default)]
+    pub cache_creation: Option<CacheCreationUsage>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CacheCreationUsage {
+    #[serde(default)]
+    pub ephemeral_5m_input_tokens: u32,
+    #[serde(default)]
+    pub ephemeral_1h_input_tokens: u32,
 }
 
 // ============================================================================
@@ -299,6 +315,8 @@ pub struct MessageDeltaUsage {
     pub cache_read_input_tokens: Option<u32>,
     #[serde(default)]
     pub cache_creation_input_tokens: Option<u32>,
+    #[serde(default)]
+    pub cache_creation: Option<CacheCreationUsage>,
 }
 
 /// Content delta within a content_block_delta event
@@ -398,6 +416,45 @@ mod tests {
             }
             other => panic!("expected MessageDelta, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn messages_usage_parses_cache_creation_ttl_buckets() {
+        let usage: MessagesUsage = serde_json::from_str(
+            r#"{
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "cache_creation_input_tokens": 300,
+                "cache_read_input_tokens": 400,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 100,
+                    "ephemeral_1h_input_tokens": 200
+                }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            usage.cache_creation,
+            Some(CacheCreationUsage {
+                ephemeral_5m_input_tokens: 100,
+                ephemeral_1h_input_tokens: 200,
+            })
+        );
+    }
+
+    #[test]
+    fn messages_usage_without_detailed_cache_creation_stays_compatible() {
+        let usage: MessagesUsage = serde_json::from_str(
+            r#"{
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "cache_creation_input_tokens": 300,
+                "cache_read_input_tokens": 400
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(usage.cache_creation_input_tokens, 300);
+        assert_eq!(usage.cache_creation, None);
     }
 
     #[test]

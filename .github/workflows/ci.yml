@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  workflow_call:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust checks and tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
+          rustup default 1.92.0
+
+      - name: Prepare pinned protobuf compiler
+        run: |
+          bash scripts/dist/prepare-release-tools.sh \
+            --target x86_64-unknown-linux-gnu \
+            --output-dir "$RUNNER_TEMP/grok-ci-tools" \
+            --github-env "$GITHUB_ENV" \
+            --protoc-only
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check changed runtime boundaries
+        run: |
+          cargo check --locked \
+            -p xai-grok-sampling-types \
+            -p xai-chat-state \
+            -p xai-grok-sampler \
+            -p xai-grok-shell
+
+      - name: Run core tests
+        run: |
+          cargo test --locked \
+            -p xai-grok-sampling-types \
+            -p xai-chat-state \
+            -p xai-grok-sampler
+
+      - name: Run shell tests
+        run: cargo test --locked -p xai-grok-shell --lib
+
+      - name: Run focused clippy
+        run: |
+          cargo clippy --locked --all-targets \
+            -p xai-grok-sampling-types \
+            -p xai-chat-state \
+            -p xai-grok-sampler \
+            -p xai-grok-shell
+
+  integration:
+    name: Distribution E2E
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install packaging prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes zip
+
+      - name: Test deterministic distribution
+        run: bash scripts/dist/test.sh
+
+  terminal:
+    name: Terminal, tools, and CLI
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component clippy
+          rustup default 1.92.0
+
+      - name: Prepare pinned protobuf compiler
+        run: |
+          bash scripts/dist/prepare-release-tools.sh \
+            --target x86_64-unknown-linux-gnu \
+            --output-dir "$RUNNER_TEMP/grok-terminal-tools" \
+            --github-env "$GITHUB_ENV" \
+            --protoc-only
+
+      - name: Check terminal composition
+        run: |
+          cargo check --locked \
+            -p xai-grok-tools \
+            -p xai-grok-pager \
+            -p xai-grok-pager-bin
+
+      - name: Run tool and terminal tests
+        run: |
+          cargo test --locked -p xai-grok-tools
+          cargo test --locked -p xai-grok-pager --lib
+          cargo test --locked -p xai-grok-pager-bin
+
+      - name: Clippy terminal composition
+        run: |
+          cargo clippy --locked --all-targets \
+            -p xai-grok-tools \
+            -p xai-grok-pager \
+            -p xai-grok-pager-bin
+
+  required:
+    name: CI required
+    if: always()
+    needs:
+      - rust
+      - integration
+      - terminal
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Require every CI job
+        env:
+          RUST_RESULT: ${{ needs.rust.result }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+          TERMINAL_RESULT: ${{ needs.terminal.result }}
+        run: |
+          test "$RUST_RESULT" = success
+          test "$INTEGRATION_RESULT" = success
+          test "$TERMINAL_RESULT" = success

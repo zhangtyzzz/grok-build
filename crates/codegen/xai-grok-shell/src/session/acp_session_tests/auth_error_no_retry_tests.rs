@@ -864,14 +864,19 @@ async fn reconstruct_full_config_no_bearer_resolver_for_byok_model_on_session_me
             )
             .await;
 
-            let model = actor
+            let sampling_config = actor
                 .chat_state_handle
                 .get_sampling_config()
                 .await
-                .map(|c| c.model)
-                .unwrap_or_default();
+                .expect("test actor must have sampling config");
+            let cache_key = format!(
+                "{}\0{}\0{}",
+                sampling_config.model_ref.as_deref().unwrap_or_default(),
+                sampling_config.model,
+                sampling_config.base_url
+            );
             actor.model_auth_facts.replace(Some((
-                model,
+                cache_key,
                 ModelAuthFacts {
                     byok: ModelByok::Byok,
                     auth_scheme: Default::default(),
@@ -928,6 +933,8 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
             let cfg = xai_grok_sampler::SamplerConfig {
                 api_key: Some("byok-key".to_string()),
                 base_url: "https://third-party.example/v1".to_string(),
+                model_ref: None,
+                route_ref: None,
                 model: model.clone(),
                 max_completion_tokens: None,
                 temperature: None,
@@ -941,6 +948,7 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
                 max_retries: None,
                 stream_tool_calls: false,
                 idle_timeout_secs: None,
+                prompt_cache: Default::default(),
                 client_identifier: None,
                 reasoning_effort: None,
                 deployment_id: None,

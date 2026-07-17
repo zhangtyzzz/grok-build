@@ -24,8 +24,8 @@ use xai_grok_sampling_types::error::{parse_error_bytes, try_parse_stream_error};
 use xai_grok_sampling_types::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ConversationRequest,
     ConversationResponse, CreateResponseWrapper, DOOM_LOOP_CHECK_HEADER, MessagesRequestWrapper,
-    ResponseModelMetadata, Result, SamplingError, build_messages_request, is_check_event, messages,
-    rs,
+    PromptCachePolicy, ResponseModelMetadata, Result, SamplingError,
+    build_messages_request_with_cache_policy, is_check_event, messages, rs,
 };
 
 use crate::config::{AuthScheme, OriginClientInfo, SamplerConfig};
@@ -315,6 +315,7 @@ struct ClientDefaults {
     api_backend: ApiBackend,
     auth_scheme: AuthScheme,
     stream_tool_calls: bool,
+    prompt_cache: PromptCachePolicy,
     doom_loop_recovery: Option<xai_grok_sampling_types::DoomLoopRecoveryPolicy>,
 }
 
@@ -433,12 +434,22 @@ impl SamplingClient {
             }
         }
 
-        // Apply all extra headers verbatim. This is the single
-        // injection point for proxy-auth headers and any other URL- or
-        // environment-specific headers the session decides to set.
+        // Apply extra headers without allowing them to replace the configured
+        // credential. Named-provider validation catches this earlier, while
+        // this boundary check protects every caller that constructs a
+        // SamplerConfig directly.
         for (key, value) in &config.extra_headers {
             let header_name = HeaderName::try_from(key.as_str())
                 .map_err(|_| SamplingError::InvalidConfiguration("Invalid extra header name"))?;
+            let protected_auth_header = match config.auth_scheme {
+                AuthScheme::Bearer => AUTHORIZATION,
+                AuthScheme::XApiKey => HeaderName::from_static("x-api-key"),
+            };
+            if config.api_key.is_some() && header_name == protected_auth_header {
+                return Err(SamplingError::InvalidConfiguration(
+                    "extra_headers must not override the configured authentication header",
+                ));
+            }
             let header_value = HeaderValue::from_str(value)
                 .map_err(|_| SamplingError::InvalidConfiguration("Invalid extra header value"))?;
             headers.insert(header_name, header_value);
@@ -527,6 +538,7 @@ impl SamplingClient {
             api_backend: config.api_backend,
             auth_scheme: config.auth_scheme,
             stream_tool_calls: config.stream_tool_calls,
+            prompt_cache: config.prompt_cache,
             doom_loop_recovery: config.doom_loop_recovery,
         };
 
@@ -1918,7 +1930,8 @@ impl SamplingClient {
         let x_grok_turn_idx = request.x_grok_turn_idx.clone();
         let x_grok_agent_id = request.x_grok_agent_id.clone();
 
-        let messages_request = build_messages_request(&request);
+        let messages_request =
+            build_messages_request_with_cache_policy(&request, self.defaults.prompt_cache);
 
         let mut wrapper = MessagesRequestWrapper::new(messages_request);
         wrapper.x_grok_conv_id = x_grok_conv_id;
@@ -1950,7 +1963,8 @@ impl SamplingClient {
         let x_grok_turn_idx = request.x_grok_turn_idx.clone();
         let x_grok_agent_id = request.x_grok_agent_id.clone();
 
-        let messages_request = build_messages_request(&request);
+        let messages_request =
+            build_messages_request_with_cache_policy(&request, self.defaults.prompt_cache);
 
         let mut wrapper = MessagesRequestWrapper::new(messages_request);
         wrapper.x_grok_conv_id = x_grok_conv_id;
@@ -2017,6 +2031,8 @@ mod tests {
         SamplerConfig {
             api_key: Some("test-key".to_string()),
             base_url: "https://example.test".to_string(),
+            model_ref: None,
+            route_ref: None,
             model: "test-model".to_string(),
             max_completion_tokens: None,
             temperature: None,
@@ -2029,6 +2045,7 @@ mod tests {
             max_retries: None,
             stream_tool_calls: false,
             idle_timeout_secs: None,
+            prompt_cache: Default::default(),
             reasoning_effort: None,
             origin_client: None,
             client_identifier: None,
@@ -2229,6 +2246,36 @@ mod tests {
                 .default_headers
                 .get(HeaderName::from_static("x-api-key"))
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn extra_headers_cannot_override_bearer_credential() {
+        let mut cfg = minimal_config();
+        cfg.api_key = Some("configured-bearer".to_string());
+        cfg.auth_scheme = AuthScheme::Bearer;
+        cfg.extra_headers
+            .insert("AUTHORIZATION".to_string(), "Bearer attacker".to_string());
+        let error = SamplingClient::new(cfg).expect_err("auth override must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("must not override the configured authentication header")
+        );
+    }
+
+    #[test]
+    fn extra_headers_cannot_override_x_api_key_credential() {
+        let mut cfg = minimal_config();
+        cfg.api_key = Some("configured-anthropic-key".to_string());
+        cfg.auth_scheme = AuthScheme::XApiKey;
+        cfg.extra_headers
+            .insert("X-API-KEY".to_string(), "attacker".to_string());
+        let error = SamplingClient::new(cfg).expect_err("auth override must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("must not override the configured authentication header")
         );
     }
 

@@ -6,8 +6,8 @@ use super::*;
 use futures_util::stream;
 use std::pin::pin;
 use xai_grok_sampling_types::messages::{
-    ContentBlock, MessageDeltaBody, MessageDeltaUsage, MessagesResponse, MessagesUsage,
-    StreamDelta, StreamError,
+    CacheCreationUsage, ContentBlock, MessageDeltaBody, MessageDeltaUsage, MessagesResponse,
+    MessagesUsage, StreamDelta, StreamError,
 };
 
 fn rid() -> RequestId {
@@ -28,6 +28,7 @@ fn message_start() -> MessageStreamEvent {
                 output_tokens: 0,
                 cache_creation_input_tokens: 0,
                 cache_read_input_tokens: 0,
+                cache_creation: None,
             },
         },
     }
@@ -65,6 +66,7 @@ fn message_delta_with_stop(stop: messages::StopReason) -> MessageStreamEvent {
             input_tokens: Some(10),
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
+            cache_creation: None,
         },
     }
 }
@@ -86,6 +88,7 @@ fn message_delta_refusal_with_explanation(explanation: &str) -> MessageStreamEve
             input_tokens: Some(10),
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
+            cache_creation: None,
         },
     }
 }
@@ -544,6 +547,15 @@ fn message_start_with_cache(
     cache_read: u32,
     cache_creation: u32,
 ) -> MessageStreamEvent {
+    message_start_with_cache_details(input, cache_read, cache_creation, None)
+}
+
+fn message_start_with_cache_details(
+    input: u32,
+    cache_read: u32,
+    cache_creation: u32,
+    cache_creation_details: Option<CacheCreationUsage>,
+) -> MessageStreamEvent {
     MessageStreamEvent::MessageStart {
         message: MessagesResponse {
             id: "msg_cache".into(),
@@ -557,6 +569,7 @@ fn message_start_with_cache(
                 output_tokens: 0,
                 cache_creation_input_tokens: cache_creation,
                 cache_read_input_tokens: cache_read,
+                cache_creation: cache_creation_details,
             },
         },
     }
@@ -568,6 +581,16 @@ fn message_delta_with_cache(
     cache_read: Option<u32>,
     cache_creation: Option<u32>,
 ) -> MessageStreamEvent {
+    message_delta_with_cache_details(output, input, cache_read, cache_creation, None)
+}
+
+fn message_delta_with_cache_details(
+    output: u32,
+    input: Option<u32>,
+    cache_read: Option<u32>,
+    cache_creation: Option<u32>,
+    cache_creation_details: Option<CacheCreationUsage>,
+) -> MessageStreamEvent {
     MessageStreamEvent::MessageDelta {
         delta: MessageDeltaBody {
             stop_reason: Some(messages::StopReason::EndTurn),
@@ -578,6 +601,7 @@ fn message_delta_with_cache(
             input_tokens: input,
             cache_read_input_tokens: cache_read,
             cache_creation_input_tokens: cache_creation,
+            cache_creation: cache_creation_details,
         },
     }
 }
@@ -620,6 +644,8 @@ async fn prompt_tokens_sums_all_three_anthropic_buckets() {
     assert_eq!(usage.cached_prompt_tokens, 5000);
     assert_eq!(usage.completion_tokens, 7);
     assert_eq!(usage.total_tokens, 100 + 5000 + 200 + 7);
+    assert_eq!(usage.cache_write_5m_input_tokens, 0);
+    assert_eq!(usage.cache_write_1h_input_tokens, 0);
 }
 
 #[tokio::test]
@@ -652,4 +678,57 @@ async fn pure_cache_hit_with_zero_uncached_still_emits_usage() {
     assert_eq!(usage.prompt_tokens, 2500);
     assert_eq!(usage.cached_prompt_tokens, 2500);
     assert_eq!(usage.total_tokens, 2501);
+}
+
+#[tokio::test]
+async fn cache_creation_ttl_buckets_flow_from_message_start() {
+    let usage = usage_from_stream(vec![
+        message_start_with_cache_details(
+            10,
+            20,
+            500,
+            Some(CacheCreationUsage {
+                ephemeral_5m_input_tokens: 200,
+                ephemeral_1h_input_tokens: 300,
+            }),
+        ),
+        message_delta_with_cache(4, None, None, None),
+        MessageStreamEvent::MessageStop,
+    ])
+    .await;
+
+    assert_eq!(usage.prompt_tokens, 10 + 20 + 500);
+    assert_eq!(usage.cache_write_5m_input_tokens, 200);
+    assert_eq!(usage.cache_write_1h_input_tokens, 300);
+}
+
+#[tokio::test]
+async fn message_delta_ttl_buckets_override_message_start() {
+    let usage = usage_from_stream(vec![
+        message_start_with_cache_details(
+            10,
+            0,
+            20,
+            Some(CacheCreationUsage {
+                ephemeral_5m_input_tokens: 20,
+                ephemeral_1h_input_tokens: 0,
+            }),
+        ),
+        message_delta_with_cache_details(
+            4,
+            None,
+            None,
+            Some(100),
+            Some(CacheCreationUsage {
+                ephemeral_5m_input_tokens: 0,
+                ephemeral_1h_input_tokens: 100,
+            }),
+        ),
+        MessageStreamEvent::MessageStop,
+    ])
+    .await;
+
+    assert_eq!(usage.prompt_tokens, 10 + 100);
+    assert_eq!(usage.cache_write_5m_input_tokens, 0);
+    assert_eq!(usage.cache_write_1h_input_tokens, 100);
 }

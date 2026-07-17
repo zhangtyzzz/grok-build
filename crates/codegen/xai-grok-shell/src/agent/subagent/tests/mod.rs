@@ -3085,6 +3085,7 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
         info: crate::agent::config::ModelInfo {
             user_selectable: true,
             id: None,
+            model_ref: None,
             model: model_id.to_string(),
             base_url: String::new(),
             name: None,
@@ -3093,6 +3094,7 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
             temperature: None,
             top_p: None,
             api_backend: Default::default(),
+            prompt_cache: Default::default(),
             auth_scheme: Default::default(),
             extra_headers: Default::default(),
             context_window: std::num::NonZeroU64::new(256_000).unwrap(),
@@ -3117,6 +3119,7 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
         api_key: None,
         env_key: None,
         api_base_url: None,
+        provider: None,
     }
 }
 fn byok_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
@@ -3133,8 +3136,18 @@ fn subagent_auth_type_rule() {
     let api_key = acp::AuthMethodId::new(XAI_API_KEY_METHOD_ID);
     let byok = byok_model_entry("grok-byok");
     let plain = test_model_entry("grok-plain");
+    let mut auth_none_provider = test_model_entry("anonymous-provider");
+    auth_none_provider.provider = Some(crate::agent::config::ResolvedProviderBinding {
+        id: "anonymous".to_owned(),
+        auth_required: false,
+    });
     assert_eq!(super::subagent_auth_type(Some(& byok), & session), AuthType::ApiKey);
     assert_eq!(super::subagent_auth_type(Some(& byok), & api_key), AuthType::ApiKey);
+    assert_eq!(
+        super::subagent_auth_type(Some(& auth_none_provider), & session),
+        AuthType::ApiKey,
+        "named auth-none providers must not inherit the parent session token"
+    );
     assert_eq!(
         super::subagent_auth_type(Some(& plain), & session), AuthType::SessionToken,
     );
@@ -3308,6 +3321,8 @@ fn test_sampling_config(model_slug: &str) -> xai_grok_sampling_types::SamplingCo
     use std::num::NonZeroU64;
     xai_grok_sampling_types::SamplingConfig {
         base_url: "https://api.test/v1".to_string(),
+        model_ref: None,
+        route_ref: None,
         model: model_slug.to_string(),
         max_completion_tokens: None,
         temperature: None,
@@ -3317,6 +3332,7 @@ fn test_sampling_config(model_slug: &str) -> xai_grok_sampling_types::SamplingCo
         context_window: NonZeroU64::new(256_000).expect("non-zero context window"),
         reasoning_effort: None,
         stream_tool_calls: None,
+        prompt_cache: Default::default(),
     }
 }
 fn spawn_test_parent_chat_state(model_slug: &str) -> xai_chat_state::ChatStateHandle {

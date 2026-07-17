@@ -1,0 +1,417 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: SemVer without the leading v
+        required: true
+        type: string
+      publish:
+        description: Publish only when this run targets the matching existing tag
+        required: true
+        default: false
+        type: boolean
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    name: Validate release metadata
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      channel: ${{ steps.meta.outputs.channel }}
+      publish: ${{ steps.meta.outputs.publish }}
+      tag: ${{ steps.meta.outputs.tag }}
+      commit: ${{ steps.meta.outputs.commit }}
+    steps:
+      - name: Check out exact release ref
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Validate tag, version, and channel
+        id: meta
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          CHECKOUT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == push ]]; then
+            version="${REF_NAME#v}"
+            publish=true
+          else
+            version="$INPUT_VERSION"
+            publish="$INPUT_PUBLISH"
+          fi
+          tag="v$version"
+
+          if [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            channel=stable
+          elif [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)\.[0-9]+$ ]]; then
+            channel=testing
+          else
+            echo "unsupported release tag: $tag" >&2
+            exit 1
+          fi
+
+          for manifest in \
+            crates/codegen/xai-grok-pager-bin/Cargo.toml \
+            crates/codegen/xai-grok-pager/Cargo.toml \
+            crates/codegen/xai-grok-shell/Cargo.toml \
+            crates/codegen/xai-grok-version/Cargo.toml; do
+            package_version="$(awk -F '"' '/^version = / { print $2; exit }' "$manifest")"
+            test "$version" = "$package_version" || {
+              echo "release version $version does not match $manifest version $package_version" >&2
+              exit 1
+            }
+          done
+
+          if [[ "$publish" == true ]]; then
+            test "$REF_TYPE" = tag && test "$REF_NAME" = "$tag" || {
+              echo "publishing requires the workflow to run on existing tag $tag" >&2
+              exit 1
+            }
+            tagged_commit="$(git rev-list -n 1 "$tag")"
+            test "$tagged_commit" = "$CHECKOUT_SHA" || {
+              echo "tag $tag does not resolve to checked-out commit $CHECKOUT_SHA" >&2
+              exit 1
+            }
+          fi
+
+          test -z "$(git status --porcelain --untracked-files=normal)"
+          {
+            echo "version=$version"
+            echo "channel=$channel"
+            echo "publish=$publish"
+            echo "tag=$tag"
+            echo "commit=$CHECKOUT_SHA"
+          } >>"$GITHUB_OUTPUT"
+
+  quality:
+    name: Run release quality gates
+    needs: metadata
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs:
+      - metadata
+      - quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-15
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out exact release commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.metadata.outputs.commit }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          rustup default 1.92.0
+          rustup target add "${{ matrix.target }}"
+
+      - name: Install Windows archive tool
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install zip unzip --yes --no-progress
+
+      - name: Validate Windows archive tools
+        if: runner.os == 'Windows'
+        run: |
+          command -v zip
+          command -v unzip
+
+      - name: Prepare checksum-pinned bundled tools
+        run: |
+          bash scripts/dist/prepare-release-tools.sh \
+            --target "${{ matrix.target }}" \
+            --output-dir "$PWD/.release-tools" \
+            --github-env "$GITHUB_ENV"
+
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked --target "${{ matrix.target }}"
+
+      - name: Build, package, and verify
+        id: package
+        run: |
+          set -euo pipefail
+          binary="$(scripts/dist.sh build \
+            --target "${{ matrix.target }}" \
+            --version "${{ needs.metadata.outputs.version }}")"
+          mkdir -p release-output
+          archive="$(scripts/dist.sh package \
+            --target "${{ matrix.target }}" \
+            --version "${{ needs.metadata.outputs.version }}" \
+            --binary "$binary" \
+            --attestation "$binary.build-attestation.json" \
+            --output-dir release-output)"
+          scripts/dist.sh verify "$archive"
+          case "$archive" in
+            "$PWD"/*) archive="${archive#"$PWD"/}" ;;
+            *) echo "archive was created outside the workspace: $archive" >&2; exit 1 ;;
+          esac
+          echo "archive=$archive" >>"$GITHUB_OUTPUT"
+
+      - name: Smoke-test installed payload
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p .release-smoke
+          case "${{ steps.package.outputs.archive }}" in
+            *.tar.gz) tar -xzf "${{ steps.package.outputs.archive }}" -C .release-smoke ;;
+            *.zip) unzip -q "${{ steps.package.outputs.archive }}" -d .release-smoke ;;
+            *) echo "unsupported archive" >&2; exit 1 ;;
+          esac
+          if [[ "${{ runner.os }}" == Windows ]]; then
+            grok="$(find .release-smoke -type f -path '*/bin/grok.exe' -print -quit)"
+          else
+            grok="$(find .release-smoke -type f -path '*/bin/grok' -print -quit)"
+          fi
+          test -n "$grok"
+          grok_home="$PWD/.release-smoke/home"
+          if [[ "${{ runner.os }}" == Windows ]]; then
+            grok_home="$(cygpath -w "$grok_home")"
+          fi
+          export GROK_HOME="$grok_home"
+          version_output="$("$grok" --version)"
+          [[ "$version_output" == *"$RELEASE_VERSION ("* ]] || {
+            echo "unexpected binary version: $version_output" >&2
+            exit 1
+          }
+          printf '%s\n' "$version_output"
+          "$grok" --help >/dev/null
+          "$grok" completions bash >/dev/null
+
+      - name: Attest release archive provenance
+        id: provenance
+        uses: actions/attest@c32b4b8b198b65d0bd9d63490e847ff7b53989d4 # v4.0.0
+        with:
+          subject-path: ${{ steps.package.outputs.archive }}
+
+      - name: Collect provenance beside archive
+        env:
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          if command -v cygpath >/dev/null 2>&1; then
+            BUNDLE="$(cygpath -u "$BUNDLE")"
+          fi
+          test -f "$ARCHIVE"
+          test -f "$BUNDLE"
+          cp -- "$BUNDLE" "release-output/$(basename "$ARCHIVE").sigstore.json"
+
+      - name: Upload target artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            release-output/*.tar.gz
+            release-output/*.zip
+            release-output/*.sigstore.json
+          if-no-files-found: error
+          retention-days: 14
+
+  fan-in:
+    name: Verify complete release candidate
+    needs:
+      - metadata
+      - build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.result.outputs.artifact_name }}
+    steps:
+      - name: Check out exact release commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.metadata.outputs.commit }}
+          persist-credentials: false
+
+      - name: Download every target
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          path: release-candidate
+          merge-multiple: true
+
+      - name: Verify six unique archives and global checksums
+        id: result
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
+        run: |
+          set -euo pipefail
+          mapfile -t archives < <(
+            find release-candidate -maxdepth 1 -type f \
+              \( -name '*.tar.gz' -o -name '*.zip' \) -print | LC_ALL=C sort
+          )
+          mapfile -t bundles < <(
+            find release-candidate -maxdepth 1 -type f \
+              -name '*.sigstore.json' -print | LC_ALL=C sort
+          )
+          test "${#archives[@]}" -eq 6 || {
+            echo "expected six release archives, found ${#archives[@]}" >&2
+            exit 1
+          }
+          test "${#bundles[@]}" -eq 6 || {
+            echo "expected six provenance bundles, found ${#bundles[@]}" >&2
+            exit 1
+          }
+          expected=(
+            "grok-build-${{ needs.metadata.outputs.version }}-aarch64-apple-darwin.tar.gz"
+            "grok-build-${{ needs.metadata.outputs.version }}-aarch64-pc-windows-msvc.zip"
+            "grok-build-${{ needs.metadata.outputs.version }}-aarch64-unknown-linux-gnu.tar.gz"
+            "grok-build-${{ needs.metadata.outputs.version }}-x86_64-apple-darwin.tar.gz"
+            "grok-build-${{ needs.metadata.outputs.version }}-x86_64-pc-windows-msvc.zip"
+            "grok-build-${{ needs.metadata.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz"
+          )
+          for index in "${!archives[@]}"; do
+            actual="$(basename "${archives[$index]}")"
+            test "$actual" = "${expected[$index]}" || {
+              echo "unexpected release archive at index $index: $actual" >&2
+              exit 1
+            }
+          done
+          for archive in "${archives[@]}"; do
+            bundle="$archive.sigstore.json"
+            test -f "$bundle"
+            gh attestation verify "$archive" \
+              --bundle "$bundle" \
+              --repo "$GH_REPO" \
+              --signer-workflow "$GH_REPO/.github/workflows/release.yml" \
+              --source-digest "$RELEASE_COMMIT" >/dev/null
+            scripts/dist.sh verify "$archive"
+          done
+          scripts/dist.sh checksums --output-dir release-candidate
+          test "$(wc -l <release-candidate/SHA256SUMS)" -eq 6
+          artifact_name="release-candidate-${{ needs.metadata.outputs.version }}"
+          echo "artifact_name=$artifact_name" >>"$GITHUB_OUTPUT"
+
+      - name: Upload verified release candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.result.outputs.artifact_name }}
+          path: release-candidate/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish ${{ needs.metadata.outputs.channel }} release
+    if: needs.metadata.outputs.publish == 'true'
+    needs:
+      - metadata
+      - fan-in
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    environment:
+      name: release-${{ needs.metadata.outputs.channel }}
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified release candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.fan-in.outputs.artifact_name }}
+          path: release-candidate
+
+      - name: Create draft, upload atomically, then publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          CHANNEL: ${{ needs.metadata.outputs.channel }}
+          RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
+        run: |
+          set -euo pipefail
+          created=false
+          require_expected_tag_commit() {
+            local actual
+            actual="$(
+              gh api "repos/$GH_REPO/commits/$TAG" --jq .sha
+            )"
+            test "$actual" = "$RELEASE_COMMIT" || {
+              echo "tag $TAG moved: expected $RELEASE_COMMIT, found $actual" >&2
+              return 1
+            }
+          }
+          cleanup_failed_draft() {
+            status=$?
+            if [[ "$status" -ne 0 && "$created" == true ]]; then
+              gh release delete "$TAG" --yes || true
+            fi
+            exit "$status"
+          }
+          trap cleanup_failed_draft EXIT
+          prerelease=()
+          if [[ "$CHANNEL" == testing ]]; then
+            prerelease=(--prerelease)
+          fi
+          require_expected_tag_commit
+          gh release view "$TAG" >/dev/null 2>&1 && {
+            echo "release $TAG already exists; immutable releases are never overwritten" >&2
+            exit 1
+          }
+          gh release create "$TAG" \
+            --verify-tag \
+            --draft \
+            "${prerelease[@]}" \
+            --generate-notes \
+            --title "$TAG"
+          created=true
+          gh release upload "$TAG" release-candidate/*
+          require_expected_tag_commit
+          gh release edit "$TAG" --draft=false
+          trap - EXIT

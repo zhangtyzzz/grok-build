@@ -751,23 +751,54 @@ impl SessionActor {
 mod xai_event_id_stamping_tests {
     use super::support::create_test_actor;
     use super::*;
-    fn persisted_xai_event_id(
+    async fn persisted_xai_event_id(
         prx: &mut tokio::sync::mpsc::UnboundedReceiver<PersistenceMsg>,
     ) -> String {
-        loop {
-            match prx.try_recv().expect("an xAI line must be persisted") {
-                PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(notif)) => {
-                    return notif
-                        .meta
-                        .as_ref()
-                        .and_then(|m| m.get("eventId"))
-                        .and_then(|v| v.as_str())
-                        .expect("persisted xAI lines must carry an eventId")
-                        .to_string();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match prx
+                    .recv()
+                    .await
+                    .expect("persistence observer must stay open")
+                {
+                    PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(notif)) => {
+                        return notif
+                            .meta
+                            .as_ref()
+                            .and_then(|m| m.get("eventId"))
+                            .and_then(|v| v.as_str())
+                            .expect("persisted xAI lines must carry an eventId")
+                            .to_string();
+                    }
+                    _ => continue,
                 }
-                _ => continue,
             }
-        }
+        })
+        .await
+        .expect("timed out waiting for an xAI persistence update")
+    }
+    async fn persisted_acp_notifications(
+        prx: &mut tokio::sync::mpsc::UnboundedReceiver<PersistenceMsg>,
+        expected: usize,
+    ) -> Vec<acp::SessionNotification> {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let mut persisted = Vec::with_capacity(expected);
+            while persisted.len() < expected {
+                match prx
+                    .recv()
+                    .await
+                    .expect("persistence observer must stay open")
+                {
+                    PersistenceMsg::Update(crate::session::storage::SessionUpdate::Acp(
+                        notification,
+                    )) => persisted.push(*notification),
+                    other => panic!("expected an ACP persistence update, got {other:?}"),
+                }
+            }
+            persisted
+        })
+        .await
+        .expect("timed out waiting for ACP persistence updates")
     }
     /// Persisted⇒stamped chokepoint at the actor: both actor persist paths —
     /// `send_xai_notification` (own emission) and
@@ -781,15 +812,29 @@ mod xai_event_id_stamping_tests {
             .run_until(async {
                 let (gateway_tx, _gateway_rx) =
                     tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
-                let (persistence_tx, mut prx) =
+                let (persistence_tx, mut persistence_rx) =
                     tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+                let (observed_tx, mut prx) = tokio::sync::mpsc::unbounded_channel();
+                tokio::task::spawn_local(async move {
+                    while let Some(message) = persistence_rx.recv().await {
+                        match message {
+                            PersistenceMsg::CurrentModelAndAck { respond_to, .. }
+                            | PersistenceMsg::PlanModeStateAndAck { respond_to, .. } => {
+                                let _ = respond_to.send(Ok(()));
+                            }
+                            other => {
+                                let _ = observed_tx.send(other);
+                            }
+                        }
+                    }
+                });
                 let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
                 actor
                     .send_xai_notification(XaiSessionUpdate::HookAnnotation {
                         message: "own emission".into(),
                     })
                     .await;
-                let own_id = persisted_xai_event_id(&mut prx);
+                let own_id = persisted_xai_event_id(&mut prx).await;
                 assert!(own_id.starts_with("test-actor-"));
                 actor
                     .handle_xai_session_notification(XaiSessionNotification {
@@ -800,13 +845,13 @@ mod xai_event_id_stamping_tests {
                         meta: None,
                     })
                     .await;
-                let inbound_id = persisted_xai_event_id(&mut prx);
+                let inbound_id = persisted_xai_event_id(&mut prx).await;
                 assert!(inbound_id.starts_with("test-actor-"));
                 assert_ne!(own_id, inbound_id);
                 actor.persist_xai_update_only(XaiSessionUpdate::HookAnnotation {
                     message: "persist-only".into(),
                 });
-                let persist_only_id = persisted_xai_event_id(&mut prx);
+                let persist_only_id = persisted_xai_event_id(&mut prx).await;
                 assert!(persist_only_id.starts_with("test-actor-"));
                 assert_ne!(inbound_id, persist_only_id);
             })
@@ -868,8 +913,22 @@ mod xai_event_id_stamping_tests {
             .run_until(async {
                 let (gateway_tx, _gateway_rx) =
                     tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
-                let (persistence_tx, mut prx) =
+                let (persistence_tx, mut persistence_rx) =
                     tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+                let (observed_tx, mut prx) = tokio::sync::mpsc::unbounded_channel();
+                tokio::task::spawn_local(async move {
+                    while let Some(message) = persistence_rx.recv().await {
+                        match message {
+                            PersistenceMsg::CurrentModelAndAck { respond_to, .. }
+                            | PersistenceMsg::PlanModeStateAndAck { respond_to, .. } => {
+                                let _ = respond_to.send(Ok(()));
+                            }
+                            other => {
+                                let _ = observed_tx.send(other);
+                            }
+                        }
+                    }
+                });
                 let (actor, mut event_rx) = super::support::create_test_actor_ex(
                     0,
                     256_000,
@@ -888,7 +947,8 @@ mod xai_event_id_stamping_tests {
                     .await;
                 actor
                     .handle_session_mode(acp::SessionModeId::new("plan"))
-                    .await;
+                    .await
+                    .expect("mock persistence acknowledges plan entry");
                 while let Ok(msg) = prx.try_recv() {
                     assert!(
                         !matches!(msg, PersistenceMsg::Update(_)),
@@ -937,14 +997,7 @@ mod xai_event_id_stamping_tests {
                         .and_then(|s| s.parse().ok())
                         .expect("persisted ACP lines must carry a numeric eventId")
                 };
-                let mut persisted = Vec::new();
-                while let Ok(msg) = prx.try_recv() {
-                    if let PersistenceMsg::Update(crate::session::storage::SessionUpdate::Acp(n)) =
-                        msg
-                    {
-                        persisted.push(*n);
-                    }
-                }
+                let persisted = persisted_acp_notifications(&mut prx, 2).await;
                 assert_eq!(persisted.len(), 2, "both lines must persist on drain");
                 assert!(matches!(
                     persisted[0].update,
@@ -968,7 +1021,8 @@ mod xai_event_id_stamping_tests {
                     .await;
                 actor
                     .handle_session_mode(acp::SessionModeId::new("default"))
-                    .await;
+                    .await
+                    .expect("mock persistence acknowledges plan exit");
                 while let Ok(msg) = prx.try_recv() {
                     assert!(
                         !matches!(msg, PersistenceMsg::Update(_)),
@@ -1012,14 +1066,7 @@ mod xai_event_id_stamping_tests {
                         }
                     }
                 }
-                let mut persisted = Vec::new();
-                while let Ok(msg) = prx.try_recv() {
-                    if let PersistenceMsg::Update(crate::session::storage::SessionUpdate::Acp(n)) =
-                        msg
-                    {
-                        persisted.push(*n);
-                    }
-                }
+                let persisted = persisted_acp_notifications(&mut prx, 2).await;
                 assert_eq!(persisted.len(), 2, "exit leg must persist both lines");
                 assert!(matches!(
                     persisted[1].update,

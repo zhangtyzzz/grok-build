@@ -133,10 +133,12 @@ pub(super) fn should_intercept_exit_plan_approval(
 /// Verdict for a tool call evaluated against the plan-mode edit gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PlanEditGate {
-    /// Execute normally (plan mode inactive, not an edit, or allowed target).
+    /// Execute normally (plan mode inactive, read-only, or allowed plan edit).
     Allow,
     /// Grok-toolset edit outside the plan file (plan-file-only rule).
     RejectNonPlanFile,
+    /// A command or tool whose side effects cannot be proven read-only.
+    RejectSideEffect,
 }
 /// Gate edit-class tool calls while plan mode is active.
 ///
@@ -145,24 +147,23 @@ pub(super) enum PlanEditGate {
 /// knows nothing about plan mode, so this gate — not the permission system —
 /// is what enforces it. Two rules, matching the two toolsets' contracts:
 ///
-/// - **Compat-toolset `Write`/`StrReplace`**: any markdown
-///   file is editable in plan mode (plan docs are written with these
-///   same tools); everything else is rejected. Pre-existing behavior.
-/// - **Compat-toolset `Delete`** is **not** on the markdown carve-out: it maps to
-///   `AccessKind::Edit` and is plan-file-only (same as grok edits). Deleting
-///   an arbitrary `.md` in plan mode must not pass.
-/// - **Every other edit tool** (`AccessKind::Edit`) is restricted to the plan
-///   file itself, via the same predicate that auto-approves plan-file edits
+/// - Built-in read/navigation tools are listed explicitly below.
+/// - Edit tools are restricted to the plan file itself, via the same predicate
+///   that auto-approves plan-file edits
 ///   ([`PlanModeTracker::should_auto_approve_edit`]) so the gate and the
 ///   permission bypass can never disagree.
+/// - Every remaining variant is rejected explicitly. Because the match is
+///   exhaustive, adding a new tool variant requires a conscious plan-mode
+///   classification instead of silently inheriting `AccessKind::Read`.
 ///
 /// `apply_patch` maps to a placeholder `AccessKind::Edit("apply_patch")` and
 /// therefore never matches the plan file: it is always rejected in plan mode
 /// (conservative — per-file targets are only known after patch parsing).
-/// Non-edit tools (bash, read, grep, MCP, web) are never gated here; they
-/// flow to the normal permission path, where yolo may still auto-approve
-/// them. `enter_plan_mode` / `exit_plan_mode` map to `AccessKind::Read` and
-/// are likewise never gated.
+///
+/// Commands, subagents, MCP/meta tools, generators, and other unknown or
+/// externally side-effecting tools are rejected fail-closed. In particular,
+/// Bash cannot bypass this gate through an always-approve permission mode.
+/// Purpose-built read/search/fetch tools remain available.
 pub(super) fn plan_mode_edit_gate(
     tracker: &crate::session::plan_mode::PlanModeTracker,
     tool_input: &ToolInput,
@@ -171,12 +172,53 @@ pub(super) fn plan_mode_edit_gate(
     if !tracker.is_active() {
         return PlanEditGate::Allow;
     }
-    let _ = tool_input;
-    match access_kind {
-        AccessKind::Edit(path) if !tracker.should_auto_approve_edit(Path::new(path)) => {
-            PlanEditGate::RejectNonPlanFile
-        }
-        _ => PlanEditGate::Allow,
+    match tool_input {
+        ToolInput::SearchReplace(_)
+        | ToolInput::Write(_)
+        | ToolInput::ApplyPatch(_)
+        | ToolInput::HashlineEdit(_) => match access_kind {
+            AccessKind::Edit(path) if tracker.should_auto_approve_edit(Path::new(path)) => {
+                PlanEditGate::Allow
+            }
+            AccessKind::Edit(_) => PlanEditGate::RejectNonPlanFile,
+            // An edit-class input unexpectedly classified as anything else is
+            // not proof of read-only behaviour.
+            _ => PlanEditGate::RejectSideEffect,
+        },
+        ToolInput::ReadFile(_)
+        | ToolInput::Grep(_)
+        | ToolInput::ListDir(_)
+        | ToolInput::Skill(_)
+        | ToolInput::TaskOutput(_)
+        | ToolInput::WaitTasks(_)
+        | ToolInput::WebSearch(_)
+        | ToolInput::WebFetch(_)
+        | ToolInput::CodexListDir(_)
+        | ToolInput::CodexGrepFiles(_)
+        | ToolInput::CodexReadFile(_)
+        | ToolInput::MemorySearch(_)
+        | ToolInput::MemoryGet(_)
+        | ToolInput::SearchTool(_)
+        | ToolInput::EnterPlanMode(_)
+        | ToolInput::ExitPlanMode(_)
+        | ToolInput::AskUserQuestion(_)
+        | ToolInput::Lsp(_)
+        | ToolInput::SchedulerList(_) => PlanEditGate::Allow,
+        ToolInput::Bash(_)
+        | ToolInput::TodoWrite(_)
+        | ToolInput::MCPTool(_)
+        | ToolInput::KillTask(_)
+        | ToolInput::Task(_)
+        | ToolInput::ImageGen(_)
+        | ToolInput::ImageEdit(_)
+        | ToolInput::ImageToVideo(_)
+        | ToolInput::ReferenceToVideo(_)
+        | ToolInput::UseTool(_)
+        | ToolInput::Monitor(_)
+        | ToolInput::SchedulerCreate(_)
+        | ToolInput::SchedulerDelete(_)
+        | ToolInput::UpdateGoal(_)
+        | ToolInput::Dynamic(_) => PlanEditGate::RejectSideEffect,
     }
 }
 /// Typed view of an `exit_plan_mode` approval decision. The wire type
@@ -898,7 +940,7 @@ impl SessionActor {
                 .id, decision = "deny", source = "plan_mode", wait_ms = 0_i64,
             )
             .in_scope(|| {});
-            let msg = self.plan_mode_edit_rejected_message().await;
+            let msg = self.plan_mode_tool_rejected_message(plan_gate).await;
             self.handle_tool_not_executed(&call.id, &tool_call_id, msg)
                 .await?;
             return Ok(Err(ToolLoop::Continue));
@@ -1205,7 +1247,14 @@ impl SessionActor {
             if let Some(plan) = inline_cursor_plan {
                 plan
             } else {
-                let io_result = tokio::fs::read_to_string(&plan_file_path).await;
+                let io_result =
+                    xai_grok_tools::computer::protected_plan_file::read(&plan_file_path)
+                        .await
+                        .and_then(|bytes| {
+                            String::from_utf8(bytes).map_err(|error| {
+                                std::io::Error::new(std::io::ErrorKind::InvalidData, error)
+                            })
+                        });
                 if let Err(ref e) = io_result
                     && e.kind() != std::io::ErrorKind::NotFound
                 {
@@ -1242,7 +1291,7 @@ impl SessionActor {
                 Ok(parsed) => match PlanApprovalOutcome::from_response(&parsed) {
                     PlanApprovalOutcome::Abandoned => {
                         tracing::info!("[exit_plan_mode] user abandoned plan — deactivating");
-                        self.leave_plan_mode_to_default();
+                        self.leave_plan_mode_to_default().await?;
                         let message = format!(
                             "The user chose to abandon the plan entirely (via the Abandon option in the plan approval dialog). Plan mode has been disabled. Do not call {} again unless the user explicitly asks to re-enter plan mode.",
                             call.function.name
@@ -1420,16 +1469,23 @@ impl SessionActor {
     /// Leave plan mode (approved/abandoned) and tell the client to show the
     /// Default mode. Mirrors the mid-turn exit so the resume re-park
     /// drives the mode change through the same path.
-    fn leave_plan_mode_to_default(&self) {
+    async fn leave_plan_mode_to_default(&self) -> Result<(), acp::Error> {
+        let before = self.plan_mode.lock().clone();
         let deactivated = self.plan_mode.lock().deactivate_approved();
         if deactivated {
             *self.current_prompt_mode.lock() = PromptMode::Agent;
             *self.turn_prompt_mode.lock() = PromptMode::Agent;
-            self.persist_plan_mode_state();
+            if let Err(error) = self.persist_plan_mode_state_durable().await {
+                *self.plan_mode.lock() = before;
+                *self.current_prompt_mode.lock() = PromptMode::Plan;
+                *self.turn_prompt_mode.lock() = PromptMode::Plan;
+                return Err(error);
+            }
             self.enqueue_current_mode_update(acp::SessionModeId::new(
                 xai_grok_tools::types::SessionMode::Default.as_id(),
             ));
         }
+        self.apply_plan_model_scope(false, false).await
     }
     /// Resume hook: re-issue the parked `exit_plan_mode` approval
     /// after a session restored with `awaiting_plan_approval == true`, so the
@@ -1450,15 +1506,18 @@ impl SessionActor {
             return;
         }
         let plan_path = self.plan_mode.lock().plan_file_path().to_path_buf();
-        let plan_content = match tokio::fs::read_to_string(&plan_path).await {
-            Ok(s) if !s.trim().is_empty() => s,
-            _ => {
-                tracing::info!("[exit_plan_mode] resume: no plan.md; clearing awaiting flag");
-                self.plan_mode.lock().set_awaiting_plan_approval(false);
-                self.persist_plan_mode_state();
-                return;
-            }
-        };
+        let plan_content =
+            match xai_grok_tools::computer::protected_plan_file::read(&plan_path).await {
+                Ok(bytes) if !String::from_utf8_lossy(&bytes).trim().is_empty() => {
+                    String::from_utf8_lossy(&bytes).into_owned()
+                }
+                _ => {
+                    tracing::info!("[exit_plan_mode] resume: no plan.md; clearing awaiting flag");
+                    self.plan_mode.lock().set_awaiting_plan_approval(false);
+                    self.persist_plan_mode_state();
+                    return;
+                }
+            };
         let tool_call_id = acp::ToolCallId::new(Arc::from(
             format!("exit-plan-mode-resume-{}", self.session_info.id.0).as_str(),
         ));
@@ -1479,7 +1538,13 @@ impl SessionActor {
         match resume_action_for(PlanApprovalOutcome::from_response(&parsed), parsed.feedback) {
             ResumeAction::LeaveOnly => {
                 tracing::info!("[exit_plan_mode] resume: user abandoned plan");
-                self.leave_plan_mode_to_default();
+                if let Err(error) = self.leave_plan_mode_to_default().await {
+                    tracing::error!(
+                        session_id = %self.session_info.id.0,
+                        ?error,
+                        "Resumed Plan mode abandonment failed its durable barrier"
+                    );
+                }
             }
             ResumeAction::StayAndRevise(text) => {
                 tracing::info!("[exit_plan_mode] resume: user requested changes");
@@ -1488,7 +1553,14 @@ impl SessionActor {
             }
             ResumeAction::LeaveAndImplement => {
                 tracing::info!("[exit_plan_mode] resume: user approved plan");
-                self.leave_plan_mode_to_default();
+                if let Err(error) = self.leave_plan_mode_to_default().await {
+                    tracing::error!(
+                        session_id = %self.session_info.id.0,
+                        ?error,
+                        "Resumed Plan mode approval failed its durable barrier"
+                    );
+                    return;
+                }
                 self.start_resume_turn(
                     PLAN_APPROVED_IMPLEMENT_MESSAGE.to_string(),
                     PromptMode::Agent,
@@ -2009,6 +2081,42 @@ impl SessionActor {
         tool_parsed_args: &serde_json::Value,
     ) -> Result<Vec<ConversationItem>, acp::Error> {
         use crate::session::acp_conversion::{acp_plan_update, acp_tool_update, maybe_rewrite};
+        // Enter/ExitPlanMode notifications are intentionally fire-and-forget.
+        // Before accepting the completed tool result, rendezvous with the
+        // actor mailbox so all mode state, persistence, UI, scoped-model, and
+        // profile-overlay work is complete. This prevents the tool loop from
+        // issuing its next sampling request with the pre-plan model.
+        let plan_transition = match &result.output {
+            ToolsToolOutput::EnterPlanMode(_) => Some(true),
+            ToolsToolOutput::ExitPlanMode(_) => Some(false),
+            _ => None,
+        };
+        if let Some(entering) = plan_transition {
+            let Some(cmd_tx) = self.tool_context.session_cmd_tx.as_ref() else {
+                return Err(acp::Error::internal_error()
+                    .data("plan mode transition barrier is unavailable"));
+            };
+            let (responds_to, response) = oneshot::channel();
+            cmd_tx
+                .send(SessionCommand::ApplyPlanToolTransition {
+                    entering,
+                    responds_to: Some(responds_to),
+                })
+                .map_err(|_| {
+                    acp::Error::internal_error()
+                        .data("plan mode transition barrier actor is unavailable")
+                })?;
+            response
+                .await
+                .map_err(|_| {
+                    acp::Error::internal_error()
+                        .data("plan mode transition barrier closed before acknowledgement")
+                })?
+                .map_err(|error| {
+                    acp::Error::internal_error()
+                        .data(format!("plan mode durable transition failed: {error}"))
+                })?;
+        }
         let consumed_ids =
             xai_grok_tools::reminders::task_completion::consumed_completion_ids(&result.output);
         if !consumed_ids.is_empty() {
@@ -2545,11 +2653,16 @@ impl SessionActor {
             }
         }
     }
-    /// Model-facing rejection for a non-plan-file edit while plan mode is
-    /// active. Rendered via the session's `TemplateRenderer` so
-    /// `${{ plan_path }}` resolves; falls back if rendering fails.
-    pub(super) async fn plan_mode_edit_rejected_message(&self) -> String {
+    /// Model-facing rejection for a mutating tool while plan mode is active.
+    pub(super) async fn plan_mode_tool_rejected_message(&self, gate: PlanEditGate) -> String {
         let plan_path = self.plan_mode.lock().plan_file_path().to_path_buf();
+        if gate == PlanEditGate::RejectSideEffect {
+            return format!(
+                "Rejected: this tool may have side effects and is unavailable in plan mode. \
+                 Use read/search tools and write only the plan file ({}).",
+                plan_path.display()
+            );
+        }
         self.render_plan_template(
             crate::session::plan_mode::plan_mode_edit_rejected_template(),
             &plan_path,
@@ -2790,11 +2903,10 @@ mod plan_mode_edit_gate_tests {
             PlanEditGate::RejectNonPlanFile
         );
     }
-    /// Non-edit tools are never gated — they flow to the normal permission
-    /// path (where yolo may auto-approve them). Plan mode blocks
-    /// edits, not bash/reads.
+    /// Commands cannot bypass the read-only contract, even in always-approve
+    /// mode. Purpose-built read tools remain available.
     #[test]
-    fn non_edit_tools_not_gated() {
+    fn commands_are_rejected_but_reads_remain_available() {
         use xai_grok_tools::implementations::BashToolInput;
         let t = active_tracker();
         assert_eq!(
@@ -2807,8 +2919,23 @@ mod plan_mode_edit_gate_tests {
                     is_background: false,
                 })
             ),
-            PlanEditGate::Allow,
-            "bash is deliberately not gated — plan mode blocks edits only"
+            PlanEditGate::RejectSideEffect,
+            "bash is fail-closed because shell redirection can mutate files"
+        );
+        assert_eq!(
+            gate(
+                &t,
+                &ToolInput::ReadFile(
+                    xai_grok_tools::implementations::grok_build::read_file::ReadFileInput {
+                        path: "/tmp/src/main.rs".into(),
+                        offset: None,
+                        limit: None,
+                        pages: None,
+                        format: None,
+                    }
+                )
+            ),
+            PlanEditGate::Allow
         );
     }
     /// Inactive (or merely Pending) plan mode gates nothing.

@@ -404,6 +404,10 @@ pub(crate) struct PromptResponseMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cached_read_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_5m_input_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h_input_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u32>,
     /// Whole-prompt billing (sibling token fields are last call only).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -470,6 +474,8 @@ pub(crate) fn build_prompt_response_meta(
         input_tokens: last_turn_usage.map(|u| u.prompt_tokens),
         output_tokens: last_turn_usage.map(|u| u.completion_tokens),
         cached_read_tokens: last_turn_usage.map(|u| u.cached_prompt_tokens),
+        cache_write_5m_input_tokens: last_turn_usage.map(|u| u.cache_write_5m_input_tokens),
+        cache_write_1h_input_tokens: last_turn_usage.map(|u| u.cache_write_1h_input_tokens),
         reasoning_tokens: last_turn_usage.map(|u| u.reasoning_tokens),
         usage: prompt_usage,
         cancellation_category,
@@ -1191,12 +1197,13 @@ fn inject_proxy_headers(
 }
 fn resolve_inference_idle_timeout_secs(
     models: &indexmap::IndexMap<String, crate::agent::config::ModelEntry>,
+    model_ref: Option<&str>,
     model: &str,
     remote_settings: Option<&crate::util::config::RemoteSettings>,
 ) -> u64 {
-    let per_model = models
-        .get(model)
-        .or_else(|| models.values().find(|entry| entry.info.model == model))
+    let per_model = model_ref
+        .and_then(|model_ref| models.get(model_ref))
+        .or_else(|| crate::agent::config::find_model_by_id(models, model))
         .and_then(|entry| entry.info.inference_idle_timeout_secs);
     let remote = remote_settings.and_then(|s| s.inference_idle_timeout_secs);
     per_model.or(remote).unwrap_or(600).max(10)

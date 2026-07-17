@@ -137,7 +137,9 @@ impl xai_tool_runtime::Tool for EnterPlanModeTool {
                 EnterPlanModeToolHints::default()
             };
 
-            let fs = res.get::<FileSystem>().map(|f| Arc::clone(&f.0));
+            let fs = res.get::<FileSystem>().map(|f| {
+                crate::types::resources::guard_protected_plan_file_system(&res, Arc::clone(&f.0))
+            });
 
             (seed_target, plan_file_path, hints, fs)
         };

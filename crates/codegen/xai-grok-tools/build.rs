@@ -7,9 +7,9 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-const RG_VER: &str = "15.0.0";
-const BFS_VER: &str = "4.1";
-const UGREP_VER: &str = "7.7.0";
+const RG_VER: &str = "15.1.0";
+const BFS_VER: &str = "4.1.4";
+const UGREP_VER: &str = "7.8.2";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     bundle_rg()?;
@@ -31,10 +31,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn bundle_search_tool(
     name: &str,
     name_uc: &str,
-    ver: &str,
+    default_ver: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let override_env = format!("GROK_TOOLS_BUNDLE_{name_uc}_PATH");
+    let version_env = format!("GROK_TOOLS_BUNDLE_{name_uc}_VERSION");
     println!("cargo:rerun-if-env-changed={override_env}");
+    println!("cargo:rerun-if-env-changed={version_env}");
     // Always declare the cfg so `#[cfg(bundle_<name>)]` is lint-clean when unset.
     println!("cargo:rustc-check-cfg=cfg(bundle_{name})");
 
@@ -47,6 +49,12 @@ fn bundle_search_tool(
     let Some(src) = env::var(&override_env).ok().filter(|s| !s.is_empty()) else {
         return Ok(());
     };
+    emit_rerun_if_changed(&src, &override_env)?;
+    let ver = env::var(&version_env)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| default_ver.to_string());
+    validate_version_label(&ver, &version_env)?;
 
     let gen_dir = PathBuf::from(env::var("OUT_DIR")?).join(format!("bundle-{name}"));
     fs::create_dir_all(&gen_dir)?;
@@ -66,6 +74,7 @@ fn bundle_search_tool(
 fn bundle_rg() -> Result<(), Box<dyn std::error::Error>> {
     // Only bundle in release builds to avoid slowing down cargo check.
     println!("cargo:rerun-if-env-changed=GROK_TOOLS_BUNDLE_RG_PATH");
+    println!("cargo:rerun-if-env-changed=GROK_TOOLS_BUNDLE_RG_VERSION");
     // Declare our custom cfg to the compiler so cfg(bundle_rg) is recognized by lints
     println!("cargo:rustc-check-cfg=cfg(bundle_rg)");
 
@@ -92,11 +101,17 @@ fn bundle_rg() -> Result<(), Box<dyn std::error::Error>> {
 
     // Expose cfg so the crate can include the bundled bytes.
     println!("cargo:rustc-cfg=bundle_rg");
-    println!("cargo:rustc-env=GROK_TOOLS_RG_VER={}", RG_VER);
 
     // If a local rg binary is provided, copy it directly (skips target check).
     if let Some(path) = path_override {
-        let dest = gen_dir.join(format!("rg-{}-override.bin", RG_VER));
+        emit_rerun_if_changed(&path, "GROK_TOOLS_BUNDLE_RG_PATH")?;
+        let version = env::var("GROK_TOOLS_BUNDLE_RG_VERSION")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| RG_VER.to_string());
+        validate_version_label(&version, "GROK_TOOLS_BUNDLE_RG_VERSION")?;
+        println!("cargo:rustc-env=GROK_TOOLS_RG_VER={version}");
+        let dest = gen_dir.join(format!("rg-{version}-override.bin"));
         println!("cargo:rustc-env=GROK_TOOLS_RG_TARGET=override");
         let _ = fs::remove_file(&dest);
         fs::copy(PathBuf::from(path.clone()), &dest).map_err(|e| {
@@ -107,6 +122,7 @@ fn bundle_rg() -> Result<(), Box<dyn std::error::Error>> {
         })?;
         return Ok(());
     }
+    println!("cargo:rustc-env=GROK_TOOLS_RG_VER={RG_VER}");
 
     // Determine supported ripgrep asset triple for auto-download.
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
@@ -177,5 +193,33 @@ fn bundle_rg() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
+    Ok(())
+}
+
+fn validate_version_label(value: &str, variable: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if value.len() > 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'+' | b'-'))
+        || !value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+    {
+        return Err(format!("{variable} contains an invalid version label: {value}").into());
+    }
+    Ok(())
+}
+
+fn emit_rerun_if_changed(path: &str, variable: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if path
+        .chars()
+        .any(|character| matches!(character, '\r' | '\n'))
+    {
+        return Err(format!("{variable} contains a newline").into());
+    }
+    let canonical = dunce::canonicalize(path)
+        .map_err(|error| format!("{variable} cannot be resolved from {path}: {error}"))?;
+    println!("cargo:rerun-if-changed={}", canonical.display());
     Ok(())
 }

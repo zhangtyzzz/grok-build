@@ -28,6 +28,7 @@ pub mod rollout;
 pub mod routing;
 pub mod search;
 pub mod session_admin;
+pub mod session_notify;
 pub mod session_search;
 pub mod session_updates;
 pub mod share;

@@ -760,8 +760,8 @@ pub(crate) async fn handle_subagent_request(
         &ctx.available_models,
         effective_model_id.0.as_ref(),
     );
-    let model_has_own_creds = model_entry
-        .is_some_and(|entry| entry.has_own_credentials());
+    let model_owns_auth_boundary =
+        model_entry.is_some_and(|entry| entry.opts_out_of_ambient_credentials());
     let inherited_auth_type = subagent_auth_type(model_entry, &ctx.auth_method_id);
     let credentials = xai_chat_state::Credentials {
         api_key: effective_sampling_config.api_key.clone(),
@@ -779,7 +779,8 @@ pub(crate) async fn handle_subagent_request(
                 "effective_model_raw" : & effective_sampling_config.model, "base_url" : &
                 effective_sampling_config.base_url, "key_prefix" : key_prefix(&
                 effective_sampling_config.api_key), "auth_type" : format!("{:?}",
-                inherited_auth_type), "model_has_own_creds" : model_has_own_creds,
+                inherited_auth_type), "model_owns_auth_boundary" :
+                model_owns_auth_boundary,
                 "auth_method_id" : ctx.auth_method_id.0.as_ref(), "parent_model" : ctx
                 .model_id.0.as_ref(), "parent_key_prefix" : key_prefix(& ctx
                 .sampling_config.api_key), "context_window" : effective_sampling_config

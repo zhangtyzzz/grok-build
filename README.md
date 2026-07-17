@@ -69,8 +69,9 @@ Requirements:
 
 - **protoc** — proto codegen resolves [`bin/protoc`](bin/protoc) via DotSlash,
   or falls back to a `protoc` on `PATH` / `$PROTOC`.
-- macOS and Linux are supported build hosts; Windows builds are best-effort
-  and not currently tested from this tree.
+- The release workflow builds and smoke-tests native macOS, Linux, and Windows
+  artifacts on both ARM64 and x86-64. Local source builds remain simplest on
+  macOS or Linux.
 
 ```sh
 cargo run -p xai-grok-pager-bin              # build + launch the TUI
@@ -86,6 +87,17 @@ The binary artifact is named `xai-grok-pager`; official installs ship it as
 
 Full online documentation is available at
 [docs.x.ai/build/overview](https://docs.x.ai/build/overview).
+
+Repository contributor documentation:
+
+- [Architecture](docs/ARCHITECTURE.md) — runtime flow, crate boundaries, state,
+  and where to make changes.
+- [Multi-provider and multi-agent RFC](docs/rfcs/0001-multi-provider-multi-agent-runtime.md)
+  — the implemented provider/model registry, scoped Plan Mode, asynchronous
+  external-agent notification contract, Anthropic prompt caching, and
+  standalone distribution.
+- [Repository instructions](AGENTS.md) — editing constraints and targeted
+  validation for humans and coding agents.
 
 The user guide ships with the pager crate:
 [`crates/codegen/xai-grok-pager/docs/user-guide/`](crates/codegen/xai-grok-pager/docs/user-guide/)

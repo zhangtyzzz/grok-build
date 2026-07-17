@@ -1251,14 +1251,22 @@ impl StorageAdapter for JsonlStorageAdapter {
                 adapter.chat_file(&info_clone),
                 adapter.summary_file(&info_clone),
                 adapter.plan_file(&info_clone),
+                adapter.plan_mode_state_file(&info_clone),
                 adapter.rewind_points_file(&info_clone),
             ];
             for file_path in &files_to_sync {
-                if file_path.exists()
-                    && let Ok(file) = OpenOptions::new().write(true).open(file_path)
-                {
-                    let _ = file.sync_all();
+                if file_path.exists() {
+                    let file = OpenOptions::new().write(true).open(file_path)?;
+                    file.sync_all()?;
                 }
+            }
+            // `plan_mode.json` is replaced atomically. Sync the containing
+            // directory as well so the rename itself is durable before a
+            // scoped-model transition receives its ACK.
+            #[cfg(unix)]
+            {
+                let directory = std::fs::File::open(adapter.session_dir(&info_clone))?;
+                directory.sync_all()?;
             }
             Ok(())
         })

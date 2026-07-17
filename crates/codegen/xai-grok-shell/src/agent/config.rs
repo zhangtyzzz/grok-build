@@ -11,7 +11,7 @@ use std::sync::Arc;
 use xai_grok_agent::prompt::skills::SkillsConfig;
 use xai_grok_sampler::{AuthScheme, SamplerConfig};
 use xai_grok_sampling_types::{
-    CompactionAtTokens, CompactionsRemaining, REASONING_EFFORT_META_KEY,
+    CompactionAtTokens, CompactionsRemaining, PromptCachePolicy, REASONING_EFFORT_META_KEY,
     REASONING_EFFORTS_META_KEY, ReasoningEffort, ReasoningEffortOption,
     reasoning_effort_meta_value, reasoning_efforts_meta_value,
 };
@@ -1045,6 +1045,105 @@ pub struct ModelsConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_tool_calls: Option<bool>,
 }
+/// Authentication policy for a named provider.
+///
+/// Provider-bound models never fall back to the ambient xAI session token or
+/// `XAI_API_KEY`. This is deliberately separate from [`AuthScheme`], which
+/// only controls the wire header used when a credential is present.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAuth {
+    /// Send the configured provider credential as `Authorization: Bearer`.
+    #[default]
+    Bearer,
+    /// Send the configured provider credential as `x-api-key`.
+    XApiKey,
+    /// Send no authentication header.
+    None,
+}
+
+/// Reusable transport and credential configuration from `[provider.<name>]`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProviderConfig {
+    /// Base URL used for inference requests.
+    pub base_url: String,
+    /// Optional API-key-specific base URL. Kept for parity with legacy model
+    /// entries; most third-party providers should leave this unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_base_url: Option<String>,
+    /// Wire protocol used by this provider.
+    #[serde(default)]
+    pub api_backend: ApiBackend,
+    /// Authentication header policy.
+    #[serde(default)]
+    pub auth: ProviderAuth,
+    /// Inline provider key. Environment-backed credentials are preferred.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// One or more environment variables containing the provider key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env_key: Option<EnvKeys>,
+    /// Headers inherited by every model bound to this provider.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub extra_headers: IndexMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inference_idle_timeout_secs: Option<u64>,
+    /// Prompt-cache policy inherited by provider-bound models. Only protocol
+    /// adapters that support caching consume it.
+    #[serde(default, skip_serializing_if = "PromptCachePolicy::is_default")]
+    pub prompt_cache: PromptCachePolicy,
+}
+
+/// Ordered, preflight-only logical model route.
+///
+/// The first candidate present in the resolved catalog with usable provider
+/// credentials is selected. Runtime transport errors do not switch candidates
+/// after a request has started.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ModelRouteConfig {
+    pub candidates: Vec<String>,
+}
+
+/// Session-mode profiles from `[modes.*]`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ModesConfig {
+    pub plan: PlanModeProfileConfig,
+}
+
+/// Scoped overrides applied while the same session is in Plan Mode.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlanModeProfileConfig {
+    /// Physical model id or logical `route:<name>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Skills whose full bodies are injected only for plan turns.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
+    /// Extra plan-only instructions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    /// Restore the model that was active when Plan Mode was entered.
+    #[serde(default = "default_true")]
+    pub restore_model: bool,
+}
+
+impl Default for PlanModeProfileConfig {
+    fn default() -> Self {
+        Self {
+            model: None,
+            skills: Vec::new(),
+            instructions: None,
+            restore_model: true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HarnessConfig {
@@ -1281,6 +1380,23 @@ pub struct Config {
     /// Warnings from `[model.*]` parsing; surfaced by `grok inspect`.
     #[serde(skip)]
     pub model_override_warnings: Vec<super::config_model_override_parse::ModelOverrideWarning>,
+    /// Named provider registry from `[provider.<name>]`.
+    #[serde(
+        default,
+        rename = "provider",
+        skip_serializing_if = "IndexMap::is_empty"
+    )]
+    pub providers: IndexMap<String, ProviderConfig>,
+    /// Ordered logical routes from `[model_route.<name>]`.
+    #[serde(
+        default,
+        rename = "model_route",
+        skip_serializing_if = "IndexMap::is_empty"
+    )]
+    pub model_routes: IndexMap<String, ModelRouteConfig>,
+    /// Scoped session-mode profiles from `[modes.*]`.
+    #[serde(default)]
+    pub modes: ModesConfig,
     pub grok_com_config: GrokComConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shortcuts: Option<toml::Value>,
@@ -1707,6 +1823,9 @@ impl Default for Config {
             auto_mode: AutoModeConfig::default(),
             config_models: IndexMap::new(),
             model_override_warnings: Vec::new(),
+            providers: IndexMap::new(),
+            model_routes: IndexMap::new(),
+            modes: ModesConfig::default(),
             grok_com_config: GrokComConfig::default(),
             shortcuts: None,
             hints: None,
@@ -1791,8 +1910,9 @@ impl Default for Config {
     }
 }
 impl Config {
-    /// Reject invalid glob patterns in the model-filter lists at config load, so
-    /// a typo fails loudly instead of silently changing availability.
+    /// Validate model filters, provider bindings, and logical routes before a
+    /// catalog is installed. Reload callers use the same check, so an invalid
+    /// provider edit cannot partially replace a live catalog.
     pub fn validate_model_filters(&self) -> Result<(), String> {
         for (field, list) in [
             ("allowed_models", &self.models.allowed_models),
@@ -1805,6 +1925,119 @@ impl Config {
                     bad.join(", ")
                 ));
             }
+        }
+        for (provider_id, provider) in &self.providers {
+            if provider_id.trim().is_empty() {
+                return Err("provider names must not be empty".to_owned());
+            }
+            if provider.base_url.trim().is_empty() {
+                return Err(format!("provider.{provider_id}.base_url must not be empty"));
+            }
+            let has_inline_key = provider
+                .api_key
+                .as_deref()
+                .is_some_and(|key| !key.trim().is_empty());
+            let has_env_key = provider
+                .env_key
+                .as_ref()
+                .is_some_and(|keys| !keys.is_empty());
+            match provider.auth {
+                ProviderAuth::None if has_inline_key || has_env_key => {
+                    return Err(format!(
+                        "provider.{provider_id} uses auth = \"none\" but also configures a credential"
+                    ));
+                }
+                ProviderAuth::Bearer | ProviderAuth::XApiKey if !has_inline_key && !has_env_key => {
+                    return Err(format!(
+                        "provider.{provider_id} requires api_key or env_key; use auth = \"none\" for an unauthenticated endpoint"
+                    ));
+                }
+                _ => {}
+            }
+            if let Some(auth_header) = protected_auth_header(&provider.extra_headers) {
+                return Err(format!(
+                    "provider.{provider_id}.extra_headers must not set authentication header {auth_header}; configure provider auth instead"
+                ));
+            }
+        }
+        for (model_id, model) in &self.config_models {
+            let Some(provider_id) = model.provider.as_deref() else {
+                continue;
+            };
+            let Some(provider) = self.providers.get(provider_id) else {
+                return Err(format!(
+                    "model.{model_id} references unknown provider {provider_id:?}"
+                ));
+            };
+            let conflicts = [
+                ("base_url", model.base_url.is_some()),
+                ("api_base_url", model.api_base_url.is_some()),
+                ("api_backend", model.api_backend.is_some()),
+                ("api_key", model.api_key.is_some()),
+                ("env_key", model.env_key.is_some()),
+            ]
+            .into_iter()
+            .filter_map(|(field, present)| present.then_some(field))
+            .collect::<Vec<_>>();
+            if !conflicts.is_empty() {
+                return Err(format!(
+                    "model.{model_id} binds provider {provider_id:?} and must not override provider-owned field(s): {}",
+                    conflicts.join(", ")
+                ));
+            }
+            if let Some(protected_header) = protected_auth_header(&model.extra_headers) {
+                return Err(format!(
+                    "model.{model_id}.extra_headers must not override provider authentication header {protected_header}"
+                ));
+            }
+        }
+        for (route_id, route) in &self.model_routes {
+            if route_id.trim().is_empty() {
+                return Err("model route names must not be empty".to_owned());
+            }
+            let alias = format!("route:{route_id}");
+            if self.config_models.contains_key(&alias) {
+                return Err(format!(
+                    "model_route.{route_id} conflicts with physical model key {alias:?}"
+                ));
+            }
+            if route.candidates.is_empty() {
+                return Err(format!(
+                    "model_route.{route_id}.candidates must contain at least one model"
+                ));
+            }
+            if let Some(candidate) = route
+                .candidates
+                .iter()
+                .find(|candidate| candidate.trim().is_empty() || candidate.starts_with("route:"))
+            {
+                return Err(format!(
+                    "model_route.{route_id} has invalid candidate {candidate:?}; nested routes and empty candidates are not supported"
+                ));
+            }
+        }
+        if let Some(plan_model) = self.modes.plan.model.as_deref() {
+            if plan_model.trim().is_empty() {
+                return Err("modes.plan.model must not be empty".to_owned());
+            }
+            if let Some(route_id) = plan_model.strip_prefix("route:")
+                && !self.model_routes.contains_key(route_id)
+            {
+                return Err(format!(
+                    "modes.plan.model references unknown route {plan_model:?}"
+                ));
+            }
+        }
+        if let Some(skill) = self
+            .modes
+            .plan
+            .skills
+            .iter()
+            .find(|skill| skill.trim().is_empty())
+        {
+            return Err(format!(
+                "modes.plan.skills contains an empty skill name ({skill:?})"
+            ));
         }
         Ok(())
     }
@@ -2698,6 +2931,16 @@ impl Config {
         )
     }
 }
+
+fn protected_auth_header(headers: &IndexMap<String, String>) -> Option<&str> {
+    headers
+        .keys()
+        .find_map(|header| is_protected_auth_header(header).then_some(header.as_str()))
+}
+
+fn is_protected_auth_header(header: &str) -> bool {
+    header.eq_ignore_ascii_case("authorization") || header.eq_ignore_ascii_case("x-api-key")
+}
 /// Canonical resolver for `mcp.liveness_watchers`. Stacks the full
 /// 7-step `BoolFlag` precedence:
 ///
@@ -3177,7 +3420,7 @@ pub fn resolve_model_list(
     }
     for (key, model_override) in &cfg.config_models {
         let had_base = resolved.contains_key(key);
-        let base = resolved.shift_remove(key);
+        let mut base = resolved.shift_remove(key);
         if !had_base {
             tracing::debug!(
                 model_key = % key,
@@ -3189,6 +3432,33 @@ pub fn resolve_model_list(
                     "new model missing context_window, defaulting to 200000 — set context_window in [model.{}] to override",
                     key,
                 );
+            }
+        }
+        if let Some(provider_id) = model_override.provider.as_deref() {
+            match cfg.providers.get(provider_id) {
+                Some(provider) => {
+                    base = Some(provider.bind_model(provider_id, key, base, &cfg.endpoints));
+                }
+                None => {
+                    // Startup validation rejects this. Keep resolution
+                    // fail-closed for defensive callers that build a catalog
+                    // without validating first: the entry cannot borrow the
+                    // ambient xAI credential.
+                    tracing::error!(
+                        model_key = %key,
+                        provider = %provider_id,
+                        "model references an unknown provider"
+                    );
+                    let mut entry =
+                        base.unwrap_or_else(|| ModelEntry::fallback(key, &cfg.endpoints));
+                    entry.api_key = None;
+                    entry.env_key = None;
+                    entry.provider = Some(ResolvedProviderBinding {
+                        id: provider_id.to_owned(),
+                        auth_required: true,
+                    });
+                    base = Some(entry);
+                }
             }
         }
         let entry = model_override.apply(key, base, &cfg.endpoints);
@@ -3243,7 +3513,12 @@ pub fn resolve_model_list(
     }
     apply_global_extra_headers(&mut resolved, &cfg.models);
     apply_global_scalar_defaults(&mut resolved, &cfg.models);
-    for entry in resolved.values_mut() {
+    for (key, entry) in &mut resolved {
+        // A physical catalog entry's identity is always its map key. Remote
+        // payload IDs and upstream routing slugs are inputs, never a substitute
+        // for the resolved catalog key.
+        entry.info.id = Some(key.clone());
+        entry.info.model_ref = Some(key.clone());
         entry.info.derive_reasoning_effort_fields();
     }
     resolved
@@ -3263,6 +3538,12 @@ fn apply_global_extra_headers(resolved: &mut IndexMap<String, ModelEntry>, model
     );
     for entry in resolved.values_mut() {
         for (k, v) in &models.extra_headers {
+            // Keep legacy `[models].extra_headers` authentication-header
+            // behavior for unbound models, but never let one process-global
+            // secret cross an explicit provider trust boundary.
+            if entry.provider.is_some() && is_protected_auth_header(k) {
+                continue;
+            }
             let present = entry
                 .info
                 .extra_headers
@@ -3312,14 +3593,79 @@ pub fn default_model_entries(endpoints: &EndpointsConfig) -> IndexMap<String, Mo
         .collect()
 }
 /// Resolve a model against the available model map.
-/// Checks the map key (id) first, then falls back to a slug scan.
+///
+/// An exact catalog key always wins. A routing slug is accepted only when it
+/// identifies exactly one entry. This fail-closed rule prevents two providers
+/// exposing the same upstream slug from silently selecting whichever entry
+/// happens to appear first in the catalog.
 pub fn find_model_by_id<'a>(
     models: &'a IndexMap<String, ModelEntry>,
     model_id: &str,
 ) -> Option<&'a ModelEntry> {
-    models
-        .get(model_id)
-        .or_else(|| models.values().find(|m| m.model == model_id))
+    find_model_with_key_by_id(models, model_id).map(|(_, entry)| entry)
+}
+
+/// Key-preserving form of [`find_model_by_id`].
+pub fn find_model_with_key_by_id<'a>(
+    models: &'a IndexMap<String, ModelEntry>,
+    model_id: &str,
+) -> Option<(&'a String, &'a ModelEntry)> {
+    if let Some(exact) = models.get_key_value(model_id) {
+        return Some(exact);
+    }
+    let mut matches = models.iter().filter(|(key, entry)| {
+        entry.info.model == model_id
+            && !key.starts_with("route:")
+            && !entry
+                .info
+                .id
+                .as_deref()
+                .is_some_and(|id| id.starts_with("route:"))
+    });
+    let first = matches.next()?;
+    if matches.next().is_some() {
+        tracing::warn!(
+            model = %model_id,
+            "ambiguous model slug matches multiple catalog entries; refusing fallback"
+        );
+        return None;
+    }
+    Some(first)
+}
+
+/// Resolve a persisted physical model identity and endpoint.
+///
+/// New sessions always carry `model_ref`; when it is present every component
+/// must match exactly. Legacy sessions without a reference may recover only
+/// when `(model, endpoint)` identifies one and only one catalog entry.
+pub fn find_model_by_locator<'a>(
+    models: &'a IndexMap<String, ModelEntry>,
+    model_ref: Option<&str>,
+    model: &str,
+    base_url: &str,
+) -> Option<&'a ModelEntry> {
+    let endpoint_matches = |entry: &&ModelEntry| {
+        entry.info.base_url == base_url || entry.api_base_url.as_deref() == Some(base_url)
+    };
+    if let Some(model_ref) = model_ref {
+        let entry = models.get(model_ref)?;
+        return (entry.info.model == model && endpoint_matches(&entry)).then_some(entry);
+    }
+
+    let mut matches = models
+        .values()
+        .filter(|entry| entry.info.model == model)
+        .filter(endpoint_matches);
+    let first = matches.next()?;
+    if matches.next().is_some() {
+        tracing::warn!(
+            model,
+            base_url,
+            "legacy model locator is ambiguous; refusing provider fallback"
+        );
+        return None;
+    }
+    Some(first)
 }
 /// Whether the EFFECTIVE Auto-mode classifier model supports reasoning effort:
 /// the model actually routed to (`aux_model` when the aux sampler resolved) else
@@ -3408,6 +3754,7 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
                 top_p: m.top_p,
                 max_completion_tokens: m.max_completion_tokens,
                 api_backend: m.api_backend,
+                prompt_cache: PromptCachePolicy::default(),
                 auth_scheme: None,
                 agent_type: m.agent_type,
                 inference_idle_timeout_secs: m.inference_idle_timeout_secs,
@@ -3466,6 +3813,9 @@ pub struct ModelEntryConfig {
     /// Values: "chat_completions" (default), "responses"
     #[serde(default)]
     pub api_backend: ApiBackend,
+    /// Prompt-cache policy for this model.
+    #[serde(default, skip_serializing_if = "PromptCachePolicy::is_default")]
+    pub prompt_cache: PromptCachePolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_scheme: Option<AuthScheme>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3569,6 +3919,8 @@ fn is_default_laziness_detector(cfg: &LazinessDetectorPerModelConfig) -> bool {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ConfigModelOverride {
+    /// Named `[provider.<name>]` supplying transport and credentials.
+    pub provider: Option<String>,
     pub model: Option<String>,
     pub base_url: Option<String>,
     pub name: Option<String>,
@@ -3581,6 +3933,7 @@ pub struct ConfigModelOverride {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub api_backend: Option<ApiBackend>,
+    pub prompt_cache: Option<PromptCachePolicy>,
     #[serde(default)]
     pub extra_headers: IndexMap<String, String>,
     pub context_window: Option<u64>,
@@ -3644,8 +3997,27 @@ impl ConfigModelOverride {
         if let Some(ref v) = self.api_backend {
             entry.info.api_backend = v.clone();
         }
+        if let Some(v) = self.prompt_cache {
+            entry.info.prompt_cache = v;
+        }
         if !self.extra_headers.is_empty() {
-            entry.info.extra_headers = self.extra_headers.clone();
+            if entry.provider.is_some() {
+                // Provider headers are defaults; a model may override
+                // non-auth headers case-insensitively without dropping the
+                // provider's remaining required headers.
+                for (header, value) in &self.extra_headers {
+                    entry
+                        .info
+                        .extra_headers
+                        .retain(|existing, _| !existing.eq_ignore_ascii_case(header));
+                    entry
+                        .info
+                        .extra_headers
+                        .insert(header.clone(), value.clone());
+                }
+            } else {
+                entry.info.extra_headers = self.extra_headers.clone();
+            }
         }
         if let Some(cw) = self.context_window.and_then(NonZeroU64::new) {
             entry.info.context_window = cw;
@@ -3718,6 +4090,12 @@ pub struct ModelInfo {
     /// Falls back to `model` when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// Stable physical catalog key used to preserve provider identity across
+    /// sampler/chat-state reconstruction. For a physical entry this equals
+    /// `id`; a logical route keeps the chosen physical key here while its
+    /// public `id` is the route alias.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_ref: Option<String>,
     /// The routing slug sent in API requests.
     pub model: String,
     /// The base URL of the model (session endpoint). e.g. "https://cli-chat-proxy.grok.com/v1"
@@ -3731,6 +4109,9 @@ pub struct ModelInfo {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub api_backend: ApiBackend,
+    /// Provider-neutral prompt-cache policy used by supporting adapters.
+    #[serde(default, skip_serializing_if = "PromptCachePolicy::is_default")]
+    pub prompt_cache: PromptCachePolicy,
     pub auth_scheme: AuthScheme,
     pub extra_headers: IndexMap<String, String>,
     pub context_window: NonZeroU64,
@@ -3788,6 +4169,7 @@ impl ModelInfo {
         ModelInfo {
             user_selectable: true,
             id: None,
+            model_ref: None,
             model: slug.to_owned(),
             base_url: String::new(),
             name: None,
@@ -3796,6 +4178,7 @@ impl ModelInfo {
             temperature: None,
             top_p: None,
             api_backend: ApiBackend::default(),
+            prompt_cache: PromptCachePolicy::default(),
             auth_scheme: Default::default(),
             extra_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
@@ -3823,6 +4206,7 @@ impl ModelInfo {
         ModelInfo {
             user_selectable: true,
             id: entry.id.clone(),
+            model_ref: entry.id.clone(),
             model: entry.model.clone(),
             base_url: entry.base_url.clone(),
             name: entry.name.clone(),
@@ -3831,6 +4215,7 @@ impl ModelInfo {
             temperature: entry.temperature,
             top_p: entry.top_p,
             api_backend: entry.api_backend.clone(),
+            prompt_cache: entry.prompt_cache,
             auth_scheme: entry.auth_scheme.unwrap_or_default(),
             extra_headers: entry.extra_headers.clone(),
             context_window: entry.context_window,
@@ -3893,7 +4278,54 @@ pub struct ModelEntry {
     pub env_key: Option<EnvKeys>,
     /// When set, `base_url` is used for session auth, `api_base_url` for API-key auth.
     pub api_base_url: Option<String>,
+    /// Named provider binding. Presence also opts out of ambient xAI
+    /// credential fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ResolvedProviderBinding>,
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ResolvedProviderBinding {
+    pub id: String,
+    pub auth_required: bool,
+}
+
+impl ProviderConfig {
+    fn bind_model(
+        &self,
+        provider_id: &str,
+        model_key: &str,
+        base: Option<ModelEntry>,
+        endpoints: &EndpointsConfig,
+    ) -> ModelEntry {
+        let mut entry = base.unwrap_or_else(|| ModelEntry::fallback(model_key, endpoints));
+        entry.info.base_url = self.base_url.clone();
+        entry.api_base_url = self.api_base_url.clone();
+        entry.info.api_backend = self.api_backend.clone();
+        entry.info.prompt_cache = self.prompt_cache;
+        entry.info.auth_scheme = match self.auth {
+            ProviderAuth::Bearer | ProviderAuth::None => AuthScheme::Bearer,
+            ProviderAuth::XApiKey => AuthScheme::XApiKey,
+        };
+        entry.info.extra_headers = self.extra_headers.clone();
+        entry.info.max_retries = self.max_retries;
+        entry.info.inference_idle_timeout_secs = self.inference_idle_timeout_secs;
+        let auth_required = self.auth != ProviderAuth::None;
+        if auth_required {
+            entry.api_key.clone_from(&self.api_key);
+            entry.env_key.clone_from(&self.env_key);
+        } else {
+            entry.api_key = None;
+            entry.env_key = None;
+        }
+        entry.provider = Some(ResolvedProviderBinding {
+            id: provider_id.to_owned(),
+            auth_required,
+        });
+        entry
+    }
+}
+
 impl ModelEntry {
     /// Minimal fallback entry for an unknown model slug.
     pub fn fallback(slug: &str, endpoints: &EndpointsConfig) -> Self {
@@ -3904,6 +4336,7 @@ impl ModelEntry {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            provider: None,
         }
     }
     pub fn info(&self) -> &ModelInfo {
@@ -3915,6 +4348,7 @@ impl ModelEntry {
             api_key: entry.api_key.clone(),
             env_key: entry.env_key.clone(),
             api_base_url: entry.api_base_url.clone(),
+            provider: None,
         }
     }
     /// The model's own (BYOK) credential: a non-empty `api_key`, else the first
@@ -3928,6 +4362,22 @@ impl ModelEntry {
     /// Probes `std::env::var` at call time — result is not stable across env changes.
     pub fn has_own_credentials(&self) -> bool {
         self.own_credential().is_some()
+    }
+    /// Whether this model owns its authentication boundary and therefore must
+    /// never inherit the ambient xAI session token.
+    ///
+    /// A named provider is an explicit trust boundary even when `auth = "none"`
+    /// or its configured credential is temporarily unavailable.
+    pub fn opts_out_of_ambient_credentials(&self) -> bool {
+        self.provider.is_some() || self.has_own_credentials()
+    }
+    /// Whether a provider-bound entry can be selected by an ordered route
+    /// before a request starts. Legacy entries remain eligible because they
+    /// may intentionally use the session credential.
+    pub(crate) fn route_preflight_ready(&self) -> bool {
+        self.provider
+            .as_ref()
+            .is_none_or(|provider| !provider.auth_required || self.has_own_credentials())
     }
 }
 impl std::ops::Deref for ModelEntry {
@@ -4311,6 +4761,24 @@ pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> Res
             info.base_url.clone(),
             xai_chat_state::AuthType::ApiKey,
         )
+    } else if let Some(provider) = &model.provider {
+        if provider.auth_required {
+            tracing::warn!(
+                model = %info.model,
+                provider = %provider.id,
+                env_key = %model
+                    .env_key
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "(not configured)".to_owned()),
+                "provider credential is unavailable; ambient xAI credentials will not be used",
+            );
+        }
+        (
+            None,
+            info.base_url.clone(),
+            xai_chat_state::AuthType::ApiKey,
+        )
     } else if let Some(key) = session_key {
         (
             Some(key.to_owned()),
@@ -4383,7 +4851,9 @@ fn resolve_credentials_enforced(
     disable_api_key_auth: bool,
 ) -> ResolvedCredentials {
     let mut credentials = resolve_credentials(entry, session_key);
-    enforce_disable_api_key_auth(&mut credentials, disable_api_key_auth, session_key);
+    if entry.provider.is_none() {
+        enforce_disable_api_key_auth(&mut credentials, disable_api_key_auth, session_key);
+    }
     credentials
 }
 pub use xai_grok_telemetry::config::deployment_id_from_key;
@@ -4392,7 +4862,9 @@ pub use xai_grok_telemetry::config::deployment_id_from_key;
 /// lookup fails. `session_key` should only be passed when `auth_type` is
 /// `SessionToken` — callers must guard this.
 pub fn try_resolve_model_credentials(
+    model_ref: Option<&str>,
     model_id: &str,
+    base_url: &str,
     session_key: Option<&str>,
 ) -> Option<ResolvedCredentials> {
     let raw = crate::config::load_effective_config()
@@ -4401,14 +4873,16 @@ pub fn try_resolve_model_credentials(
     let cfg = Config::new_from_toml_cfg(&raw)
         .map_err(|e| tracing::warn!(error = % e, "config parse failed for credential resolution"))
         .ok()?;
-    let models = resolve_model_list(&cfg, None);
-    let entry = find_model_by_id(&models, model_id)?;
+    let models = crate::agent::models::resolve_model_catalog(&cfg, None);
+    let entry = find_model_by_locator(&models, model_ref, model_id, base_url)?;
     let mut credentials = resolve_credentials(entry, session_key);
-    enforce_disable_api_key_auth(
-        &mut credentials,
-        cfg.grok_com_config.api_key_auth_disabled(),
-        session_key,
-    );
+    if entry.provider.is_none() {
+        enforce_disable_api_key_auth(
+            &mut credentials,
+            cfg.grok_com_config.api_key_auth_disabled(),
+            session_key,
+        );
+    }
     Some(credentials)
 }
 /// Per-model auth facts (BYOK status + auth scheme) from one effective-config
@@ -4437,10 +4911,44 @@ pub fn resolve_model_auth_facts(model_id: &str) -> ModelAuthFacts {
         },
     })
 }
+
+/// Exact, provider-safe form of [`resolve_model_auth_facts`].
+///
+/// A present `model_ref` is never replaced by a slug match. Legacy state
+/// without a reference is accepted only when `(model, base_url)` is unique.
+pub fn resolve_model_auth_facts_for_locator(
+    model_ref: Option<&str>,
+    model_id: &str,
+    base_url: &str,
+) -> ModelAuthFacts {
+    if model_id.is_empty() || base_url.is_empty() {
+        return ModelAuthFacts {
+            byok: ModelByok::Unknown,
+            auth_scheme: AuthScheme::default(),
+        };
+    }
+    with_resolved_model_locator(model_ref, model_id, base_url, |lookup| ModelAuthFacts {
+        byok: byok_from_locator_lookup(&lookup),
+        auth_scheme: match lookup {
+            ModelLookup::Loaded(Some(entry)) => entry.info().auth_scheme,
+            _ => AuthScheme::default(),
+        },
+    })
+}
+/// An exact physical locator that is absent from the current catalog is not
+/// evidence that it may use ambient session credentials. Treat it as unknown
+/// so third-party endpoints fail closed while first-party endpoints retain the
+/// existing conservative session fallback.
+fn byok_from_locator_lookup(lookup: &ModelLookup) -> ModelByok {
+    match lookup {
+        ModelLookup::Loaded(None) => ModelByok::Unknown,
+        _ => byok_from_lookup(lookup),
+    }
+}
 fn byok_from_lookup(lookup: &ModelLookup) -> ModelByok {
     match lookup {
         ModelLookup::ConfigUnavailable => ModelByok::Unknown,
-        ModelLookup::Loaded(Some(e)) if e.has_own_credentials() => ModelByok::Byok,
+        ModelLookup::Loaded(Some(e)) if e.opts_out_of_ambient_credentials() => ModelByok::Byok,
         ModelLookup::Loaded(_) => ModelByok::NotByok,
     }
 }
@@ -4465,9 +4973,42 @@ fn with_resolved_model<T>(model_id: &str, f: impl FnOnce(ModelLookup) -> T) -> T
     else {
         return f(ModelLookup::ConfigUnavailable);
     };
-    let models = resolve_model_list(&cfg, None);
+    let models = crate::agent::models::resolve_model_catalog(&cfg, None);
     f(ModelLookup::Loaded(find_model_by_id(&models, model_id)))
 }
+
+fn with_resolved_model_locator<T>(
+    model_ref: Option<&str>,
+    model_id: &str,
+    base_url: &str,
+    f: impl FnOnce(ModelLookup) -> T,
+) -> T {
+    let Some(raw) = crate::config::load_effective_config()
+        .map_err(|e| tracing::warn!(error = % e, "config load failed for model auth lookup"))
+        .ok()
+    else {
+        return f(ModelLookup::ConfigUnavailable);
+    };
+    let Some(cfg) = Config::new_from_toml_cfg(&raw)
+        .map_err(|e| tracing::warn!(error = % e, "config parse failed for model auth lookup"))
+        .ok()
+    else {
+        return f(ModelLookup::ConfigUnavailable);
+    };
+    let models = crate::agent::models::resolve_model_catalog(&cfg, None);
+    f(ModelLookup::Loaded(find_model_by_locator(
+        &models, model_ref, model_id, base_url,
+    )))
+}
+/// Resolved auxiliary sampler plus the explicit ambient-auth policy of the
+/// catalog entry that produced it.
+#[derive(Clone)]
+pub struct ResolvedAuxModelSamplingConfig {
+    pub config: SamplerConfig,
+    /// Whether session-local bearer refresh may be copied onto `config`.
+    pub inherit_session_bearer: bool,
+}
+
 /// Resolve a standalone `SamplerConfig` for an auxiliary model slug (image
 /// description, session summary, ...), resolved through the catalog so a
 /// `[model.*]` override redirects it to its own endpoint, credentials, and
@@ -4480,7 +5021,7 @@ pub fn resolve_aux_model_sampling_config(
     disable_api_key_auth: bool,
     alpha_test_key: Option<String>,
     client_version: Option<String>,
-) -> Option<SamplerConfig> {
+) -> Option<ResolvedAuxModelSamplingConfig> {
     let catalog_entry = find_model_by_id(models, model_id).cloned();
     if let Some(entry) = &catalog_entry {
         let credentials = resolve_credentials_enforced(entry, session_key, disable_api_key_auth);
@@ -4492,19 +5033,27 @@ pub fn resolve_aux_model_sampling_config(
             None,
             None,
         );
-        if sampler.api_key.is_some() {
-            return Some(sampler);
+        if sampler.api_key.is_some() || entry.provider.is_some() {
+            return Some(ResolvedAuxModelSamplingConfig {
+                config: sampler,
+                inherit_session_bearer: !entry.opts_out_of_ambient_credentials(),
+            });
         }
     }
     let xai_bearer = session_key
-        .map(|s| s.to_owned())
-        .or_else(|| crate::agent::auth_method::read_xai_api_key_env().ok())
-        .or_else(|| endpoints.deployment_key.clone());
-    if let Some(bearer) = xai_bearer {
+        .map(|value| (value.to_owned(), true))
+        .or_else(|| {
+            crate::agent::auth_method::read_xai_api_key_env()
+                .ok()
+                .map(|value| (value, false))
+        })
+        .or_else(|| endpoints.deployment_key.clone().map(|value| (value, false)));
+    if let Some((bearer, inherit_session_bearer)) = xai_bearer {
         let entry = ModelEntry {
             info: ModelInfo {
                 user_selectable: true,
                 id: None,
+                model_ref: None,
                 model: catalog_entry
                     .map(|e| e.info.model)
                     .unwrap_or_else(|| model_id.to_owned()),
@@ -4515,6 +5064,7 @@ pub fn resolve_aux_model_sampling_config(
                 temperature: None,
                 top_p: None,
                 api_backend: ApiBackend::Responses,
+                prompt_cache: Default::default(),
                 auth_scheme: Default::default(),
                 extra_headers: IndexMap::new(),
                 context_window: NonZeroU64::new(200_000).unwrap(),
@@ -4539,6 +5089,7 @@ pub fn resolve_aux_model_sampling_config(
             api_key: Some(bearer),
             env_key: None,
             api_base_url: None,
+            provider: None,
         };
         let credentials = resolve_credentials_enforced(&entry, session_key, disable_api_key_auth);
         let sampler = sampling_config_for_model(
@@ -4549,7 +5100,10 @@ pub fn resolve_aux_model_sampling_config(
             None,
             None,
         );
-        return Some(sampler);
+        return Some(ResolvedAuxModelSamplingConfig {
+            config: sampler,
+            inherit_session_bearer,
+        });
     }
     tracing::warn!(
         aux_model = % model_id,
@@ -4570,30 +5124,35 @@ pub fn resolve_aux_model_sampling_config(
 /// helper model keeps the session's auth/attribution. Shared by image-describe
 /// and the auto-mode classifier so the two can't drift.
 pub fn stamp_session_local_sampler_fields(
-    cfg: &mut SamplerConfig,
+    resolved: &mut ResolvedAuxModelSamplingConfig,
     active_session_config: &SamplerConfig,
     client_identifier: Option<String>,
     max_retries: Option<u32>,
 ) {
+    let cfg = &mut resolved.config;
     cfg.client_identifier = client_identifier;
     cfg.attribution_callback = active_session_config.attribution_callback.clone();
-    cfg.bearer_resolver = active_session_config.bearer_resolver.clone();
+    cfg.bearer_resolver = resolved
+        .inherit_session_bearer
+        .then(|| active_session_config.bearer_resolver.clone())
+        .flatten();
     cfg.max_retries = max_retries;
 }
 pub fn finalize_image_describe_sampler_config(
-    resolved_aux: Option<SamplerConfig>,
+    resolved_aux: Option<ResolvedAuxModelSamplingConfig>,
     active_session_config: &SamplerConfig,
     client_identifier: Option<String>,
     max_retries: Option<u32>,
 ) -> (String, SamplerConfig) {
     match resolved_aux {
-        Some(mut describe_cfg) => {
+        Some(mut resolved) => {
             stamp_session_local_sampler_fields(
-                &mut describe_cfg,
+                &mut resolved,
                 active_session_config,
                 client_identifier,
                 max_retries,
             );
+            let describe_cfg = resolved.config;
             let model = describe_cfg.model.clone();
             (model, describe_cfg)
         }
@@ -4607,11 +5166,13 @@ pub fn finalize_image_describe_sampler_config(
 /// models stay on `ApiKey` even when a session token is present. Falls
 /// back to `fallback` when the model isn't in the on-disk catalog.
 pub fn resolve_chat_state_auth_type(
+    model_ref: Option<&str>,
     model_id: &str,
+    base_url: &str,
     session_key: Option<&str>,
     fallback: xai_chat_state::AuthType,
 ) -> xai_chat_state::AuthType {
-    try_resolve_model_credentials(model_id, session_key)
+    try_resolve_model_credentials(model_ref, model_id, base_url, session_key)
         .map(|r| r.auth_type)
         .unwrap_or(fallback)
 }
@@ -4637,6 +5198,12 @@ pub fn sampling_config_for_model(
     let api_backend = info.api_backend.clone();
     SamplerConfig {
         api_key: credentials.api_key,
+        model_ref: info.model_ref.clone().or_else(|| info.id.clone()),
+        route_ref: info
+            .id
+            .as_ref()
+            .filter(|model_ref| model_ref.starts_with("route:"))
+            .cloned(),
         model: model_name,
         base_url: credentials.base_url,
         max_completion_tokens,
@@ -4652,6 +5219,7 @@ pub fn sampling_config_for_model(
         max_retries: info.max_retries,
         stream_tool_calls: info.stream_tool_calls.unwrap_or(false),
         idle_timeout_secs: None,
+        prompt_cache: info.prompt_cache,
         client_identifier: None,
         deployment_id,
         user_id,
@@ -4729,6 +5297,7 @@ fn resolve_hidden_default_web_search_sampling_config(
     let entry = ModelEntry {
         info: ModelInfo {
             id: None,
+            model_ref: None,
             model: model_id.to_owned(),
             base_url: endpoints.resolve_inference_base_url(),
             name: None,
@@ -4737,6 +5306,7 @@ fn resolve_hidden_default_web_search_sampling_config(
             temperature: None,
             top_p: None,
             api_backend: ApiBackend::Responses,
+            prompt_cache: Default::default(),
             auth_scheme: Default::default(),
             extra_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
@@ -4762,6 +5332,7 @@ fn resolve_hidden_default_web_search_sampling_config(
         api_key: None,
         env_key: None,
         api_base_url: None,
+        provider: None,
     };
     let credentials = resolve_credentials_enforced(&entry, session_key, disable_api_key_auth);
     sampling_config_for_model(
@@ -4921,6 +5492,269 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use xai_grok_test_support::EnvGuard;
+
+    fn parse_agent_config(source: &str) -> Config {
+        let raw: toml::Value = toml::from_str(source).expect("valid TOML");
+        Config::new_from_toml_cfg(&raw).expect("valid agent config")
+    }
+
+    #[test]
+    fn provider_bound_model_inherits_transport_and_never_borrows_session_credentials() {
+        let cfg = parse_agent_config(
+            r#"
+[provider.anthropic]
+base_url = "https://api.anthropic.example/v1"
+api_backend = "messages"
+auth = "none"
+extra_headers = { anthropic-version = "2023-06-01", x-shared = "provider" }
+max_retries = 2
+prompt_cache = { mode = "stable_prefix", ttl = "1h" }
+
+[model.planner]
+provider = "anthropic"
+model = "claude-planner"
+context_window = 200000
+extra_headers = { x-shared = "model", anthropic-beta = "prompt-caching-2024-07-31" }
+
+[model.reviewer]
+provider = "anthropic"
+model = "claude-reviewer"
+context_window = 200000
+prompt_cache = { mode = "off", ttl = "5m" }
+"#,
+        );
+        cfg.validate_model_filters().expect("provider config valid");
+        let models = resolve_model_list(&cfg, None);
+        let planner = models.get("planner").expect("planner model");
+        assert_eq!(planner.info.id.as_deref(), Some("planner"));
+        assert_eq!(planner.info.model_ref.as_deref(), Some("planner"));
+        assert_eq!(
+            planner.provider.as_ref().map(|p| p.id.as_str()),
+            Some("anthropic")
+        );
+        assert_eq!(planner.info.base_url, "https://api.anthropic.example/v1");
+        assert_eq!(planner.info.api_backend, ApiBackend::Messages);
+        assert_eq!(
+            planner.info.extra_headers.get("anthropic-version"),
+            Some(&"2023-06-01".to_owned())
+        );
+        assert_eq!(
+            planner.info.extra_headers.get("x-shared"),
+            Some(&"model".to_owned())
+        );
+        assert_eq!(planner.info.max_retries, Some(2));
+        assert_eq!(
+            planner.info.prompt_cache,
+            PromptCachePolicy::STABLE_PREFIX_1H,
+            "provider cache policy should be inherited when the model does not override it"
+        );
+
+        let reviewer = models.get("reviewer").expect("reviewer model");
+        assert_eq!(
+            reviewer.info.prompt_cache,
+            PromptCachePolicy::OFF,
+            "model cache policy should override its provider default"
+        );
+
+        let credentials = resolve_credentials(planner, Some("xai-session-secret"));
+        assert_eq!(
+            credentials.api_key, None,
+            "provider auth=none must never borrow the ambient xAI session token"
+        );
+        assert!(
+            planner.opts_out_of_ambient_credentials(),
+            "the named provider itself is the auth boundary even without a key"
+        );
+        assert_eq!(
+            byok_from_lookup(&ModelLookup::Loaded(Some(planner))),
+            ModelByok::Byok,
+            "the live session-token gate must remain disabled for auth=none providers"
+        );
+        assert_eq!(credentials.base_url, "https://api.anthropic.example/v1");
+        let sampler = sampling_config_for_model(planner, credentials, None, None, None, None);
+        assert_eq!(
+            sampler.prompt_cache,
+            PromptCachePolicy::STABLE_PREFIX_1H,
+            "resolved model cache policy must reach the sampler"
+        );
+        assert_eq!(
+            sampler.model_ref.as_deref(),
+            Some("planner"),
+            "the physical catalog key must reach the sampler independently of the upstream slug"
+        );
+    }
+
+    #[test]
+    fn named_provider_auth_headers_cannot_be_smuggled_through_extra_headers() {
+        for source in [
+            r#"
+[provider.local]
+base_url = "http://127.0.0.1:11434/v1"
+auth = "none"
+extra_headers = { Authorization = "Bearer should-not-send" }
+
+[model.local]
+provider = "local"
+model = "local"
+"#,
+            r#"
+[provider.openai]
+base_url = "https://api.openai.example/v1"
+auth = "bearer"
+api_key = "configured"
+extra_headers = { "x-api-key" = "other-provider-secret" }
+
+[model.main]
+provider = "openai"
+model = "main"
+"#,
+            r#"
+[provider.anthropic]
+base_url = "https://api.anthropic.example/v1"
+auth = "x_api_key"
+api_key = "configured"
+
+[model.planner]
+provider = "anthropic"
+model = "planner"
+extra_headers = { Authorization = "Bearer should-not-send" }
+"#,
+        ] {
+            let cfg = parse_agent_config(source);
+            let error = cfg
+                .validate_model_filters()
+                .expect_err("named-provider auth header override must fail closed");
+            assert!(error.contains("authentication header"), "{error}");
+        }
+    }
+
+    #[test]
+    fn global_auth_header_remains_legacy_compatible_but_never_crosses_provider_boundaries() {
+        let cfg = parse_agent_config(
+            r#"
+[models]
+extra_headers = { Authorization = "Bearer global-secret", "x-api-key" = "legacy-key", "X-Global-Tag" = "shared" }
+
+[provider.openai]
+base_url = "https://api.openai.example/v1"
+auth = "bearer"
+api_key = "configured"
+
+[model.provider-main]
+provider = "openai"
+model = "main"
+
+[model.legacy-main]
+model = "legacy"
+base_url = "https://legacy.example/v1"
+"#,
+        );
+        cfg.validate_model_filters()
+            .expect("legacy global authentication headers remain supported");
+        let models = resolve_model_list(&cfg, None);
+        let provider = models.get("provider-main").expect("provider model");
+        assert!(
+            protected_auth_header(&provider.info.extra_headers).is_none(),
+            "provider-bound models must not inherit global authentication headers"
+        );
+        assert_eq!(
+            provider.info.extra_headers.get("X-Global-Tag"),
+            Some(&"shared".to_owned()),
+            "non-authentication global headers still apply to provider models"
+        );
+        let legacy = models.get("legacy-main").expect("legacy model");
+        assert_eq!(
+            legacy.info.extra_headers.get("Authorization"),
+            Some(&"Bearer global-secret".to_owned()),
+            "legacy global authentication-header behavior is compatibility-sensitive"
+        );
+        assert_eq!(
+            legacy.info.extra_headers.get("x-api-key"),
+            Some(&"legacy-key".to_owned())
+        );
+    }
+
+    #[test]
+    fn provider_binding_rejects_unknown_provider_and_transport_conflicts() {
+        let unknown = parse_agent_config(
+            r#"
+[model.planner]
+provider = "missing"
+model = "planner"
+"#,
+        );
+        assert!(
+            unknown
+                .validate_model_filters()
+                .unwrap_err()
+                .contains("unknown provider")
+        );
+
+        let conflict = parse_agent_config(
+            r#"
+[provider.local]
+base_url = "http://127.0.0.1:11434/v1"
+auth = "none"
+
+[model.reviewer]
+provider = "local"
+base_url = "http://other.invalid/v1"
+"#,
+        );
+        let error = conflict.validate_model_filters().unwrap_err();
+        assert!(error.contains("provider-owned field"));
+        assert!(error.contains("base_url"));
+    }
+
+    #[test]
+    fn authenticated_provider_requires_an_explicit_credential_source() {
+        let cfg = parse_agent_config(
+            r#"
+[provider.anthropic]
+base_url = "https://api.anthropic.com/v1"
+api_backend = "messages"
+auth = "x_api_key"
+"#,
+        );
+        assert!(
+            cfg.validate_model_filters()
+                .unwrap_err()
+                .contains("requires api_key or env_key")
+        );
+    }
+
+    #[test]
+    fn plan_mode_profile_parses_model_skills_instructions_and_restore_policy() {
+        let cfg = parse_agent_config(
+            r#"
+[provider.local]
+base_url = "http://127.0.0.1:11434/v1"
+auth = "none"
+
+[model.planner]
+provider = "local"
+model = "planner-model"
+
+[model_route.plan]
+candidates = ["planner"]
+
+[modes.plan]
+model = "route:plan"
+skills = ["architecture", "risk-review"]
+instructions = "Produce an implementation-ready plan."
+restore_model = false
+"#,
+        );
+        cfg.validate_model_filters().expect("plan profile is valid");
+        assert_eq!(cfg.modes.plan.model.as_deref(), Some("route:plan"));
+        assert_eq!(cfg.modes.plan.skills, ["architecture", "risk-review"]);
+        assert_eq!(
+            cfg.modes.plan.instructions.as_deref(),
+            Some("Produce an implementation-ready plan.")
+        );
+        assert!(!cfg.modes.plan.restore_model);
+    }
+
     #[test]
     fn main_cli_tools_override_preserves_profile_injection_policy() {
         let overrides = CliAgentOverrides {
@@ -5290,8 +6124,15 @@ reasoning_effort = "low"
             model: "grok-build".into(),
             ..Default::default()
         };
-        let (model, cfg) =
-            finalize_image_describe_sampler_config(Some(aux), &active, Some("cli".into()), Some(7));
+        let (model, cfg) = finalize_image_describe_sampler_config(
+            Some(ResolvedAuxModelSamplingConfig {
+                config: aux,
+                inherit_session_bearer: true,
+            }),
+            &active,
+            Some("cli".into()),
+            Some(7),
+        );
         assert_eq!(model, "grok-build");
         assert_eq!(cfg.model, "grok-build");
         assert_eq!(cfg.client_identifier.as_deref(), Some("cli"));
@@ -5321,9 +6162,69 @@ reasoning_effort = "low"
             None,
         )
         .expect("override entry has an API key, so resolution succeeds");
-        assert_eq!(resolved.model, "v9m-rl-learnability-tp8");
-        assert_eq!(resolved.base_url, "https://vendor.example/v1");
-        assert_eq!(resolved.api_key.as_deref(), Some("vendor-key"));
+        assert!(!resolved.inherit_session_bearer);
+        assert_eq!(resolved.config.model, "v9m-rl-learnability-tp8");
+        assert_eq!(resolved.config.base_url, "https://vendor.example/v1");
+        assert_eq!(resolved.config.api_key.as_deref(), Some("vendor-key"));
+    }
+    #[test]
+    fn auth_none_provider_aux_and_web_search_never_inherit_session_auth() {
+        #[derive(Debug)]
+        struct StaticBearer;
+        impl xai_grok_sampler::BearerResolver for StaticBearer {
+            fn current_bearer(&self) -> Option<String> {
+                Some("must-not-leak".to_owned())
+            }
+        }
+
+        let cfg = parse_agent_config(
+            r#"
+[provider.anon]
+base_url = "https://api.x.ai/v1"
+auth = "none"
+
+[model.helper]
+provider = "anon"
+model = "anonymous-helper"
+"#,
+        );
+        let models = resolve_model_list(&cfg, None);
+        let resolved = resolve_aux_model_sampling_config(
+            "helper",
+            &models,
+            &cfg.endpoints,
+            Some("session-token"),
+            true,
+            None,
+            None,
+        )
+        .expect("auth-none provider helper remains usable without a key");
+        assert_eq!(resolved.config.api_key, None);
+        assert!(!resolved.inherit_session_bearer);
+
+        let active = SamplerConfig {
+            bearer_resolver: Some(std::sync::Arc::new(StaticBearer)),
+            ..Default::default()
+        };
+        let (_, finalized) =
+            finalize_image_describe_sampler_config(Some(resolved), &active, None, None);
+        assert!(
+            finalized.bearer_resolver.is_none(),
+            "aux finalization must not copy the active session bearer across a provider boundary"
+        );
+
+        let web_search = resolve_web_search_sampling_config(
+            "helper",
+            &models,
+            Some("session-token"),
+            true,
+            None,
+            None,
+            &cfg.endpoints,
+        )
+        .expect("auth-none provider web search resolves");
+        assert_eq!(web_search.api_key, None);
+        assert!(web_search.bearer_resolver.is_none());
     }
     #[test]
     fn web_search_disable_api_key_auth_swaps_first_party_key_for_session() {
@@ -5385,6 +6286,7 @@ reasoning_effort = "low"
             info: ModelInfo {
                 user_selectable: true,
                 id: None,
+                model_ref: None,
                 model: model.to_string(),
                 base_url: base_url.to_string(),
                 name: None,
@@ -5393,6 +6295,7 @@ reasoning_effort = "low"
                 temperature: None,
                 top_p: None,
                 api_backend: ApiBackend::default(),
+                prompt_cache: Default::default(),
                 auth_scheme: Default::default(),
                 extra_headers: IndexMap::new(),
                 context_window: NonZeroU64::new(200_000).unwrap(),
@@ -5417,6 +6320,7 @@ reasoning_effort = "low"
             api_key: api_key.map(|s| s.to_string()),
             env_key: env_key.map(EnvKeys::single),
             api_base_url: api_base_url.map(|s| s.to_string()),
+            provider: None,
         }
     }
     /// The effective-model RE-support lookup must use the model ACTUALLY used:
@@ -5949,6 +6853,14 @@ reasoning_effort = "low"
             byok_from_lookup(&ModelLookup::Loaded(Some(&session))),
             ModelByok::NotByok,
         );
+        assert_eq!(
+            byok_from_locator_lookup(&ModelLookup::Loaded(None)),
+            ModelByok::Unknown,
+        );
+        assert_eq!(
+            byok_from_locator_lookup(&ModelLookup::Loaded(Some(&session))),
+            ModelByok::NotByok,
+        );
     }
     #[test]
     fn resolve_model_auth_facts_empty_model_id_is_unknown() {
@@ -6413,6 +7325,7 @@ reasoning_effort = "low"
             api_key: None,
             env_key: None,
             api_backend: ApiBackend::default(),
+            prompt_cache: PromptCachePolicy::default(),
             auth_scheme: None,
             extra_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
@@ -6572,6 +7485,7 @@ reasoning_effort = "low"
             api_key: None,
             env_key: None,
             api_backend: ApiBackend::default(),
+            prompt_cache: PromptCachePolicy::default(),
             auth_scheme: None,
             extra_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
@@ -7023,6 +7937,7 @@ reasoning_effort = "low"
             api_key: None,
             env_key: None,
             api_backend: ApiBackend::default(),
+            prompt_cache: PromptCachePolicy::default(),
             auth_scheme: None,
             extra_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
@@ -10580,6 +11495,7 @@ default = "grok-4.5"
             info: ModelInfo {
                 user_selectable: true,
                 id: None,
+                model_ref: None,
                 model: slug.to_owned(),
                 base_url: "https://test.example.com/v1".to_owned(),
                 name: Some(slug.to_owned()),
@@ -10588,6 +11504,7 @@ default = "grok-4.5"
                 temperature: None,
                 top_p: None,
                 api_backend,
+                prompt_cache: Default::default(),
                 auth_scheme: Default::default(),
                 extra_headers: IndexMap::new(),
                 context_window: NonZeroU64::new(context_window).unwrap(),
@@ -10612,6 +11529,7 @@ default = "grok-4.5"
             api_key: None,
             env_key: None,
             api_base_url: None,
+            provider: None,
         }
     }
     #[test]

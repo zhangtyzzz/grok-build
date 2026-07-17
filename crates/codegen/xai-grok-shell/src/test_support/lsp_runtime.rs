@@ -39,6 +39,8 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
         sampling_config: xai_grok_sampler::SamplerConfig {
             api_key: None,
             base_url: String::new(),
+            model_ref: None,
+            route_ref: None,
             model: String::new(),
             max_completion_tokens: None,
             temperature: None,
@@ -52,6 +54,7 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
             max_retries: None,
             stream_tool_calls: false,
             idle_timeout_secs: None,
+            prompt_cache: Default::default(),
             client_identifier: None,
             reasoning_effort: None,
             deployment_id: None,

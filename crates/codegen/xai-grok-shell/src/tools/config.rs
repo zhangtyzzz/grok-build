@@ -206,6 +206,8 @@ impl ShellToolsetConfig {
         let default_base = SamplerConfig {
             api_key: None,
             base_url: "https://api.x.ai/v1".to_string(),
+            model_ref: None,
+            route_ref: None,
             model: String::new(),
             max_completion_tokens: None,
             temperature: None,
@@ -220,6 +222,7 @@ impl ShellToolsetConfig {
             max_retries: None,
             stream_tool_calls: false,
             idle_timeout_secs: None,
+            prompt_cache: Default::default(),
             client_identifier: None,
             deployment_id: None,
             user_id: None,

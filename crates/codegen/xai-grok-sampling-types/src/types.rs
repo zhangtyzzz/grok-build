@@ -1029,10 +1029,80 @@ impl ApiBackend {
     }
 }
 
+/// Lifetime of an Anthropic prompt-cache entry.
+///
+/// Five minutes is the API default and is intentionally omitted from the
+/// request wire shape for compatibility with requests produced before this
+/// setting existed. One hour is sent explicitly as `ttl: "1h"`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PromptCacheTtl {
+    #[default]
+    #[serde(rename = "5m")]
+    FiveMinutes,
+    #[serde(rename = "1h")]
+    OneHour,
+}
+
+/// Where the Messages adapter should place an explicit prompt-cache
+/// breakpoint.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptCacheMode {
+    Off,
+    #[default]
+    StablePrefix,
+}
+
+/// Provider-neutral prompt-cache policy carried by a resolved model.
+///
+/// The current Messages implementation supports the stable system-prefix
+/// strategy. Keeping the policy provider-neutral lets configuration and model
+/// routing choose it without teaching those layers about Anthropic wire types.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct PromptCachePolicy {
+    pub mode: PromptCacheMode,
+    pub ttl: PromptCacheTtl,
+}
+
+impl PromptCachePolicy {
+    pub const OFF: Self = Self {
+        mode: PromptCacheMode::Off,
+        ttl: PromptCacheTtl::FiveMinutes,
+    };
+
+    pub const STABLE_PREFIX_5M: Self = Self {
+        mode: PromptCacheMode::StablePrefix,
+        ttl: PromptCacheTtl::FiveMinutes,
+    };
+
+    pub const STABLE_PREFIX_1H: Self = Self {
+        mode: PromptCacheMode::StablePrefix,
+        ttl: PromptCacheTtl::OneHour,
+    };
+
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// Sampling client configuration (API key excluded — that stays in the client).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SamplingConfig {
     pub base_url: String,
+    /// Stable catalog key for the physical model backing this session.
+    ///
+    /// `model` is the provider-facing routing slug and is not an identity:
+    /// two configured providers may legitimately expose the same slug.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_ref: Option<String>,
+    /// Logical `route:<id>` alias that selected `model_ref`.
+    ///
+    /// Keeping the logical and physical identities side by side lets a
+    /// restored session re-run route credential preflight before each request
+    /// without weakening exact-provider state restoration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_ref: Option<String>,
     pub model: String,
     pub max_completion_tokens: Option<u32>,
     pub temperature: Option<f32>,
@@ -1052,6 +1122,10 @@ pub struct SamplingConfig {
     /// API request body so the upstream emits per-chunk argument deltas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_tool_calls: Option<bool>,
+    /// Prompt-cache policy retained in chat state so model switches and
+    /// sampler reconstruction preserve the configured cache lifetime.
+    #[serde(default, skip_serializing_if = "PromptCachePolicy::is_default")]
+    pub prompt_cache: PromptCachePolicy,
 }
 
 // ============ Responses API wrapper ============
@@ -1197,6 +1271,62 @@ impl From<crate::messages::MessagesRequest> for MessagesRequestWrapper {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn sampling_config_prompt_cache_defaults_and_round_trips() {
+        let legacy = json!({
+            "base_url": "https://example.test/v1",
+            "model": "test-model",
+            "max_completion_tokens": null,
+            "temperature": null,
+            "top_p": null,
+            "api_backend": "messages",
+            "extra_headers": {},
+            "context_window": 200000,
+            "reasoning_effort": null,
+            "stream_tool_calls": null
+        });
+        let legacy_config: SamplingConfig = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy_config.model_ref, None);
+        assert_eq!(
+            legacy_config.prompt_cache,
+            PromptCachePolicy::STABLE_PREFIX_5M
+        );
+        assert!(
+            serde_json::to_value(&legacy_config)
+                .unwrap()
+                .get("prompt_cache")
+                .is_none(),
+            "the default policy should not change persisted config shape"
+        );
+
+        let mut one_hour = serde_json::to_value(&legacy_config).unwrap();
+        one_hour["prompt_cache"] = json!({"mode": "stable_prefix", "ttl": "1h"});
+        let one_hour_config: SamplingConfig = serde_json::from_value(one_hour).unwrap();
+        assert_eq!(
+            one_hour_config.prompt_cache,
+            PromptCachePolicy::STABLE_PREFIX_1H
+        );
+        assert_eq!(
+            serde_json::to_value(one_hour_config)
+                .unwrap()
+                .pointer("/prompt_cache/ttl")
+                .and_then(serde_json::Value::as_str),
+            Some("1h")
+        );
+
+        let mut physical = serde_json::to_value(&legacy_config).unwrap();
+        physical["model_ref"] = json!("provider-a-model");
+        let physical: SamplingConfig = serde_json::from_value(physical).unwrap();
+        assert_eq!(physical.model_ref.as_deref(), Some("provider-a-model"));
+        assert_eq!(
+            serde_json::to_value(physical)
+                .unwrap()
+                .get("model_ref")
+                .and_then(serde_json::Value::as_str),
+            Some("provider-a-model")
+        );
+    }
 
     #[test]
     fn reasoning_effort_serde_lowercase_round_trip() {

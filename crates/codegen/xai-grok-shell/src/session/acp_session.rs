@@ -9,8 +9,8 @@
 //! - Session → Client: `session_notification` via a shared gateway handle
 //!
 use super::commands::{
-    ParsedPromptInfo, PromptCompletionKind, PromptTurnOk, PromptTurnResult, SessionCommand,
-    ok_end_turn,
+    ExternalNotifyAck, ParsedPromptInfo, PromptCompletionKind, PromptTurnOk, PromptTurnResult,
+    SessionCommand, ok_end_turn,
 };
 use super::handle::SessionHandle;
 use super::notifications::NotificationSender;
@@ -569,7 +569,7 @@ pub(crate) struct SessionActor {
     /// fresh, isolated handle seeded once at spawn (frozen for their lifetime).
     /// `None` until the agent has selected a method.
     pub(crate) auth_method_id: crate::agent::auth_method::SharedAuthMethodId,
-    /// Memoized per-model auth facts, keyed by model id — see
+    /// Memoized per-model auth facts, keyed by physical model locator — see
     /// [`SessionActor::model_auth_facts`].
     pub(crate) model_auth_facts:
         std::cell::RefCell<Option<(String, crate::agent::config::ModelAuthFacts)>>,
@@ -747,8 +747,9 @@ pub(crate) struct SessionActor {
     /// Plan mode lifecycle tracker. Session-scoped dynamic state (not part
     /// of `AgentDefinition`). All plan mode logic lives in `plan_mode.rs`;
     /// the session actor just calls into the tracker at the appropriate points.
-    /// `Arc`-shared with the notification bridge so `PlanModeEntered` /
-    /// `PlanModeExited` tool notifications can transition state directly.
+    /// `Arc`-shared with the session handle for external mode inspection.
+    /// Agent-tool notifications never mutate it directly; they queue an
+    /// actor-owned transition.
     pub(crate) plan_mode: Arc<parking_lot::Mutex<crate::session::plan_mode::PlanModeTracker>>,
     /// Whether goal mode (`/goal`) is enabled for this session (feature flag).
     pub(crate) goal_enabled: bool,
@@ -1585,6 +1586,9 @@ mod prompt_mode_transition_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/prompt_queue_actor_tests.rs"]
 mod prompt_queue_actor_tests;
+#[cfg(test)]
+#[path = "acp_session_tests/provider_route_preflight_tests.rs"]
+mod provider_route_preflight_tests;
 /// Regression coverage for the per-turn `record_token_usage` path.
 #[cfg(test)]
 #[path = "acp_session_tests/record_response_token_usage_tests.rs"]

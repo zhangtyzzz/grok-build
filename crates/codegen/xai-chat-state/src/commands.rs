@@ -96,6 +96,27 @@ pub enum ChatStateCommand {
     /// Update the sampling config (e.g., model switch).
     UpdateSamplingConfig { config: SamplingConfig },
 
+    /// Atomically replace the request transport snapshot and acknowledge only
+    /// after both its public configuration and opaque credentials are visible.
+    ///
+    /// Route preflight must use this instead of sending two independent
+    /// mutations: otherwise a request can observe a new endpoint paired with
+    /// the previous provider's secret.
+    ReplaceSamplingConfigAndCredentials {
+        config: SamplingConfig,
+        credentials: Credentials,
+        reply: oneshot::Sender<()>,
+    },
+
+    /// Replace credentials only if the actor still holds the expected physical
+    /// sampling locator. This prevents an async token refresh from writing an
+    /// old provider's secret after a concurrent route/model switch.
+    UpdateCredentialsIfSamplingConfigMatches {
+        expected: SamplingConfig,
+        credentials: Credentials,
+        reply: oneshot::Sender<bool>,
+    },
+
     /// Track that the agent edited a file path.
     RecordAgentEditedPath { path: String },
 
@@ -232,6 +253,14 @@ pub enum ChatStateCommand {
         reply: oneshot::Sender<SamplingConfig>,
     },
 
+    /// Get the request transport snapshot in one actor turn.
+    ///
+    /// The paired read is required for the same reason as the paired replace:
+    /// two separate queries can straddle a concurrent route change.
+    GetSamplingConfigAndCredentials {
+        reply: oneshot::Sender<(SamplingConfig, Credentials)>,
+    },
+
     /// Get the set of agent-edited file paths.
     GetAgentEditedPaths {
         reply: oneshot::Sender<BTreeSet<String>>,
@@ -365,6 +394,8 @@ mod tests {
         let _ = ChatStateCommand::UpdateSamplingConfig {
             config: SamplingConfig {
                 base_url: String::new(),
+                model_ref: None,
+                route_ref: None,
                 model: String::new(),
                 max_completion_tokens: None,
                 temperature: None,
@@ -374,7 +405,48 @@ mod tests {
                 context_window: std::num::NonZeroU64::new(128_000).unwrap(),
                 reasoning_effort: None,
                 stream_tool_calls: None,
+                prompt_cache: Default::default(),
             },
+        };
+        let (tx, _rx) = oneshot::channel();
+        let _ = ChatStateCommand::ReplaceSamplingConfigAndCredentials {
+            config: SamplingConfig {
+                base_url: String::new(),
+                model_ref: None,
+                route_ref: None,
+                model: String::new(),
+                max_completion_tokens: None,
+                temperature: None,
+                top_p: None,
+                api_backend: Default::default(),
+                extra_headers: Default::default(),
+                context_window: std::num::NonZeroU64::new(128_000).unwrap(),
+                reasoning_effort: None,
+                stream_tool_calls: None,
+                prompt_cache: Default::default(),
+            },
+            credentials: Credentials::default(),
+            reply: tx,
+        };
+        let (tx, _rx) = oneshot::channel();
+        let _ = ChatStateCommand::UpdateCredentialsIfSamplingConfigMatches {
+            expected: SamplingConfig {
+                base_url: String::new(),
+                model_ref: None,
+                route_ref: None,
+                model: String::new(),
+                max_completion_tokens: None,
+                temperature: None,
+                top_p: None,
+                api_backend: Default::default(),
+                extra_headers: Default::default(),
+                context_window: std::num::NonZeroU64::new(128_000).unwrap(),
+                reasoning_effort: None,
+                stream_tool_calls: None,
+                prompt_cache: Default::default(),
+            },
+            credentials: Credentials::default(),
+            reply: tx,
         };
         let _ = ChatStateCommand::RecordAgentEditedPath {
             path: "src/main.rs".to_string(),
@@ -413,6 +485,9 @@ mod tests {
 
         let (tx, _rx) = oneshot::channel();
         let _ = ChatStateCommand::GetSamplingConfig { reply: tx };
+
+        let (tx, _rx) = oneshot::channel();
+        let _ = ChatStateCommand::GetSamplingConfigAndCredentials { reply: tx };
 
         let (tx, _rx) = oneshot::channel();
         let _ = ChatStateCommand::GetAgentEditedPaths { reply: tx };
