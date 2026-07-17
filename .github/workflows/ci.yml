@@ -102,13 +102,12 @@ jobs:
           rustup toolchain install 1.92.0 --profile minimal --component clippy
           rustup default 1.92.0
 
-      - name: Prepare pinned protobuf compiler
+      - name: Prepare pinned protobuf and search tools
         run: |
           bash scripts/dist/prepare-release-tools.sh \
             --target x86_64-unknown-linux-gnu \
             --output-dir "$RUNNER_TEMP/grok-terminal-tools" \
-            --github-env "$GITHUB_ENV" \
-            --protoc-only
+            --github-env "$GITHUB_ENV"
 
       - name: Check terminal composition
         run: |
