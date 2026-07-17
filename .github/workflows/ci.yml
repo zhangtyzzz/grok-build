@@ -129,6 +129,35 @@ jobs:
             -p xai-grok-pager \
             -p xai-grok-pager-bin
 
+  windows-protobuf:
+    name: Windows protobuf build
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          rustup default 1.92.0
+
+      - name: Prepare pinned Windows protobuf compiler
+        run: |
+          bash scripts/dist/prepare-release-tools.sh \
+            --target x86_64-pc-windows-msvc \
+            --output-dir "$RUNNER_TEMP/grok-windows-protobuf-tools" \
+            --github-env "$GITHUB_ENV" \
+            --protoc-only
+
+      - name: Check native Windows protobuf generation
+        run: cargo check --locked -p xai-grok-tools-api
+
   required:
     name: CI required
     if: always()
@@ -136,6 +165,7 @@ jobs:
       - rust
       - integration
       - terminal
+      - windows-protobuf
     runs-on: ubuntu-22.04
     steps:
       - name: Require every CI job
@@ -143,7 +173,9 @@ jobs:
           RUST_RESULT: ${{ needs.rust.result }}
           INTEGRATION_RESULT: ${{ needs.integration.result }}
           TERMINAL_RESULT: ${{ needs.terminal.result }}
+          WINDOWS_PROTOBUF_RESULT: ${{ needs.windows-protobuf.result }}
         run: |
           test "$RUST_RESULT" = success
           test "$INTEGRATION_RESULT" = success
           test "$TERMINAL_RESULT" = success
+          test "$WINDOWS_PROTOBUF_RESULT" = success

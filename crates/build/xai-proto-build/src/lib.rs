@@ -1,9 +1,23 @@
 pub mod find_protoc;
 
 use anyhow::Context;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::{fs, iter};
+
+fn dependency_output_after_target<'a>(
+    first_line: &'a str,
+    descriptor_output: &Path,
+) -> anyhow::Result<&'a str> {
+    let target = descriptor_output
+        .to_str()
+        .context("protoc descriptor output path not UTF-8")?;
+    let prefix = format!("{target}:");
+    first_line.strip_prefix(&prefix).with_context(|| {
+        format!("protoc dependency output must start with {prefix:?}: {first_line:?}")
+    })
+}
 
 /// Find the protoc well-known types include directory.
 ///
@@ -114,10 +128,19 @@ impl XaiProtoBuilder {
 
         // Can only process one input file when using --dependency_out=FILE.
         for proto in protos {
+            let protoc_outputs = tempfile::Builder::new()
+                .prefix("xai-proto-build-")
+                .tempdir()
+                .context("failed to create temporary protoc output directory")?;
+            let dependency_output = protoc_outputs.path().join("dependencies.d");
+            let descriptor_output = protoc_outputs.path().join("descriptor-set.bin");
+            let mut dependency_arg = OsString::from("--dependency_out=");
+            dependency_arg.push(&dependency_output);
+            let mut descriptor_arg = OsString::from("--descriptor_set_out=");
+            descriptor_arg.push(&descriptor_output);
+
             let mut command = Command::new(protoc.unwrap_or(Path::new("protoc")));
-            command
-                .arg("--dependency_out=/dev/stdout")
-                .arg("--descriptor_set_out=/dev/null");
+            command.arg(dependency_arg).arg(descriptor_arg);
 
             // Add protoc's well-known types include directory first (if found).
             // This is needed for Bazel sandboxed builds where protoc and its
@@ -136,29 +159,33 @@ impl XaiProtoBuilder {
             command.arg(proto);
 
             command.stdin(Stdio::null());
+            command.stdout(Stdio::null());
             command.stderr(Stdio::inherit());
 
-            let output = command.output().context("protoc command failed")?;
-            if !output.status.success() {
+            let status = command.status().context("protoc command failed")?;
+            if !status.success() {
                 return Err(anyhow::anyhow!("protoc command failed"));
             }
 
-            let output =
-                String::from_utf8(output.stdout).context("protoc command output not UTF-8")?;
+            let output = fs::read_to_string(&dependency_output).with_context(|| {
+                format!(
+                    "failed to read protoc dependency output {}",
+                    dependency_output.display()
+                )
+            })?;
 
             let mut lines = output.lines();
             let first_line = lines.next().context("protoc command output is empty")?;
-            let prefix = "/dev/null:";
-            let rem = first_line.strip_prefix(prefix).with_context(|| {
-                format!("protoc command output must start with /dev/null: {output:?}")
-            })?;
+            let rem = dependency_output_after_target(first_line, &descriptor_output)?;
             for line in iter::once(rem).chain(lines) {
                 let line = line.trim();
                 let line = line.strip_suffix("\\").unwrap_or(line);
                 // Depending on absolute paths like
                 // /Users/user/homebrew/Cellar/protobuf/29.1/include/google/protobuf/timestamp.proto
                 // is valid, but we want to have output more deterministic.
-                if line.contains("/include/google/protobuf/") {
+                if line.contains("/include/google/protobuf/")
+                    || line.contains(r"\include\google\protobuf\")
+                {
                     continue;
                 }
 
@@ -286,5 +313,47 @@ pub fn configure() -> XaiProtoBuilder {
         pbjson_ignore_unknown_fields: false,
         pbjson_preserve_proto_field_names: false,
         file_descriptor_set_path: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dependency_output_after_target;
+    use std::path::Path;
+
+    #[test]
+    fn parses_unix_dependency_target() {
+        let output = "/tmp/xai-proto-build/descriptor-set.bin: proto/input.proto \\";
+        let rem = dependency_output_after_target(
+            output,
+            Path::new("/tmp/xai-proto-build/descriptor-set.bin"),
+        )
+        .unwrap();
+        assert_eq!(rem, " proto/input.proto \\");
+    }
+
+    #[test]
+    fn parses_windows_dependency_target_without_treating_drive_as_delimiter() {
+        let output = r"D:\runner temp\xai-proto-build\descriptor-set.bin: proto\input.proto \";
+        let rem = dependency_output_after_target(
+            output,
+            Path::new(r"D:\runner temp\xai-proto-build\descriptor-set.bin"),
+        )
+        .unwrap();
+        assert_eq!(rem, r" proto\input.proto \");
+    }
+
+    #[test]
+    fn rejects_unexpected_dependency_target() {
+        let error = dependency_output_after_target(
+            "other-output.bin: proto/input.proto",
+            Path::new("/tmp/xai-proto-build/descriptor-set.bin"),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("protoc dependency output must start with")
+        );
     }
 }
