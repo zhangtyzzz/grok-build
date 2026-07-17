@@ -1588,6 +1588,8 @@ mod reasoning_compaction_regression_tests {
         SamplerConfig {
             api_key: Some("test-api-key".to_string()),
             base_url: base_url.to_string(),
+            model_ref: None,
+            route_ref: None,
             model: "test-model".to_string(),
             max_completion_tokens: Some(1000),
             temperature: Some(0.7),
@@ -1601,6 +1603,7 @@ mod reasoning_compaction_regression_tests {
             max_retries: None,
             stream_tool_calls: false,
             idle_timeout_secs: None,
+            prompt_cache: Default::default(),
             client_identifier: None,
             reasoning_effort: None,
             deployment_id: None,

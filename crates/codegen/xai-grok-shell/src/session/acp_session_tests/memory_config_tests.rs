@@ -99,6 +99,8 @@ async fn create_test_actor_with_memory(
         vec![],
         xai_grok_sampling_types::SamplingConfig {
             base_url: "http://localhost".to_string(),
+            model_ref: None,
+            route_ref: None,
             model: "test".to_string(),
             max_completion_tokens: None,
             temperature: None,
@@ -109,6 +111,7 @@ async fn create_test_actor_with_memory(
                 .expect("test context_window must be non-zero"),
             reasoning_effort: None,
             stream_tool_calls: None,
+            prompt_cache: Default::default(),
         },
         Box::new(xai_chat_state::NullChatPersistence),
         chat_event_tx,

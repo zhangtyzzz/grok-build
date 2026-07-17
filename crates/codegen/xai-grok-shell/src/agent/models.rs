@@ -69,6 +69,13 @@ pub(crate) fn task_model_error_for_catalog(
     available: &IndexMap<String, ModelEntry>,
     is_session_auth: bool,
 ) -> Option<String> {
+    if requested.starts_with("route:")
+        && available
+            .get(requested)
+            .is_some_and(ModelEntry::route_preflight_ready)
+    {
+        return None;
+    }
     let is_available = |entry: &ModelEntry| {
         entry.info.user_selectable && entry.info.visible_for_auth(is_session_auth)
     };
@@ -361,6 +368,135 @@ impl ModelsManager {
         self.inner.cfg.read().endpoints.clone()
     }
 
+    pub(crate) fn plan_mode_profile(&self) -> config::PlanModeProfileConfig {
+        self.inner.cfg.read().modes.plan.clone()
+    }
+
+    /// Resolve a configured physical model id or logical route into the same
+    /// fully-authenticated sampler configuration used by normal model
+    /// switching, without changing the manager's process-global current model.
+    pub(crate) fn sampling_config_for_model_ref(
+        &self,
+        model_ref: &str,
+    ) -> Option<(ModelEntry, SamplingConfig)> {
+        let config = self.inner.cfg.read().clone();
+        let models = self.inner.models.read();
+        let entry = resolve_model_ref_entry(&config, &models, model_ref)?;
+        drop(models);
+        let session_auth = self.inner.auth_manager.current_or_expired();
+        let credentials =
+            resolve_credentials(&entry, session_auth.as_ref().map(|auth| auth.key.as_str()));
+        if entry
+            .provider
+            .as_ref()
+            .is_some_and(|provider| provider.auth_required)
+            && credentials.api_key.is_none()
+        {
+            return None;
+        }
+        let sampling = sampling_config_for_model(
+            &entry,
+            credentials,
+            config.endpoints.alpha_test_key.clone(),
+            config.client_version.clone(),
+            crate::managed_config::resolve_deployment_id(
+                config.endpoints.deployment_key.as_deref(),
+            ),
+            None,
+        );
+        Some((entry, sampling))
+    }
+
+    /// Resolve a catalog reference at the last responsible moment.
+    ///
+    /// Physical references are exact map-key lookups. Logical routes are
+    /// re-evaluated on every call so environment-backed credentials becoming
+    /// available/unavailable take effect before the next request starts.
+    pub(crate) fn resolve_model_ref_entry(&self, model_ref: &str) -> Option<ModelEntry> {
+        let config = self.inner.cfg.read();
+        let models = self.inner.models.read();
+        resolve_model_ref_entry(&config, &models, model_ref)
+    }
+
+    /// Resolve a persisted model locator, preferring an exact endpoint match
+    /// when multiple provider entries share the same upstream model slug.
+    pub(crate) fn sampling_config_for_locator(
+        &self,
+        model_ref: Option<&str>,
+        model: &str,
+        base_url: &str,
+    ) -> Option<(ModelEntry, SamplingConfig)> {
+        if let Some(model_ref) = model_ref {
+            let resolved = self.sampling_config_for_model_ref(model_ref)?;
+            return (resolved.1.model == model && resolved.1.base_url == base_url)
+                .then_some(resolved);
+        }
+
+        // Backward compatibility for snapshots written before `model_ref`:
+        // accept only one physical entry whose resolved endpoint also matches.
+        let candidate_refs = {
+            let models = self.inner.models.read();
+            models
+                .iter()
+                .filter(|(key, entry)| {
+                    entry.info.model == model
+                        && entry.info.model_ref.as_deref() == Some(key.as_str())
+                })
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>()
+        };
+        let mut exact = None;
+        for entry_ref in candidate_refs {
+            let Some(resolved) = self.sampling_config_for_model_ref(&entry_ref) else {
+                continue;
+            };
+            if resolved.1.base_url == base_url {
+                if exact.is_some() {
+                    tracing::warn!(
+                        model,
+                        base_url,
+                        "legacy plan model locator is ambiguous; refusing restore"
+                    );
+                    return None;
+                }
+                exact = Some(resolved);
+            }
+        }
+        exact
+    }
+
+    pub(crate) fn auto_compact_threshold_for_model(&self, model: &str) -> u8 {
+        let cfg = self.inner.cfg.read();
+        let models = self.inner.models.read();
+        let entry = config::find_model_by_id(&models, model);
+        crate::util::config::resolve_auto_compact_threshold_percent(
+            &cfg,
+            model,
+            entry.map(|entry| &entry.info),
+        )
+    }
+
+    /// Resolve the threshold for an already-selected physical catalog entry.
+    ///
+    /// Route candidates may share the same upstream `model` slug across
+    /// providers, so looking the entry up by that slug can be ambiguous and
+    /// silently fall back to the global default. The physical model reference
+    /// preserves the configured per-model tier.
+    pub(crate) fn auto_compact_threshold_for_entry(&self, entry: &ModelEntry) -> u8 {
+        let cfg = self.inner.cfg.read();
+        let model_ref = entry
+            .info
+            .model_ref
+            .as_deref()
+            .or(entry.info.id.as_deref())
+            .unwrap_or(entry.info.model.as_str());
+        crate::util::config::resolve_auto_compact_threshold_percent(
+            &cfg,
+            model_ref,
+            Some(&entry.info),
+        )
+    }
+
     /// Does the current credential grant access to OAuth-only models?
     fn is_session_auth(&self) -> bool {
         self.inner
@@ -432,8 +568,11 @@ impl ModelsManager {
     /// allowing integration tests to enable Layer-3 features per
     /// model without spinning up the full config-merge pipeline.
     #[cfg(test)]
-    pub(crate) fn insert_test_entry(&self, id: impl Into<String>, entry: ModelEntry) {
-        self.inner.models.write().insert(id.into(), entry);
+    pub(crate) fn insert_test_entry(&self, id: impl Into<String>, mut entry: ModelEntry) {
+        let id = id.into();
+        entry.info.id = Some(id.clone());
+        entry.info.model_ref = Some(id.clone());
+        self.inner.models.write().insert(id, entry);
     }
 
     pub fn current_reasoning_effort(&self) -> Option<ReasoningEffort> {
@@ -932,26 +1071,39 @@ impl ModelsManager {
         let auth_manager = self.inner.auth_manager.as_ref();
         let current_model_id = self.current_model_id();
         let all_models = self.models();
-        let fallback;
-        let current_model = match all_models
-            .get(current_model_id.0.as_ref())
-            .or_else(|| all_models.values().next())
-        {
-            Some(m) => m,
+        let resolved_current =
+            resolve_model_ref_entry(&config, &all_models, current_model_id.0.as_ref());
+        let current_model = match resolved_current {
+            Some(model) => model,
+            None if current_model_id.0.starts_with("route:") => {
+                tracing::error!(
+                    route = %current_model_id.0,
+                    "current model route has no preflight candidate; failing closed"
+                );
+                let mut entry =
+                    ModelEntry::fallback(current_model_id.0.as_ref(), &config.endpoints);
+                entry.info.base_url.clear();
+                entry
+            }
             None => {
-                tracing::warn!("no models available in catalog; defaulting to bundled model");
-                let default_id = crate::models::default_model().to_string();
-                fallback = ModelEntry::fallback(&default_id, &config.endpoints);
-                &fallback
+                if let Some(first) = all_models.values().next() {
+                    first.clone()
+                } else {
+                    tracing::warn!("no models available in catalog; defaulting to bundled model");
+                    let default_id = crate::models::default_model().to_string();
+                    ModelEntry::fallback(&default_id, &config.endpoints)
+                }
             }
         };
 
         let session_auth = auth_manager.current_or_expired();
-        let credentials =
-            resolve_credentials(current_model, session_auth.as_ref().map(|a| a.key.as_str()));
+        let credentials = resolve_credentials(
+            &current_model,
+            session_auth.as_ref().map(|a| a.key.as_str()),
+        );
 
         sampling_config_for_model(
-            current_model,
+            &current_model,
             credentials,
             config.endpoints.alpha_test_key.clone(),
             config.client_version.clone(),
@@ -1383,12 +1535,15 @@ fn build_prefetched_map(
     let mut map: IndexMap<String, ModelEntry> = IndexMap::with_capacity(models.len());
     for m in models {
         let key = m.id.clone().unwrap_or_else(|| m.model.clone());
-        let info = config::ModelInfo::from_config(&m);
+        let mut info = config::ModelInfo::from_config(&m);
+        info.id = Some(key.clone());
+        info.model_ref = Some(key.clone());
         let entry = ModelEntry {
             info,
             api_key: None,
             env_key: None,
             api_base_url: m.api_base_url.clone().or(api_base_url_override.clone()),
+            provider: None,
         };
         map.insert(key, entry);
     }
@@ -1610,28 +1765,19 @@ fn spawn_prefetch_thread(env: PrefetchEnv) -> EarlyPrefetchHandle {
 
 /// Map a model id (catalog key or routing slug) to its catalog key.
 ///
-/// Sessions persist the routing slug (`[model.X].model`, e.g. `grok-4.5`);
-/// the catalog and `/model` picker use config keys (e.g. `enterprise-grok-build`).
-/// Last slug match wins so user overrides beat defaults (matches `MvpAgent::resolve_model_id`).
+/// Exact catalog keys win. Legacy routing slugs resolve only when unique;
+/// duplicate slugs across providers fail closed.
 pub(crate) fn resolve_catalog_key(
     models: &IndexMap<String, ModelEntry>,
     id: &acp::ModelId,
 ) -> Option<acp::ModelId> {
-    let id_str = id.0.as_ref();
-    if models.contains_key(id_str) {
-        return Some(id.clone());
-    }
-    models
-        .iter()
-        .rev()
-        .find(|(_, entry)| entry.info.model == id_str)
+    config::find_model_with_key_by_id(models, id.0.as_ref())
         .map(|(key, _)| acp::ModelId::new(key.clone()))
 }
 
 /// Catalog key for a persisted session model id, restricted to **selectable**
-/// entries. A selectable exact-key match wins (as in [`resolve_catalog_key`]);
-/// otherwise the last selectable entry whose routing slug matches `id`, so a
-/// non-selectable exact-key entry never shadows a selectable slug match.
+/// entries. A selectable exact-key match wins; a legacy routing slug must
+/// identify exactly one selectable physical entry.
 pub(crate) fn selectable_catalog_key_for_persisted(
     models: &IndexMap<String, ModelEntry>,
     available: &IndexMap<acp::ModelId, acp::ModelInfo>,
@@ -1640,13 +1786,16 @@ pub(crate) fn selectable_catalog_key_for_persisted(
     if available.contains_key(id) {
         return Some(id.clone());
     }
-    let id_str = id.0.as_ref();
-    if let Some((key, _)) = models.iter().rev().find(|(key, entry)| {
-        available.contains_key(&acp::ModelId::new((*key).clone())) && entry.info.model == id_str
-    }) {
-        return Some(acp::ModelId::new(key.clone()));
+    let mut matches = models.iter().filter(|(key, entry)| {
+        !key.starts_with("route:")
+            && available.contains_key(&acp::ModelId::new((*key).clone()))
+            && entry.info.model == id.0.as_ref()
+    });
+    let first = matches.next();
+    if matches.next().is_some() {
+        return None;
     }
-    resolve_catalog_key(models, id).filter(|key| available.contains_key(key))
+    first.map(|(key, _)| acp::ModelId::new(key.clone()))
 }
 
 /// A "campaign-only" preferred flip: the default changed and either side's value
@@ -1719,13 +1868,36 @@ pub(crate) fn resolve_default_model(
             (key, first, config::ConfigSource::Default)
         }
         Some(pref) => {
-            let found = visible
-                .get_key_value(&pref.value)
-                .or_else(|| visible.iter().find(|(_, m)| m.model == pref.value));
+            let found = if pref.value.starts_with("route:") {
+                catalog.get_key_value(&pref.value)
+            } else {
+                config::find_model_with_key_by_id(&visible, &pref.value)
+            };
 
             if let Some((key, entry)) = found {
                 (key.clone(), entry.clone(), pref.source)
             } else {
+                let ambiguous_slug = !visible.contains_key(&pref.value)
+                    && visible
+                        .iter()
+                        .filter(|(key, entry)| {
+                            !key.starts_with("route:") && entry.info.model == pref.value
+                        })
+                        .take(2)
+                        .count()
+                        > 1;
+                if ambiguous_slug {
+                    tracing::error!(
+                        model = %pref.value,
+                        source = %pref.source,
+                        "preferred model slug is ambiguous across providers; failing closed"
+                    );
+                    let mut entry = ModelEntry::fallback(&pref.value, &cfg.endpoints);
+                    entry.info.id = Some(pref.value.clone());
+                    entry.info.base_url.clear();
+                    entry.api_base_url = None;
+                    return (pref.value.clone(), entry, pref.source);
+                }
                 let is_explicit = matches!(
                     pref.source,
                     config::ConfigSource::Cli
@@ -1756,9 +1928,7 @@ pub(crate) fn resolve_default_model(
                         .pre_campaign_default
                         .as_deref()
                         .filter(|s| !s.is_empty())
-                    && let Some((key, entry)) = visible
-                        .get_key_value(prev)
-                        .or_else(|| visible.iter().find(|(_, m)| m.model == prev))
+                    && let Some((key, entry)) = config::find_model_with_key_by_id(&visible, prev)
                 {
                     tracing::info!(
                         unavailable = %pref.value, fallback = %prev,
@@ -1844,6 +2014,34 @@ pub fn resolve_model_catalog(
         }
     }
 
+    // Routes are logical aliases over the post-disabled physical catalog.
+    // Selection is deliberately preflight-only: once a request starts, retry
+    // semantics stay with the selected model and never cross providers.
+    let mut route_entries = Vec::new();
+    for (route_id, route) in &cfg.model_routes {
+        let alias = format!("route:{route_id}");
+        match resolve_model_ref_entry(cfg, &catalog, &alias) {
+            Some(entry) => {
+                tracing::info!(
+                    route = %alias,
+                    candidate = ?entry.info.model_ref,
+                    provider = ?entry.provider.as_ref().map(|binding| binding.id.as_str()),
+                    model = %entry.info.model,
+                    "model route resolved"
+                );
+                route_entries.push((alias, entry));
+            }
+            None => {
+                tracing::error!(
+                    route = %alias,
+                    candidates = ?route.candidates,
+                    "model route has no preflight-available candidates"
+                );
+            }
+        }
+    }
+    catalog.extend(route_entries);
+
     // None/empty allowlist = allow all.
     match ModelGlobSet::compile(cfg.models.allowed_models.as_ref()) {
         Ok(None) => {
@@ -1894,6 +2092,72 @@ pub fn resolve_model_catalog(
     }
 
     catalog
+}
+
+/// Resolve an exact physical reference or dynamically select a logical route.
+///
+/// Route candidates may name a physical catalog key, or a routing slug only
+/// when that slug is unique. Existing route clones are excluded from candidate
+/// matching so they cannot make a previously unique physical slug ambiguous.
+fn resolve_model_ref_entry(
+    cfg: &config::Config,
+    catalog: &IndexMap<String, ModelEntry>,
+    model_ref: &str,
+) -> Option<ModelEntry> {
+    let Some(route_id) = model_ref.strip_prefix("route:") else {
+        return catalog.get(model_ref).cloned();
+    };
+    let route = cfg.model_routes.get(route_id)?;
+    let mut resolved_candidates = Vec::new();
+    for candidate in &route.candidates {
+        let exact = catalog
+            .get_key_value(candidate)
+            .filter(|(key, entry)| entry.info.model_ref.as_deref() == Some(key.as_str()));
+        let resolved = if exact.is_some() {
+            exact
+        } else {
+            let mut matches = catalog.iter().filter(|(key, entry)| {
+                entry.info.model == *candidate
+                    && entry.info.model_ref.as_deref() == Some(key.as_str())
+            });
+            let first = matches.next();
+            if matches.next().is_some() {
+                tracing::warn!(
+                    route = %model_ref,
+                    model = %candidate,
+                    "route candidate slug is ambiguous; refusing provider fallback"
+                );
+                None
+            } else {
+                first
+            }
+        };
+        if let Some(resolved) = resolved {
+            resolved_candidates.push(resolved);
+        }
+    }
+    let baseline = resolved_candidates.first()?.1;
+    if resolved_candidates.iter().skip(1).any(|(_, entry)| {
+        entry.info.agent_type != baseline.info.agent_type
+            || entry.info.use_concise != baseline.info.use_concise
+            || entry.info.system_prompt_label != baseline.info.system_prompt_label
+    }) {
+        tracing::error!(
+            route = %model_ref,
+            "route candidates require incompatible agent harnesses"
+        );
+        return None;
+    }
+    let (physical_key, selected) = resolved_candidates
+        .into_iter()
+        .find(|(_, entry)| entry.route_preflight_ready())?;
+    let mut entry = selected.clone();
+    entry.info.id = Some(model_ref.to_owned());
+    entry.info.model_ref = Some(physical_key.to_owned());
+    // Routes are internal aliases, not duplicate picker entries.
+    entry.info.hidden = true;
+    entry.info.user_selectable = true;
+    Some(entry)
 }
 
 /// Whether `effort` is a value this model will accept on the wire.
@@ -1953,9 +2217,7 @@ pub(crate) fn validate_selectable(
         ("-m flag", cfg.default_model_override.as_deref()),
     ] {
         if let Some(id) = id
-            && let Some(entry) = catalog
-                .get(id)
-                .or_else(|| catalog.values().find(|e| e.model == id))
+            && let Some(entry) = config::find_model_by_id(catalog, id)
             && !entry.info.user_selectable
         {
             return Err(format!(
@@ -2007,6 +2269,188 @@ mod tests {
     }
 
     #[test]
+    fn ordered_route_selects_first_preflight_available_candidate_and_stays_hidden() {
+        let cfg = config_from_toml(
+            r#"
+[provider.local]
+base_url = "http://127.0.0.1:11434/v1"
+auth = "none"
+
+[model.local-reviewer]
+provider = "local"
+model = "qwen-review"
+context_window = 32768
+
+[model_route.reviewer]
+candidates = ["missing-model", "local-reviewer"]
+"#,
+        );
+        cfg.validate_model_filters().expect("route config valid");
+        let catalog = resolve_model_catalog(&cfg, None);
+        let physical = catalog.get("local-reviewer").expect("physical model");
+        assert_eq!(physical.info.id.as_deref(), Some("local-reviewer"));
+        assert_eq!(physical.info.model_ref.as_deref(), Some("local-reviewer"));
+        let route = catalog.get("route:reviewer").expect("resolved route");
+        assert_eq!(route.info.id.as_deref(), Some("route:reviewer"));
+        assert_eq!(route.info.model_ref.as_deref(), Some("local-reviewer"));
+        assert_eq!(route.info.model, "qwen-review");
+        assert_eq!(
+            route.provider.as_ref().map(|provider| provider.id.as_str()),
+            Some("local")
+        );
+        assert!(route.info.hidden, "logical routes stay out of the picker");
+        assert!(
+            !available_models(&catalog, false)
+                .keys()
+                .any(|id| id.0.as_ref() == "route:reviewer")
+        );
+        assert_eq!(
+            task_model_error_for_catalog("route:reviewer", &catalog, false),
+            None,
+            "Task/agent definitions may reference a hidden logical route"
+        );
+    }
+
+    #[test]
+    fn explicit_default_can_reference_a_logical_route() {
+        let cfg = config_from_toml(
+            r#"
+[models]
+default = "route:main"
+
+[provider.local]
+base_url = "http://127.0.0.1:11434/v1"
+auth = "none"
+
+[model.local-main]
+provider = "local"
+model = "local-physical-model"
+context_window = 32768
+
+[model_route.main]
+candidates = ["local-main"]
+"#,
+        );
+        let catalog = resolve_model_catalog(&cfg, None);
+        let (key, entry, source) = resolve_default_model(&cfg, &catalog, false);
+        assert_eq!(key, "route:main");
+        assert_eq!(entry.info.model, "local-physical-model");
+        assert_eq!(source, config::ConfigSource::Config);
+    }
+
+    #[test]
+    #[serial]
+    fn route_reselects_same_slug_provider_when_env_credentials_change() {
+        const PRIMARY_KEY: &str = "GROK_TEST_ROUTE_PRIMARY_KEY";
+        const SECONDARY_KEY: &str = "GROK_TEST_ROUTE_SECONDARY_KEY";
+        let _primary_offline = EnvGuard::unset(PRIMARY_KEY);
+        let _secondary_online = EnvGuard::set(SECONDARY_KEY, "secondary-secret");
+        let cfg = config_from_toml(
+            r#"
+[provider.primary]
+base_url = "https://primary.example/v1"
+env_key = "GROK_TEST_ROUTE_PRIMARY_KEY"
+
+[provider.secondary]
+base_url = "https://secondary.example/v1"
+env_key = "GROK_TEST_ROUTE_SECONDARY_KEY"
+
+[model.primary-shared]
+provider = "primary"
+model = "shared-upstream-slug"
+context_window = 32768
+
+[model.secondary-shared]
+provider = "secondary"
+model = "shared-upstream-slug"
+context_window = 32768
+
+[model_route.main]
+candidates = ["primary-shared", "secondary-shared"]
+"#,
+        );
+        let catalog = resolve_model_catalog(&cfg, None);
+        assert!(
+            config::find_model_by_id(&catalog, "shared-upstream-slug").is_none(),
+            "a duplicate upstream slug must fail closed"
+        );
+        let mut ambiguous_default = cfg.clone();
+        ambiguous_default.models.default = Some("shared-upstream-slug".to_owned());
+        let (_, ambiguous_entry, _) = resolve_default_model(&ambiguous_default, &catalog, false);
+        assert!(
+            ambiguous_entry.info.base_url.is_empty(),
+            "an ambiguous default slug must not fall back to an arbitrary provider"
+        );
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manager = ModelsManager::new(
+            None,
+            catalog,
+            acp::ModelId::new("route:main"),
+            Arc::new(AuthManager::new(tmp.path(), GrokComConfig::default())),
+            cfg,
+        );
+
+        let (_, secondary) = manager
+            .sampling_config_for_model_ref("route:main")
+            .expect("secondary candidate should be ready");
+        assert_eq!(secondary.model_ref.as_deref(), Some("secondary-shared"));
+        assert_eq!(secondary.base_url, "https://secondary.example/v1");
+        assert_eq!(secondary.api_key.as_deref(), Some("secondary-secret"));
+
+        {
+            let _primary_online = EnvGuard::set(PRIMARY_KEY, "primary-secret");
+            let (_, primary) = manager
+                .sampling_config_for_model_ref("route:main")
+                .expect("newly available first candidate should win");
+            assert_eq!(primary.model_ref.as_deref(), Some("primary-shared"));
+            assert_eq!(primary.base_url, "https://primary.example/v1");
+            assert_eq!(primary.api_key.as_deref(), Some("primary-secret"));
+
+            let (_, restored_secondary) = manager
+                .sampling_config_for_locator(
+                    secondary.model_ref.as_deref(),
+                    &secondary.model,
+                    &secondary.base_url,
+                )
+                .expect("restore must use the captured physical reference");
+            assert_eq!(
+                restored_secondary.model_ref.as_deref(),
+                Some("secondary-shared"),
+                "plan restore must not follow the route's newly preferred provider"
+            );
+            assert_eq!(
+                restored_secondary.api_key.as_deref(),
+                Some("secondary-secret"),
+                "credential reconstruction must follow the exact physical reference"
+            );
+            assert!(
+                manager
+                    .sampling_config_for_locator(
+                        secondary.model_ref.as_deref(),
+                        &secondary.model,
+                        &primary.base_url,
+                    )
+                    .is_none(),
+                "a physical reference with the wrong endpoint must fail closed"
+            );
+
+            let _secondary_offline = EnvGuard::unset(SECONDARY_KEY);
+            let (_, still_primary) = manager
+                .sampling_config_for_model_ref("route:main")
+                .expect("primary remains available when old candidate disappears");
+            assert_eq!(still_primary.model_ref.as_deref(), Some("primary-shared"));
+        }
+
+        let (_, secondary_again) = manager
+            .sampling_config_for_model_ref("route:main")
+            .expect("route should fall back after primary goes offline");
+        assert_eq!(
+            secondary_again.model_ref.as_deref(),
+            Some("secondary-shared")
+        );
+    }
+
+    #[test]
     fn model_show_model_fingerprint_reads_catalog_flag() {
         let mgr = test_manager();
 
@@ -2016,6 +2460,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            provider: None,
         };
         flagged.info.show_model_fingerprint = true;
         mgr.insert_test_entry("fp-model", flagged);
@@ -2028,6 +2473,7 @@ mod tests {
                 api_key: None,
                 env_key: None,
                 api_base_url: None,
+                provider: None,
             },
         );
 
@@ -2038,6 +2484,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            provider: None,
         };
         custom.info.show_model_fingerprint = true;
         mgr.insert_test_entry("enterprise-key", custom);
@@ -2208,6 +2655,7 @@ mod tests {
                 api_key: None,
                 env_key: None,
                 api_base_url: None,
+                provider: None,
             },
         );
 
@@ -2262,6 +2710,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            provider: None,
         };
         reasoning_entry.info.supports_reasoning_effort = true;
         prefetched.insert("reasoning-model".to_string(), reasoning_entry);
@@ -2284,6 +2733,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            provider: None,
         };
         prefetched.insert("plain-model".to_string(), plain_entry);
 
@@ -2311,6 +2761,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            provider: None,
         };
         no_none.info.supports_reasoning_effort = true;
         no_none.info.reasoning_efforts = vec![ReasoningEffortOption {
@@ -2329,6 +2780,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            provider: None,
         };
         with_none.info.supports_reasoning_effort = true;
         with_none.info.reasoning_efforts = vec![ReasoningEffortOption {
@@ -2435,6 +2887,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            provider: None,
         };
         reasoning_entry.info.supports_reasoning_effort = true;
         prefetched.insert("reasoning-model".to_string(), reasoning_entry);
@@ -2444,6 +2897,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            provider: None,
         };
         prefetched.insert("plain-model".to_string(), plain_entry);
 
@@ -2486,6 +2940,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            provider: None,
         }
     }
 
@@ -3269,6 +3724,7 @@ mod tests {
                 api_key: None,
                 env_key: None,
                 api_base_url: None,
+                provider: None,
             },
         );
 
@@ -3296,6 +3752,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            provider: None,
         };
         oauth_only.info.supported_in_api = false;
         catalog.insert("oauth-only".to_string(), oauth_only);
@@ -3305,6 +3762,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_base_url: None,
+            provider: None,
         };
         catalog.insert("public-model".to_string(), public);
 
@@ -3367,6 +3825,7 @@ mod tests {
             api_key: None,
             env_key: None,
             api_backend: Default::default(),
+            prompt_cache: Default::default(),
             context_window: std::num::NonZeroU64::new(200_000).unwrap(),
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
@@ -3504,7 +3963,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_catalog_key_last_slug_match_wins() {
+    fn resolve_catalog_key_duplicate_slug_fails_closed() {
         let mut models = IndexMap::new();
         models.insert(
             "default-grok-build".to_string(),
@@ -3513,8 +3972,10 @@ mod tests {
         models.insert("user-grok-build".to_string(), make_model_entry("grok-4.5"));
 
         let persisted = acp::ModelId::new("grok-4.5");
-        let key = resolve_catalog_key(&models, &persisted).expect("slug must resolve");
-        assert_eq!(key.0.as_ref(), "user-grok-build");
+        assert!(
+            resolve_catalog_key(&models, &persisted).is_none(),
+            "an ambiguous upstream slug must not choose a provider by map order"
+        );
     }
 
     #[test]

@@ -1,0 +1,30 @@
+# Portable starter configuration.
+#
+# Keep credentials out of this file. Model credentials should be referenced by
+# environment-variable name, and login state should be created independently on
+# each machine.
+#
+# Multi-provider example:
+#
+# [models]
+# default = "route:main"
+#
+# [provider.openai-compatible]
+# base_url = "https://api.example.com/v1"
+# env_key = "MY_PROVIDER_API_KEY"
+# auth = "bearer"
+# api_backend = "chat_completions"
+#
+# [model.main-model]
+# provider = "openai-compatible"
+# model = "provider-model-id"
+# context_window = 128000
+#
+# [model_route.main]
+# candidates = ["main-model"]
+#
+# [modes.plan]
+# model = "route:main"
+# skills = ["architecture"]
+# instructions = "Produce an implementation-ready plan with acceptance criteria."
+# restore_model = true

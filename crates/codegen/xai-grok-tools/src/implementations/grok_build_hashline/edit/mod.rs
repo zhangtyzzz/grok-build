@@ -295,7 +295,7 @@ impl xai_tool_runtime::Tool for HashlineEditTool {
             ));
         }
 
-        let (cwd, display_cwd, fs, scheme, hints_enabled) = {
+        let (cwd, display_cwd, raw_fs, protected_plan_path, scheme, hints_enabled) = {
             let res = resources.lock().await;
             let cwd = match ctx.extensions.get::<xai_tool_runtime::Cwd>() {
                 Some(dir) => dir.0.clone(),
@@ -306,70 +306,98 @@ impl xai_tool_runtime::Tool for HashlineEditTool {
                 .get::<Params<HashlineSchemeParams>>()
                 .cloned()
                 .unwrap_or_default();
-            let fs = res.require::<FileSystem>()?.0.clone();
+            let raw_fs = res.require::<FileSystem>()?.0.clone();
+            let protected_plan_path = res
+                .get::<crate::types::resources::ProtectedPlanFilePath>()
+                .map(|path| path.0.clone());
             let scheme = params
                 .0
                 .build_scheme()
                 .map_err(xai_tool_runtime::ToolError::invalid_arguments)?;
             let hints_enabled = res.get::<PathNotFoundHints>().is_some_and(|h| h.0);
-            (cwd, display_cwd, fs, scheme, hints_enabled)
+            (
+                cwd,
+                display_cwd,
+                raw_fs,
+                protected_plan_path,
+                scheme,
+                hints_enabled,
+            )
         };
 
         let display_dcwd = display_cwd_or_cwd(&cwd, display_cwd.as_deref());
         let joined_path = resolve_model_path(&cwd, display_cwd.as_deref(), &input.file_path);
+        let protected_plan_write = protected_plan_path.as_deref() == Some(joined_path.as_path());
+        let fs: std::sync::Arc<dyn crate::computer::types::AsyncFileSystem> =
+            if let Some(protected_path) = protected_plan_path {
+                std::sync::Arc::new(
+                    crate::computer::protected_plan_file::GuardedPlanFileSystem::new(
+                        raw_fs,
+                        protected_path,
+                    ),
+                )
+            } else {
+                raw_fs
+            };
         // Error-preserving variant: the Err arm drives new-file creation.
-        let path = match crate::util::fs::try_canonicalize(&joined_path).await {
-            Ok(p) => p,
-            Err(_) => {
-                // Try unicode-confusable resolution before giving up.
-                // Used in search_replace.
-                let resolved = crate::util::try_resolve_unicode_filename(&joined_path).await;
-                if let Some(m) = resolved {
-                    m.resolved_path
-                } else {
-                    // For Write ops on new files, allow creation.
-                    if input.edits.len() == 1
-                        && let HashlineOp::Write { ref content } = input.edits[0]
-                    {
-                        if let Err(e) = fs.write_file(&joined_path, content.as_bytes()).await {
-                            let display_path = display_dcwd.join(&input.file_path);
-                            return Ok(match e.io_error_kind() {
-                                Some(std::io::ErrorKind::NotFound) => {
-                                    Self::file_not_found(
-                                        &display_path,
-                                        &joined_path,
-                                        &cwd,
-                                        &display_dcwd,
-                                        hints_enabled,
-                                    )
-                                    .await
-                                }
-                                _ => crate::types::output::SearchReplaceOutput::InvalidInput(
-                                    format!("Failed to write file: {e}"),
-                                ),
-                            });
+        let path = if protected_plan_write {
+            // Do not canonicalize the auto-approved plan path: a planted
+            // symlink would otherwise be resolved before protected I/O.
+            joined_path.clone()
+        } else {
+            match crate::util::fs::try_canonicalize(&joined_path).await {
+                Ok(p) => p,
+                Err(_) => {
+                    // Try unicode-confusable resolution before giving up.
+                    // Used in search_replace.
+                    let resolved = crate::util::try_resolve_unicode_filename(&joined_path).await;
+                    if let Some(m) = resolved {
+                        m.resolved_path
+                    } else {
+                        // For Write ops on new files, allow creation.
+                        if input.edits.len() == 1
+                            && let HashlineOp::Write { ref content } = input.edits[0]
+                        {
+                            if let Err(e) = fs.write_file(&joined_path, content.as_bytes()).await {
+                                let display_path = display_dcwd.join(&input.file_path);
+                                return Ok(match e.io_error_kind() {
+                                    Some(std::io::ErrorKind::NotFound) => {
+                                        Self::file_not_found(
+                                            &display_path,
+                                            &joined_path,
+                                            &cwd,
+                                            &display_dcwd,
+                                            hints_enabled,
+                                        )
+                                        .await
+                                    }
+                                    _ => crate::types::output::SearchReplaceOutput::InvalidInput(
+                                        format!("Failed to write file: {e}"),
+                                    ),
+                                });
+                            }
+                            let abs = crate::util::fs::canonicalize_with_timeout(joined_path).await;
+                            let r = apply::apply_edits(content, &input.edits, &abs, &*scheme);
+                            let edit_details = r.edit_details;
+                            return Ok(to_search_replace(
+                                r.output,
+                                &abs,
+                                "",
+                                r.new_content.as_deref(),
+                                edit_details,
+                            ));
                         }
-                        let abs = crate::util::fs::canonicalize_with_timeout(joined_path).await;
-                        let r = apply::apply_edits(content, &input.edits, &abs, &*scheme);
-                        let edit_details = r.edit_details;
-                        return Ok(to_search_replace(
-                            r.output,
-                            &abs,
-                            "",
-                            r.new_content.as_deref(),
-                            edit_details,
-                        ));
-                    }
 
-                    let display_path = display_dcwd.join(&input.file_path);
-                    return Ok(Self::file_not_found(
-                        &display_path,
-                        &joined_path,
-                        &cwd,
-                        &display_dcwd,
-                        hints_enabled,
-                    )
-                    .await);
+                        let display_path = display_dcwd.join(&input.file_path);
+                        return Ok(Self::file_not_found(
+                            &display_path,
+                            &joined_path,
+                            &cwd,
+                            &display_dcwd,
+                            hints_enabled,
+                        )
+                        .await);
+                    }
                 }
             }
         };
@@ -377,6 +405,30 @@ impl xai_tool_runtime::Tool for HashlineEditTool {
         // Read current file content.
         let file_bytes = match fs.read_file(&path).await {
             Ok(b) => b,
+            Err(e)
+                if protected_plan_write
+                    && e.io_error_kind() == Some(std::io::ErrorKind::NotFound)
+                    && input.edits.len() == 1
+                    && matches!(&input.edits[0], HashlineOp::Write { .. }) =>
+            {
+                let HashlineOp::Write { ref content } = input.edits[0] else {
+                    unreachable!("guarded by matches")
+                };
+                if let Err(error) = fs.write_file(&path, content.as_bytes()).await {
+                    return Ok(crate::types::output::SearchReplaceOutput::InvalidInput(
+                        format!("Failed to write protected plan file: {error}"),
+                    ));
+                }
+                let result = apply::apply_edits(content, &input.edits, &path, &*scheme);
+                let edit_details = result.edit_details;
+                return Ok(to_search_replace(
+                    result.output,
+                    &path,
+                    "",
+                    result.new_content.as_deref(),
+                    edit_details,
+                ));
+            }
             Err(e) => {
                 let display_path = display_dcwd.join(&input.file_path);
                 return Ok(match e.io_error_kind() {
@@ -1113,6 +1165,48 @@ mod tests {
             d.context_before.contains("second"),
             "context_before: {}",
             d.context_before
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn protected_plan_hashline_write_rejects_final_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TempDir::new().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let plan_path = root.join("plan.md");
+        let secret_path = root.join("outside.txt");
+        std::fs::write(&secret_path, "keep").unwrap();
+        symlink(&secret_path, &plan_path).unwrap();
+
+        let mut resources = test_resources(&root);
+        resources.insert(crate::types::resources::ProtectedPlanFilePath(
+            plan_path.clone(),
+        ));
+        let result = xai_tool_runtime::Tool::run(
+            &HashlineEditTool,
+            test_ctx(resources.into_shared()),
+            HashlineEditInput {
+                file_path: "plan.md".to_owned(),
+                edits: vec![HashlineOp::Write {
+                    content: "must not escape".to_owned(),
+                }],
+            },
+        )
+        .await
+        .expect("the tool reports protected I/O failures as output");
+
+        assert!(
+            matches!(&result, SearchReplaceOutput::InvalidInput(_)),
+            "a protected plan symlink must be rejected: {result:?}"
+        );
+        assert_eq!(std::fs::read_to_string(secret_path).unwrap(), "keep");
+        assert!(
+            std::fs::symlink_metadata(plan_path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
         );
     }
 }

@@ -8358,9 +8358,15 @@ mod tests {
             None,
         );
         let content = buf_to_text(&buf);
+        let submit = if crate::terminal::terminal_context().shift_enter_unavailable() {
+            crate::key!(Enter, ALT)
+        } else {
+            crate::key!(Enter, SHIFT)
+        };
+        let expected = format!("{submit}:send");
         assert!(
-            content.contains("Shift+Enter:send") || content.contains("Alt+Enter:send"),
-            "multiline footer must advertise Shift/Alt+Enter as send, got: {content:?}",
+            content.contains(&expected),
+            "multiline footer must advertise {expected}, got: {content:?}",
         );
         // Bare Enter:send would appear as "  Enter:send" (footer pad); the
         // modified chords contain the substring "Enter:send" so avoid that.
@@ -8395,9 +8401,15 @@ mod tests {
             None,
         );
         let content = buf_to_text(&buf);
+        let submit = if crate::terminal::terminal_context().shift_enter_unavailable() {
+            crate::key!(Enter, ALT)
+        } else {
+            crate::key!(Enter, SHIFT)
+        };
+        let expected = format!("{submit}:create");
         assert!(
-            content.contains("Shift+Enter:create") || content.contains("Alt+Enter:create"),
-            "multiline empty footer must advertise Shift/Alt+Enter as create, got: {content:?}",
+            content.contains(&expected),
+            "multiline empty footer must advertise {expected}, got: {content:?}",
         );
         assert!(
             !content.contains("  Enter:create"),

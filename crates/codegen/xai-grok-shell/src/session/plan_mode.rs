@@ -49,6 +49,7 @@ pub enum PlanModeState {
 /// The SessionActor owns one `PlanModeTracker` and calls its methods
 /// at the appropriate points (handle_session_mode, handle_prompt,
 /// handle_completion, run_compact).
+#[derive(Clone)]
 pub struct PlanModeTracker {
     /// Current state in the lifecycle.
     state: PlanModeState,
@@ -77,9 +78,22 @@ pub struct PlanModeTracker {
     /// Lives inside the session directory:
     /// `~/.grok/sessions/<cwd>/<session_id>/plan.md`
     plan_file_path: PathBuf,
+    /// Scoped model override metadata. Retained through ExitPending until the
+    /// actor has compared the live model and restored (or deliberately kept)
+    /// it.
+    model_scope: Option<PlanModelScopeSnapshot>,
+    /// Write-ahead record for a scoped model switch that has not yet been
+    /// acknowledged as applied.
+    ///
+    /// This is persisted before the chat state's current-model record. On
+    /// restart the actor compares the live locator with both endpoints and can
+    /// safely retry, commit, or abandon the transition without overwriting a
+    /// manual model switch.
+    pending_model_scope: Option<PlanModelScopeSnapshot>,
 }
 /// A buffered mid-turn activation reminder plus the state needed to roll the
 /// activation back if it is withdrawn before delivery.
+#[derive(Clone)]
 struct PendingActivation {
     /// Pre-wrapped `<system-reminder>` text, ready to push verbatim.
     text: String,
@@ -103,6 +117,44 @@ pub struct PlanModeSnapshot {
     /// without treating every Active+plan.md session as pending.
     #[serde(default)]
     pub awaiting_plan_approval: bool,
+    /// Model locator captured before applying `[modes.plan].model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_scope: Option<PlanModelScopeSnapshot>,
+    /// Write-ahead scoped-model transition. Older snapshots omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_model_scope: Option<PlanModelScopeSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PlanModelLocator {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_ref: Option<String>,
+    pub model: String,
+    pub base_url: String,
+}
+
+impl PlanModelLocator {
+    /// Compare the user-visible model selection. A route remains the same
+    /// selection when live credential preflight changes its physical provider.
+    pub fn same_selection(&self, other: &Self) -> bool {
+        match (&self.route_ref, &other.route_ref) {
+            (Some(left), Some(right)) => left == right,
+            (None, None) => {
+                self.model_ref == other.model_ref
+                    && self.model == other.model
+                    && self.base_url == other.base_url
+            }
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PlanModelScopeSnapshot {
+    pub base: PlanModelLocator,
+    pub applied: PlanModelLocator,
 }
 impl PlanModeTracker {
     /// Create a new tracker. `session_dir` is the session's storage
@@ -116,6 +168,8 @@ impl PlanModeTracker {
             awaiting_plan_approval: false,
             pending_activation: None,
             plan_file_path: session_dir.join("plan.md"),
+            model_scope: None,
+            pending_model_scope: None,
         }
     }
     /// Restore a tracker from a persisted snapshot.
@@ -144,6 +198,8 @@ impl PlanModeTracker {
             awaiting_plan_approval: snapshot.awaiting_plan_approval,
             pending_activation: None,
             plan_file_path: session_dir.join("plan.md"),
+            model_scope: snapshot.model_scope,
+            pending_model_scope: snapshot.pending_model_scope,
         }
     }
     /// Mark that the client is waiting on plan approval (`exit_plan_mode` parked).
@@ -162,7 +218,81 @@ impl PlanModeTracker {
             awaiting_plan_approval: self.awaiting_plan_approval,
             reminder_count: self.reminder_count,
             pending_exit_reminder: self.pending_exit_reminder,
+            model_scope: self.model_scope.clone(),
+            pending_model_scope: self.pending_model_scope.clone(),
         }
+    }
+    /// Record a successfully-applied plan model override. Re-entries preserve
+    /// the original base locator instead of stacking scopes.
+    pub fn begin_model_scope(&mut self, base: PlanModelLocator, applied: PlanModelLocator) -> bool {
+        if self.model_scope.is_some() || self.pending_model_scope.is_some() {
+            return false;
+        }
+        self.model_scope = Some(PlanModelScopeSnapshot { base, applied });
+        true
+    }
+    pub fn model_scope(&self) -> Option<&PlanModelScopeSnapshot> {
+        self.model_scope.as_ref()
+    }
+    /// Persist a write-ahead model scope before changing the session model.
+    ///
+    /// Returns false for a duplicate/re-entrant application. The caller must
+    /// persist the tracker before invoking the model switch.
+    pub fn prepare_model_scope(
+        &mut self,
+        base: PlanModelLocator,
+        applied: PlanModelLocator,
+    ) -> bool {
+        if self.model_scope.is_some() || self.pending_model_scope.is_some() {
+            return false;
+        }
+        self.pending_model_scope = Some(PlanModelScopeSnapshot { base, applied });
+        true
+    }
+    /// Promote the write-ahead scope after the model switch succeeds.
+    pub fn commit_prepared_model_scope(&mut self) -> bool {
+        if self.model_scope.is_some() {
+            return false;
+        }
+        let Some(scope) = self.pending_model_scope.take() else {
+            return false;
+        };
+        self.model_scope = Some(scope);
+        true
+    }
+    /// Put an in-memory commit back into its write-ahead form when persisting
+    /// the committed snapshot failed. The disk record is still `pending`, so a
+    /// duplicate actor barrier or process restart can reconcile it safely.
+    pub fn rollback_model_scope_commit(&mut self) -> bool {
+        if self.pending_model_scope.is_some() {
+            return false;
+        }
+        let Some(scope) = self.model_scope.take() else {
+            return false;
+        };
+        self.pending_model_scope = Some(scope);
+        true
+    }
+    /// Drop a write-ahead scope when application failed or a manual model
+    /// switch made it inapplicable.
+    pub fn abort_prepared_model_scope(&mut self) -> bool {
+        self.pending_model_scope.take().is_some()
+    }
+    pub fn pending_model_scope(&self) -> Option<&PlanModelScopeSnapshot> {
+        self.pending_model_scope.as_ref()
+    }
+    pub fn has_any_model_scope(&self) -> bool {
+        self.model_scope.is_some() || self.pending_model_scope.is_some()
+    }
+    /// Finish the scope and return the base model only when the live model is
+    /// still the plan-owned model. A manual `/model` switch therefore wins.
+    pub fn finish_model_scope(
+        &mut self,
+        current: &PlanModelLocator,
+        restore_model: bool,
+    ) -> Option<PlanModelLocator> {
+        let scope = self.model_scope.take()?;
+        (restore_model && scope.applied.same_selection(current)).then_some(scope.base)
     }
     /// Returns the current plan mode state.
     pub fn state(&self) -> PlanModeState {
@@ -287,6 +417,15 @@ impl PlanModeTracker {
         self.awaiting_plan_approval = false;
         self.pending_activation = None;
         true
+    }
+    /// Restore the fail-closed Active state when an approved exit could not be
+    /// persisted. Model scope ownership is intentionally left untouched.
+    pub fn rollback_failed_approved_exit(&mut self) {
+        if self.state == PlanModeState::Inactive {
+            self.state = PlanModeState::Active;
+            self.was_previously_active = true;
+            self.pending_exit_reminder = false;
+        }
     }
     /// Client toggled plan mode OFF.
     /// `turn_in_flight`: whether a model turn is currently running.
@@ -451,9 +590,9 @@ pub fn is_markdown_file_path(path: &Path) -> bool {
 /// whitespace-only file counts as content here whereas `exit_plan_mode` trims
 /// and treats it as empty; harmless because the seed is always `b""`.
 pub(crate) async fn plan_file_has_content(path: &std::path::Path) -> bool {
-    tokio::fs::metadata(path)
+    xai_grok_tools::computer::protected_plan_file::read(path)
         .await
-        .map(|m| m.len() > 0)
+        .map(|bytes| !bytes.is_empty())
         .unwrap_or(false)
 }
 /// The prompt mode sent by the client in `_meta.mode`.
@@ -1221,5 +1360,120 @@ mod tests {
         assert!(!snapshot.awaiting_plan_approval);
         let restored = PlanModeTracker::from_snapshot(PathBuf::from("/tmp/test-session"), snapshot);
         assert!(!restored.is_awaiting_plan_approval());
+    }
+    fn locator(model: &str, base_url: &str) -> PlanModelLocator {
+        PlanModelLocator {
+            route_ref: None,
+            model_ref: None,
+            model: model.to_owned(),
+            base_url: base_url.to_owned(),
+        }
+    }
+    #[test]
+    fn plan_model_scope_captures_base_once_and_restores_owned_model() {
+        let mut t = test_tracker();
+        let base = locator("executor", "https://executor.example/v1");
+        let applied = locator("planner", "https://planner.example/v1");
+        assert!(t.begin_model_scope(base.clone(), applied.clone()));
+        assert!(
+            !t.begin_model_scope(
+                locator("wrong-base", "https://wrong.example/v1"),
+                applied.clone()
+            ),
+            "re-entry must not stack and overwrite the original model"
+        );
+        assert_eq!(t.finish_model_scope(&applied, true), Some(base));
+        assert!(t.model_scope().is_none());
+    }
+    #[test]
+    fn manual_model_switch_wins_over_plan_restore() {
+        let mut t = test_tracker();
+        let base = locator("executor", "https://executor.example/v1");
+        let applied = locator("planner", "https://planner.example/v1");
+        let manual = locator("manual", "https://manual.example/v1");
+        assert!(t.begin_model_scope(base, applied));
+        assert_eq!(t.finish_model_scope(&manual, true), None);
+        assert!(
+            t.model_scope().is_none(),
+            "scope ownership is released after detecting a manual switch"
+        );
+    }
+    #[test]
+    fn disabled_restore_releases_plan_model_scope() {
+        let mut t = test_tracker();
+        let applied = locator("planner", "https://planner.example/v1");
+        assert!(t.begin_model_scope(
+            locator("executor", "https://executor.example/v1"),
+            applied.clone()
+        ));
+        assert_eq!(t.finish_model_scope(&applied, false), None);
+        assert!(t.model_scope().is_none());
+    }
+    #[test]
+    fn model_scope_survives_snapshot_and_legacy_snapshot_defaults_empty() {
+        let mut t = test_tracker();
+        let base = locator("executor", "https://executor.example/v1");
+        let applied = locator("planner", "https://planner.example/v1");
+        assert!(t.begin_model_scope(base.clone(), applied.clone()));
+        let restored =
+            PlanModeTracker::from_snapshot(PathBuf::from("/tmp/test-session"), t.snapshot());
+        assert_eq!(
+            restored.model_scope(),
+            Some(&PlanModelScopeSnapshot { base, applied })
+        );
+
+        let legacy = r#"{
+            "state": "Inactive",
+            "was_previously_active": false,
+            "reminder_count": 0,
+            "pending_exit_reminder": false
+        }"#;
+        let snapshot: PlanModeSnapshot = serde_json::from_str(legacy).unwrap();
+        assert!(snapshot.model_scope.is_none());
+        assert!(snapshot.pending_model_scope.is_none());
+    }
+
+    #[test]
+    fn pending_model_scope_is_write_ahead_and_survives_restart() {
+        let mut t = test_tracker();
+        let base = locator("executor", "https://executor.example/v1");
+        let applied = locator("planner", "https://planner.example/v1");
+        assert!(t.prepare_model_scope(base.clone(), applied.clone()));
+        assert!(t.model_scope().is_none());
+        assert_eq!(
+            t.pending_model_scope(),
+            Some(&PlanModelScopeSnapshot {
+                base: base.clone(),
+                applied: applied.clone(),
+            })
+        );
+
+        let mut restored =
+            PlanModeTracker::from_snapshot(PathBuf::from("/tmp/test-session"), t.snapshot());
+        assert_eq!(
+            restored.pending_model_scope(),
+            Some(&PlanModelScopeSnapshot {
+                base: base.clone(),
+                applied: applied.clone(),
+            })
+        );
+        assert!(restored.commit_prepared_model_scope());
+        assert!(restored.pending_model_scope().is_none());
+        assert_eq!(
+            restored.model_scope(),
+            Some(&PlanModelScopeSnapshot { base, applied })
+        );
+    }
+
+    #[test]
+    fn failed_or_superseded_pending_model_scope_can_be_aborted() {
+        let mut t = test_tracker();
+        assert!(t.prepare_model_scope(
+            locator("executor", "https://executor.example/v1"),
+            locator("planner", "https://planner.example/v1"),
+        ));
+        assert!(t.abort_prepared_model_scope());
+        assert!(!t.has_any_model_scope());
+        assert!(!t.abort_prepared_model_scope());
     }
 }

@@ -170,6 +170,30 @@ impl ChatStateActor {
             ChatStateCommand::UpdateSamplingConfig { config } => {
                 self.state.sampling_config = config;
             }
+            ChatStateCommand::ReplaceSamplingConfigAndCredentials {
+                config,
+                credentials,
+                reply,
+            } => {
+                self.state.sampling_config = config;
+                self.state.credentials = credentials;
+                let _ = reply.send(());
+            }
+            ChatStateCommand::UpdateCredentialsIfSamplingConfigMatches {
+                expected,
+                credentials,
+                reply,
+            } => {
+                let current = &self.state.sampling_config;
+                let locator_matches = current.model_ref == expected.model_ref
+                    && current.route_ref == expected.route_ref
+                    && current.model == expected.model
+                    && current.base_url == expected.base_url;
+                if locator_matches {
+                    self.state.credentials = credentials;
+                }
+                let _ = reply.send(locator_matches);
+            }
             ChatStateCommand::RecordAgentEditedPath { path } => {
                 self.state.agent_edited_paths.insert(path);
             }
@@ -297,6 +321,12 @@ impl ChatStateActor {
             }
             ChatStateCommand::GetSamplingConfig { reply } => {
                 let _ = reply.send(self.state.sampling_config.clone());
+            }
+            ChatStateCommand::GetSamplingConfigAndCredentials { reply } => {
+                let _ = reply.send((
+                    self.state.sampling_config.clone(),
+                    self.state.credentials.clone(),
+                ));
             }
             ChatStateCommand::GetAgentEditedPaths { reply } => {
                 let _ = reply.send(self.state.agent_edited_paths.clone());

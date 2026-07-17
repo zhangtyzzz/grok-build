@@ -898,20 +898,26 @@ async fn read_parent_sampling_config(
     ctx: &SubagentSpawnContext,
 ) -> (xai_grok_sampler::SamplerConfig, acp::ModelId) {
     if let Some(ref chat_state) = ctx.parent_chat_state {
-        if let Some(cfg) = chat_state.get_sampling_config().await {
-            let creds = chat_state.get_credentials().await;
+        if let Some((cfg, creds)) = chat_state.get_sampling_config_and_credentials().await {
             let mut extra_headers = cfg.extra_headers;
             crate::agent::config::inject_url_derived_headers(
                 &mut extra_headers,
                 creds.alpha_test_key.as_deref(),
                 &cfg.base_url,
             );
-            let auth_scheme = crate::agent::config::try_resolve_model_credentials(&cfg.model, None)
-                .map(|r| r.auth_scheme)
-                .unwrap_or_default();
+            let auth_scheme = crate::agent::config::try_resolve_model_credentials(
+                cfg.model_ref.as_deref(),
+                &cfg.model,
+                &cfg.base_url,
+                None,
+            )
+            .map(|r| r.auth_scheme)
+            .unwrap_or_default();
             let inherited = xai_grok_sampler::SamplerConfig {
                 api_key: creds.api_key,
                 base_url: cfg.base_url,
+                model_ref: cfg.model_ref,
+                route_ref: cfg.route_ref,
                 model: cfg.model.clone(),
                 max_completion_tokens: cfg.max_completion_tokens,
                 temperature: cfg.temperature,
@@ -926,6 +932,7 @@ async fn read_parent_sampling_config(
                 max_retries: None,
                 stream_tool_calls: cfg.stream_tool_calls.unwrap_or(false),
                 idle_timeout_secs: None,
+                prompt_cache: cfg.prompt_cache,
                 client_identifier: ctx.sampling_config.client_identifier.clone(),
                 deployment_id: ctx.sampling_config.deployment_id.clone(),
                 user_id: ctx.sampling_config.user_id.clone(),
@@ -993,7 +1000,7 @@ fn subagent_auth_type(
     model: Option<&crate::agent::config::ModelEntry>,
     auth_method_id: &acp::AuthMethodId,
 ) -> xai_chat_state::AuthType {
-    if model.is_some_and(|m| m.has_own_credentials()) {
+    if model.is_some_and(|m| m.opts_out_of_ambient_credentials()) {
         xai_chat_state::AuthType::ApiKey
     } else if crate::agent::auth_method::is_session_based_method(auth_method_id) {
         xai_chat_state::AuthType::SessionToken
@@ -1008,7 +1015,11 @@ fn resolve_model_override_to_config(
     ctx: &SubagentSpawnContext,
 ) -> Option<(xai_grok_sampler::SamplerConfig, acp::ModelId)> {
     use crate::agent::config::{resolve_credentials, sampling_config_for_model};
-    let entry = crate::agent::config::find_model_by_id(&ctx.available_models, model_id).cloned()?;
+    let entry = if model_id.starts_with("route:") {
+        ctx.models_manager.resolve_model_ref_entry(model_id)?
+    } else {
+        crate::agent::config::find_model_by_id(&ctx.available_models, model_id).cloned()?
+    };
     let canonical_model_id = if ctx.available_models.contains_key(model_id) {
         acp::ModelId::new(model_id)
     } else {
@@ -1034,8 +1045,9 @@ fn resolve_model_override_to_config(
             { "model_id" : model_id, "canonical_model" : canonical_model_id.0
             .as_ref(), "resolved_model_raw" : & config.model, "base_url" : & config
             .base_url, "key_prefix" : key_prefix(& config.api_key),
-            "has_own_credentials" : entry.has_own_credentials(), "has_session_key" :
-            has_session_key, "auth_type" : format!("{:?}", resolved_auth_type),
+            "owns_auth_boundary" : entry.opts_out_of_ambient_credentials(),
+            "has_session_key" : has_session_key, "auth_type" : format!("{:?}",
+            resolved_auth_type),
             "auth_method_id" : ctx.auth_method_id.0.as_ref(), }
         )),
     );

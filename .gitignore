@@ -1,3 +1,9 @@
 /target
+/dist/
+/.release-smoke/
+/.release-target/
+/.release-tools/
+/release-candidate/
+/release-output/
 **/*.rs.bk
 .DS_Store

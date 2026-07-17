@@ -245,6 +245,36 @@ grok sessions search "rate limit"
 
 `grok sessions list` shows sessions for the current working directory, grouped by worktree label. Each row lists the session ID, the creation and update dates, the source status, and the summary. `grok sessions search` combines a local SQLite index with remote results.
 
+### Notify a live session
+
+An external process, such as a background reviewer agent, can inject a result
+into a session currently hosted by the shared leader:
+
+```bash
+grok sessions notify \
+  --session "$GROK_SESSION_ID" \
+  --kind reviewer \
+  --id "review:$COMMIT_SHA" \
+  --message-file /path/to/review.txt \
+  --wake
+```
+
+Use a stable `--id` to make retries idempotent. `--message-file -` reads the
+message from stdin, and `--json` prints a machine-readable acknowledgement.
+With `--wake`, an idle session starts a turn so the main agent can assess the
+external findings. Without it, the message waits at the front of the session's
+prompt queue; an already-running turn receives the message at its next safe
+interjection point either way.
+
+This command connects only to an existing leader and only targets a session
+that is live in that leader. It never starts a leader, loads a session from
+disk, or resumes the target in a second process. Notification ID deduplication
+is currently bounded to the lifetime of the resident session actor. Once that
+actor's mailbox accepts a notification, the ID remains reserved even if its
+acknowledgement is lost, preventing an uncertain retry from injecting it
+twice. If the actor unloads or the leader restarts, its transient prompt may
+have been lost, so the same stable ID may be submitted to the new actor again.
+
 ---
 
 ## Worktree Sessions

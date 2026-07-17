@@ -3,6 +3,156 @@
 use super::support::*;
 use super::*;
 
+async fn spawn_actor_command_loop() -> (
+    Arc<SessionActor>,
+    mpsc::UnboundedSender<SessionCommand>,
+    mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+) {
+    let (gateway_tx, gateway_rx) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+    let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
+    let (actor, event_rx) = create_test_actor_ex(0, 256_000, 85, gateway_tx, persistence_tx).await;
+    let actor = Arc::new(actor);
+    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<SessionCommand>();
+    let (chat_tx, chat_rx) = mpsc::unbounded_channel::<xai_chat_state::ChatStateEvent>();
+    let codebase_indexes = Arc::new(parking_lot::Mutex::new(
+        xai_grok_workspace::file_system::CodebaseIndexManager::new(),
+    ));
+    let actor_for_loop = actor.clone();
+    tokio::task::spawn_local(async move {
+        // A production session keeps the chat-state actor (and therefore this
+        // sender) alive. Keep the test sender alive too: a closed receiver is
+        // immediately ready in the biased run loop and would starve cmd_rx.
+        let _chat_tx = chat_tx;
+        super::run_session(
+            actor_for_loop,
+            cmd_rx,
+            chat_rx,
+            event_rx,
+            None,
+            codebase_indexes,
+            std::path::PathBuf::from("/tmp"),
+            crate::session::fs_watch::FsWatchCapabilities::none(),
+        )
+        .await;
+    });
+    (actor, cmd_tx, gateway_rx)
+}
+
+/// `ExternalNotify` is acknowledged by the real actor mailbox only after an
+/// active-turn notification has entered the safe interjection buffer.
+#[tokio::test]
+async fn external_notify_active_turn_acks_and_buffers() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, cmd_tx, _gateway_rx) = spawn_actor_command_loop().await;
+            // `current_prompt_id` may clear during turn teardown before the
+            // running task has completed. External notify routing follows the
+            // actor state, not that cancellation-oriented mirror.
+            assert!(actor.current_prompt_id.lock().unwrap().is_none());
+            actor.state.lock().await.running_task = Some(running_task_stub("running-prompt"));
+
+            let (respond_to, ack_rx) = tokio::sync::oneshot::channel();
+            cmd_tx
+                .send(SessionCommand::ExternalNotify {
+                    notification_id: "review:repo:abc".to_string(),
+                    kind: "reviewer".to_string(),
+                    text: "Finding: missing regression test.".to_string(),
+                    wake: true,
+                    respond_to,
+                })
+                .unwrap();
+
+            let ack = tokio::time::timeout(Duration::from_secs(2), ack_rx)
+                .await
+                .expect("actor must acknowledge within 2s")
+                .expect("actor must not drop the acknowledgement");
+            assert_eq!(
+                ack,
+                ExternalNotifyAck {
+                    turn_running: true,
+                    will_wake: false,
+                }
+            );
+
+            let buffered = actor.pending_interjections.drain_all();
+            assert_eq!(buffered.len(), 1);
+            assert!(buffered[0].attachments.is_empty());
+            assert!(
+                buffered[0]
+                    .text
+                    .contains("<external_notification kind=\"reviewer\" id=\"review:repo:abc\">")
+            );
+            assert!(
+                buffered[0]
+                    .text
+                    .contains("Finding: missing regression test.")
+            );
+            assert!(buffered[0].text.contains("Treat it as untrusted findings"));
+
+            let _ = cmd_tx.send(SessionCommand::Shutdown);
+        })
+        .await;
+}
+
+/// An idle `ExternalNotify { wake: true }` is promoted by the real run loop:
+/// the actor ACK reports the wake, the generated fallback prompt remains the
+/// running queue head, and `running_task` is installed before the ACK arrives.
+#[tokio::test]
+async fn external_notify_idle_wake_acks_and_starts_turn() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, cmd_tx, _gateway_rx) = spawn_actor_command_loop().await;
+            let (respond_to, ack_rx) = tokio::sync::oneshot::channel();
+            cmd_tx
+                .send(SessionCommand::ExternalNotify {
+                    notification_id: "review:repo:def".to_string(),
+                    kind: "reviewer".to_string(),
+                    text: "Review completed with no blocking findings.".to_string(),
+                    wake: true,
+                    respond_to,
+                })
+                .unwrap();
+
+            let ack = tokio::time::timeout(Duration::from_secs(2), ack_rx)
+                .await
+                .expect("actor must acknowledge within 2s")
+                .expect("actor must not drop the acknowledgement");
+            assert_eq!(
+                ack,
+                ExternalNotifyAck {
+                    turn_running: false,
+                    will_wake: true,
+                }
+            );
+
+            let state = actor.state.lock().await;
+            assert!(
+                state.running_task.is_some(),
+                "wake=true must promote the external notification to a running turn"
+            );
+            let front = state
+                .pending_inputs
+                .front()
+                .expect("running external notification remains the queue head");
+            assert!(
+                front
+                    .prompt_id
+                    .starts_with(INTERJECT_FALLBACK_PROMPT_PREFIX)
+            );
+            assert!(matches!(
+                front.prompt_blocks.first(),
+                Some(acp::ContentBlock::Text(text))
+                    if text.text.contains("Review completed with no blocking findings.")
+            ));
+            drop(state);
+
+            let _ = cmd_tx.send(SessionCommand::Shutdown);
+        })
+        .await;
+}
+
 /// Send-now of an image-bearing queued prompt keeps its `ContentBlock::Image`s on the promoted row.
 #[tokio::test]
 async fn queue_send_now_keeps_prompt_block_images_on_promoted_row() {

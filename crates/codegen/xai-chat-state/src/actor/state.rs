@@ -267,6 +267,8 @@ mod tests {
     fn test_sampling_config() -> SamplingConfig {
         SamplingConfig {
             base_url: "https://api.example.com".to_string(),
+            model_ref: None,
+            route_ref: None,
             model: "test-model".to_string(),
             max_completion_tokens: None,
             temperature: None,
@@ -276,6 +278,7 @@ mod tests {
             context_window: std::num::NonZeroU64::new(128_000).unwrap(),
             reasoning_effort: None,
             stream_tool_calls: None,
+            prompt_cache: Default::default(),
         }
     }
 

@@ -9,7 +9,8 @@
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use xai_grok_sampling_types::{
-    ApiBackend, CompactionAtTokens, CompactionsRemaining, DoomLoopRecoveryPolicy, ReasoningEffort,
+    ApiBackend, CompactionAtTokens, CompactionsRemaining, DoomLoopRecoveryPolicy,
+    PromptCachePolicy, ReasoningEffort,
 };
 
 use crate::attribution::SharedAttributionCallback;
@@ -49,6 +50,17 @@ pub enum AuthScheme {
 pub struct SamplerConfig {
     pub api_key: Option<String>,
     pub base_url: String,
+    /// Stable catalog key for the physical model selected for this request.
+    ///
+    /// This is intentionally distinct from `model`, which is only the
+    /// upstream routing slug and may be shared by multiple providers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_ref: Option<String>,
+    /// Logical route alias that selected `model_ref`, when this request belongs
+    /// to a dynamically routed session. The shell persists this separately so
+    /// it can re-run route preflight before every request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_ref: Option<String>,
     pub model: String,
     pub max_completion_tokens: Option<u32>,
     pub temperature: Option<f32>,
@@ -68,6 +80,12 @@ pub struct SamplerConfig {
     pub max_retries: Option<u32>,
     pub stream_tool_calls: bool,
     pub idle_timeout_secs: Option<u64>,
+    /// Prompt-cache policy used by protocol adapters that support it.
+    ///
+    /// The default preserves the Messages adapter's historical five-minute
+    /// stable-prefix breakpoint. Other API backends ignore this setting.
+    #[serde(default, skip_serializing_if = "PromptCachePolicy::is_default")]
+    pub prompt_cache: PromptCachePolicy,
 
     // Reasoning effort
     pub reasoning_effort: Option<ReasoningEffort>,
@@ -133,6 +151,8 @@ impl Default for SamplerConfig {
         Self {
             api_key: None,
             base_url: String::new(),
+            model_ref: None,
+            route_ref: None,
             model: String::new(),
             max_completion_tokens: None,
             temperature: None,
@@ -145,6 +165,7 @@ impl Default for SamplerConfig {
             max_retries: None,
             stream_tool_calls: false,
             idle_timeout_secs: None,
+            prompt_cache: PromptCachePolicy::default(),
             reasoning_effort: None,
             origin_client: None,
             client_identifier: None,
@@ -242,5 +263,13 @@ mod tests {
             round_tripped.doom_loop_recovery,
             with_policy.doom_loop_recovery
         );
+    }
+
+    #[test]
+    fn config_without_prompt_cache_keeps_legacy_five_minute_default() {
+        let mut stripped = serde_json::to_value(SamplerConfig::default()).unwrap();
+        stripped.as_object_mut().unwrap().remove("prompt_cache");
+        let config: SamplerConfig = serde_json::from_value(stripped).unwrap();
+        assert_eq!(config.prompt_cache, PromptCachePolicy::STABLE_PREFIX_5M);
     }
 }

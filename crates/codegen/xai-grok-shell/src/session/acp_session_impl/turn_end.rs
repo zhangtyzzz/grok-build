@@ -241,19 +241,33 @@ impl SessionActor {
         // (state == ExitPending), complete the deferred exit now that the
         // turn is finished. The next handle_prompt() will inject the exit
         // reminder via has_pending_exit_reminder().
-        {
+        let plan_mode_before_deferred_exit = self.plan_mode.lock().clone();
+        let deferred_plan_exit = {
             let mut tracker = self.plan_mode.lock();
             let transitioned =
                 tracker.state() == crate::session::plan_mode::PlanModeState::ExitPending;
             tracker.complete_deferred_exit();
-            drop(tracker);
-            if transitioned {
-                self.persist_plan_mode_state();
-            }
-        }
+            transitioned
+        };
         // Drop the state guard before the async emit so the persist/broadcast
         // fork doesn't run under the state lock.
         drop(state);
+        if deferred_plan_exit {
+            if let Err(error) = self.persist_plan_mode_state_durable().await {
+                *self.plan_mode.lock() = plan_mode_before_deferred_exit;
+                tracing::error!(
+                    session_id = %self.session_info.id.0,
+                    ?error,
+                    "Deferred Plan mode exit was rolled back after durable persistence failed"
+                );
+            } else if let Err(error) = self.apply_plan_model_scope(false, false).await {
+                tracing::error!(
+                    session_id = %self.session_info.id.0,
+                    ?error,
+                    "Deferred Plan mode model restore is incomplete; next prompt will retry"
+                );
+            }
+        }
 
         // Durable twin of the fire-and-forget `prompt_complete` (emitted from
         // `MvpAgent::prompt`): publish the turn's terminal on the persisted +

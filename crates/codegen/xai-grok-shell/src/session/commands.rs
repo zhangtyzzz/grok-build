@@ -103,6 +103,20 @@ impl NotificationSource {
         }
     }
 }
+
+/// Actor acknowledgement for an externally supplied session notification.
+///
+/// The acknowledgement is sent only after the actor has accepted the message
+/// into either the active turn's interjection buffer or the idle prompt queue.
+/// It is intentionally not a disk-persistence barrier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExternalNotifyAck {
+    /// Whether a model turn was already active when the message was accepted.
+    pub turn_running: bool,
+    /// Whether accepting this message requested a new idle-session turn.
+    pub will_wake: bool,
+}
+
 pub enum SessionCommand {
     Initialize {
         system_prompt: String,
@@ -156,7 +170,19 @@ pub enum SessionCommand {
     },
     SessionMode {
         session_mode: acp::SessionModeId,
-        responds_to: oneshot::Sender<()>,
+        responds_to: oneshot::Sender<Result<(), String>>,
+    },
+    /// Converge an agent tool's Plan Mode transition on actor-owned state.
+    ///
+    /// The tool notification bridge sends this without an acknowledgement as
+    /// an early, best-effort signal. The completed tool result sends the same
+    /// command with a oneshot and waits for it before returning to the agentic
+    /// loop. The transition handler is idempotent, so either delivery may win,
+    /// while the acknowledged delivery is an ordering barrier before the next
+    /// sampling request.
+    ApplyPlanToolTransition {
+        entering: bool,
+        responds_to: Option<oneshot::Sender<Result<(), String>>>,
     },
     SetSessionModel {
         sampling_config: xai_grok_sampler::SamplerConfig,
@@ -680,6 +706,24 @@ pub enum SessionCommand {
         /// Pasted images riding along with the interjection. Empty from
         /// text-only / older clients.
         images: Vec<acp::ImageContent>,
+    },
+    /// Inject an out-of-process agent result into this live session.
+    ///
+    /// Unlike [`SessionCommand::Interject`], the caller waits for
+    /// `respond_to`, so a command-line notifier can distinguish actor
+    /// acceptance from a closed/stale session channel. The external extension
+    /// layer owns notification-id deduplication; the actor owns serialized
+    /// queueing and wake behaviour.
+    ExternalNotify {
+        notification_id: String,
+        kind: String,
+        text: String,
+        /// Start a new turn when the session is idle. When false, the message
+        /// remains at the front of the prompt queue until the session next
+        /// runs; an already-active turn always receives it at the next safe
+        /// interjection point.
+        wake: bool,
+        respond_to: oneshot::Sender<ExternalNotifyAck>,
     },
     /// Trigger a model turn so the model can print a visible goal progress
     /// summary.  The goal orchestrator injects a system reminder into context

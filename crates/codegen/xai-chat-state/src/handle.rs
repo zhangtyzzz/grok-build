@@ -147,6 +147,41 @@ impl ChatStateHandle {
             .send(ChatStateCommand::UpdateSamplingConfig { config });
     }
 
+    /// Atomically replace sampling configuration and credentials, returning
+    /// only after the actor has applied both. `None` means the actor is dead.
+    pub async fn replace_sampling_config_and_credentials(
+        &self,
+        config: SamplingConfig,
+        credentials: Credentials,
+    ) -> Option<()> {
+        self.query("ReplaceSamplingConfigAndCredentials", |reply| {
+            ChatStateCommand::ReplaceSamplingConfigAndCredentials {
+                config,
+                credentials,
+                reply,
+            }
+        })
+        .await
+    }
+
+    /// Apply refreshed credentials only while the physical sampling locator
+    /// remains unchanged. Returns `Some(false)` after a concurrent switch and
+    /// `None` if the actor is dead.
+    pub async fn update_credentials_if_sampling_config_matches(
+        &self,
+        expected: SamplingConfig,
+        credentials: Credentials,
+    ) -> Option<bool> {
+        self.query("UpdateCredentialsIfSamplingConfigMatches", |reply| {
+            ChatStateCommand::UpdateCredentialsIfSamplingConfigMatches {
+                expected,
+                credentials,
+                reply,
+            }
+        })
+        .await
+    }
+
     /// Track that the agent edited a file path.
     pub fn record_agent_edited_path(&self, path: String) {
         let _ = self
@@ -423,6 +458,16 @@ impl ChatStateHandle {
     pub async fn get_sampling_config(&self) -> Option<SamplingConfig> {
         self.query("GetSamplingConfig", |reply| {
             ChatStateCommand::GetSamplingConfig { reply }
+        })
+        .await
+    }
+
+    /// Get sampling configuration and credentials from one actor snapshot.
+    pub async fn get_sampling_config_and_credentials(
+        &self,
+    ) -> Option<(SamplingConfig, Credentials)> {
+        self.query("GetSamplingConfigAndCredentials", |reply| {
+            ChatStateCommand::GetSamplingConfigAndCredentials { reply }
         })
         .await
     }

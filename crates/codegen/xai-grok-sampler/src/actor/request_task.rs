@@ -164,6 +164,14 @@ pub(crate) async fn run_request_task(
                 if let Some(usage) = response.usage.as_ref() {
                     sampling_span.record("output_tokens", usage.completion_tokens);
                     sampling_span.record("reasoning_tokens", usage.reasoning_tokens);
+                    sampling_span.record(
+                        "cache_write_5m_input_tokens",
+                        usage.cache_write_5m_input_tokens,
+                    );
+                    sampling_span.record(
+                        "cache_write_1h_input_tokens",
+                        usage.cache_write_1h_input_tokens,
+                    );
                 }
                 // Emit Completed only after the loop succeeds; the L2
                 // stream's terminal event was suppressed by

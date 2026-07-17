@@ -10,7 +10,57 @@ impl SessionActor {
         skip_prompt_rewrite: bool,
         auto_compact_threshold_percent: u8,
     ) -> Result<acp::ModelId, acp::Error> {
-        let model_id = acp::ModelId::new(sampling_config.model.clone());
+        self.handle_set_session_model_inner(
+            sampling_config,
+            use_concise,
+            apply_prompt_override,
+            skip_prompt_rewrite,
+            auto_compact_threshold_percent,
+            false,
+        )
+        .await
+    }
+
+    /// Plan-scope model switch whose `CurrentModel` record is acknowledged
+    /// only after the persistence actor reports a successful write + sync.
+    pub(super) async fn handle_set_session_model_durable(
+        &self,
+        sampling_config: xai_grok_sampler::SamplerConfig,
+        use_concise: bool,
+        apply_prompt_override: bool,
+        skip_prompt_rewrite: bool,
+        auto_compact_threshold_percent: u8,
+    ) -> Result<acp::ModelId, acp::Error> {
+        self.handle_set_session_model_inner(
+            sampling_config,
+            use_concise,
+            apply_prompt_override,
+            skip_prompt_rewrite,
+            auto_compact_threshold_percent,
+            true,
+        )
+        .await
+    }
+
+    async fn handle_set_session_model_inner(
+        &self,
+        sampling_config: xai_grok_sampler::SamplerConfig,
+        use_concise: bool,
+        apply_prompt_override: bool,
+        skip_prompt_rewrite: bool,
+        auto_compact_threshold_percent: u8,
+        durable_persistence: bool,
+    ) -> Result<acp::ModelId, acp::Error> {
+        // Persist the logical route selection when present; otherwise persist
+        // the exact physical catalog identity, never the ambiguous upstream
+        // provider slug.
+        let model_id = acp::ModelId::new(
+            sampling_config
+                .route_ref
+                .clone()
+                .or_else(|| sampling_config.model_ref.clone())
+                .unwrap_or_else(|| sampling_config.model.clone()),
+        );
         let new_context_window = self.compaction.context_window_override.unwrap_or_else(|| {
             std::num::NonZeroU64::new(sampling_config.context_window).unwrap_or_else(|| {
                 std::num::NonZeroU64::new(DEFAULT_CONTEXT_WINDOW)
@@ -45,36 +95,83 @@ impl SessionActor {
                 }
             )),
         );
-        self.chat_state_handle
-            .update_sampling_config(xai_grok_sampling_types::SamplingConfig {
-                base_url: sampling_config.base_url.clone(),
-                model: sampling_config.model.clone(),
-                max_completion_tokens: sampling_config.max_completion_tokens,
-                temperature: sampling_config.temperature,
-                top_p: sampling_config.top_p,
-                api_backend: sampling_config.api_backend.clone(),
-                extra_headers: sampling_config.extra_headers.clone(),
-                context_window: new_context_window,
-                reasoning_effort: sampling_config.reasoning_effort,
-                stream_tool_calls: Some(sampling_config.stream_tool_calls),
-            });
-        let existing = self.chat_state_handle.get_credentials().await;
+        let (_, existing) = self
+            .chat_state_handle
+            .get_sampling_config_and_credentials()
+            .await
+            .ok_or_else(|| {
+                acp::Error::internal_error()
+                    .data("chat-state actor unavailable during model switch")
+            })?;
+        let catalog = self.models_manager.models();
+        let catalog_auth_facts = crate::agent::config::find_model_by_locator(
+            &catalog,
+            sampling_config.model_ref.as_deref(),
+            sampling_config.model.as_str(),
+            sampling_config.base_url.as_str(),
+        )
+        .map(|entry| crate::agent::config::ModelAuthFacts {
+            byok: if entry.opts_out_of_ambient_credentials() {
+                crate::agent::auth_method::ModelByok::Byok
+            } else {
+                crate::agent::auth_method::ModelByok::NotByok
+            },
+            auth_scheme: entry.info().auth_scheme,
+        });
         let session_key = self
             .auth_manager
             .as_ref()
             .and_then(|am| am.current_or_expired().map(|a| a.key));
-        self.chat_state_handle
-            .update_credentials(xai_chat_state::Credentials {
-                api_key: sampling_config.api_key.clone(),
-                auth_type: crate::agent::config::resolve_chat_state_auth_type(
+        let credentials = xai_chat_state::Credentials {
+            api_key: sampling_config.api_key.clone(),
+            auth_type: if catalog_auth_facts
+                .is_some_and(|facts| facts.byok == crate::agent::auth_method::ModelByok::Byok)
+            {
+                xai_chat_state::AuthType::ApiKey
+            } else {
+                crate::agent::config::resolve_chat_state_auth_type(
+                    sampling_config.model_ref.as_deref(),
                     sampling_config.model.as_str(),
+                    sampling_config.base_url.as_str(),
                     session_key.as_deref(),
                     existing.auth_type,
-                ),
-                alpha_test_key: existing.alpha_test_key,
-                client_version: sampling_config.client_version.clone(),
-            });
-        self.model_auth_facts.replace(None);
+                )
+            },
+            alpha_test_key: existing.alpha_test_key,
+            client_version: sampling_config.client_version.clone(),
+        };
+        self.chat_state_handle
+            .replace_sampling_config_and_credentials(
+                xai_grok_sampling_types::SamplingConfig {
+                    base_url: sampling_config.base_url.clone(),
+                    model_ref: sampling_config.model_ref.clone(),
+                    route_ref: sampling_config.route_ref.clone(),
+                    model: sampling_config.model.clone(),
+                    max_completion_tokens: sampling_config.max_completion_tokens,
+                    temperature: sampling_config.temperature,
+                    top_p: sampling_config.top_p,
+                    api_backend: sampling_config.api_backend.clone(),
+                    extra_headers: sampling_config.extra_headers.clone(),
+                    context_window: new_context_window,
+                    reasoning_effort: sampling_config.reasoning_effort,
+                    stream_tool_calls: Some(sampling_config.stream_tool_calls),
+                    prompt_cache: sampling_config.prompt_cache,
+                },
+                credentials,
+            )
+            .await
+            .ok_or_else(|| {
+                acp::Error::internal_error()
+                    .data("chat-state actor unavailable during model switch")
+            })?;
+        let cache_key = format!(
+            "{}\0{}\0{}",
+            sampling_config.model_ref.as_deref().unwrap_or_default(),
+            sampling_config.model,
+            sampling_config.base_url
+        );
+        self.model_auth_facts
+            .replace(catalog_auth_facts.map(|facts| (cache_key, facts)));
         self.signals_handle()
             .record_model_usage(&sampling_config.model);
         if apply_prompt_override && !skip_prompt_rewrite {
@@ -105,14 +202,52 @@ impl SessionActor {
             );
         }
         let agent_name = self.agent.borrow().definition().name.clone();
-        let _ = self
-            .notifications
-            .persistence_tx
-            .send(PersistenceMsg::CurrentModel {
-                model_id: model_id.clone(),
-                agent_name: Some(agent_name),
-                reasoning_effort: Some(sampling_config.reasoning_effort),
-            });
+        let persistence = if durable_persistence {
+            let (respond_to, response) = tokio::sync::oneshot::channel();
+            self.notifications
+                .persistence_tx
+                .send(PersistenceMsg::CurrentModelAndAck {
+                    model_id: model_id.clone(),
+                    agent_name: Some(agent_name),
+                    reasoning_effort: Some(sampling_config.reasoning_effort),
+                    respond_to,
+                })
+                .map_err(|_| {
+                    acp::Error::internal_error()
+                        .data("durable current-model persistence actor is unavailable")
+                })?;
+            response
+                .await
+                .map_err(|_| {
+                    acp::Error::internal_error()
+                        .data("durable current-model acknowledgement channel closed")
+                })?
+                .map_err(|error| {
+                    acp::Error::internal_error()
+                        .data(format!("durable current-model write failed: {error}"))
+                })
+        } else {
+            self.notifications
+                .persistence_tx
+                .send(PersistenceMsg::CurrentModel {
+                    model_id: model_id.clone(),
+                    agent_name: Some(agent_name),
+                    reasoning_effort: Some(sampling_config.reasoning_effort),
+                })
+                .map(|_| ())
+                .map_err(|_| {
+                    acp::Error::internal_error().data("current-model persistence actor unavailable")
+                })
+        };
+        if let Err(error) = persistence {
+            if durable_persistence {
+                return Err(error);
+            }
+            tracing::warn!(
+                session_id = %self.session_info.id.0,
+                "current-model best-effort persistence actor unavailable"
+            );
+        }
         Ok(model_id)
     }
     /// Handle [`SessionCommand::RebuildAgentForDefinition`].
@@ -202,7 +337,14 @@ impl SessionActor {
             }
             let plan_path = self.plan_mode.lock().plan_file_path().to_path_buf();
             bridge
-                .update_resource(xai_grok_tools::types::resources::PlanFilePath(plan_path))
+                .update_resource(xai_grok_tools::types::resources::PlanFilePath(
+                    plan_path.clone(),
+                ))
+                .await;
+            bridge
+                .update_resource(xai_grok_tools::types::resources::ProtectedPlanFilePath(
+                    plan_path,
+                ))
                 .await;
             if let Some(display_cwd) = self.display_cwd.get() {
                 bridge

@@ -683,6 +683,8 @@ impl SessionActor {
         let current_query = crate::session::image_describe::strip_template_context_tags(
             &xai_chat_state::compaction_utils::extract_user_query(&original_user_message),
         );
+        self.refresh_token_if_expired().await;
+        self.preflight_active_route_for_request().await?;
         let active_session_config = self.reconstruct_full_config().await;
         let resolved_describe = self
             .resolve_aux_sampler_config(&self.image_description_model)

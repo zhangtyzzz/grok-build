@@ -175,6 +175,8 @@ mod tests {
             conversation: vec![],
             sampling_config: SamplingConfig {
                 base_url: "https://api.example.com".to_string(),
+                model_ref: None,
+                route_ref: None,
                 model: "test-model".to_string(),
                 max_completion_tokens: None,
                 temperature: None,
@@ -184,6 +186,7 @@ mod tests {
                 context_window: NonZeroU64::new(128_000).unwrap(),
                 reasoning_effort: None,
                 stream_tool_calls: None,
+                prompt_cache: Default::default(),
             },
             prompt_index: 0,
             total_tokens: 0,
@@ -218,6 +221,8 @@ mod tests {
             ],
             sampling_config: SamplingConfig {
                 base_url: "https://api.example.com".to_string(),
+                model_ref: None,
+                route_ref: None,
                 model: "grok-3".to_string(),
                 max_completion_tokens: Some(4096),
                 temperature: Some(0.7),
@@ -227,6 +232,7 @@ mod tests {
                 context_window: NonZeroU64::new(128_000).unwrap(),
                 reasoning_effort: None,
                 stream_tool_calls: None,
+                prompt_cache: Default::default(),
             },
             prompt_index: 5,
             total_tokens: 1234,

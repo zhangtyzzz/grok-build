@@ -139,7 +139,7 @@ pub(crate) async fn run_search_replace(
         .get::<xai_tool_runtime::BehaviorVersion>()
         .map(|v| v.0.clone());
     let tool_call_id = ctx.call_id.as_str().to_owned();
-    let (cwd, display_cwd, fs, notification_handle, hints_enabled);
+    let (cwd, display_cwd, raw_fs, protected_plan_path, notification_handle, hints_enabled);
     {
         let res = resources.lock().await;
         cwd = match cwd_override {
@@ -147,21 +147,42 @@ pub(crate) async fn run_search_replace(
             None => res.require::<Cwd>()?.0.clone(),
         };
         display_cwd = res.get::<DisplayCwd>().map(|d| d.0.clone());
-        fs = res.require::<FileSystem>()?.0.clone();
+        raw_fs = res.require::<FileSystem>()?.0.clone();
+        protected_plan_path = res
+            .get::<crate::types::resources::ProtectedPlanFilePath>()
+            .map(|path| path.0.clone());
         notification_handle = res.require::<NotificationHandle>()?.0.clone();
         hints_enabled = res.get::<PathNotFoundHints>().is_some_and(|h| h.0);
     }
     let resolved = resolve_model_path(&cwd, display_cwd.as_deref(), &input.file_path);
-    let path = match crate::util::fs::try_canonicalize(&resolved).await {
-        Ok(p) => p,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            match crate::util::try_resolve_unicode_filename(&resolved).await {
-                Some(m) => m.resolved_path,
-                None => resolved,
+    let protected_plan_write = protected_plan_path.as_deref() == Some(resolved.as_path());
+    let path = if protected_plan_write {
+        // Canonicalizing a planted symlink would turn the auto-approved plan
+        // path into its target before the protected filesystem sees it.
+        resolved
+    } else {
+        match crate::util::fs::try_canonicalize(&resolved).await {
+            Ok(p) => p,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                match crate::util::try_resolve_unicode_filename(&resolved).await {
+                    Some(m) => m.resolved_path,
+                    None => resolved,
+                }
             }
+            Err(_) => resolved,
         }
-        Err(_) => resolved,
     };
+    let fs: std::sync::Arc<dyn crate::computer::types::AsyncFileSystem> =
+        if let Some(protected_path) = protected_plan_path {
+            std::sync::Arc::new(
+                crate::computer::protected_plan_file::GuardedPlanFileSystem::new(
+                    raw_fs,
+                    protected_path,
+                ),
+            )
+        } else {
+            raw_fs
+        };
     if let Some(err) = validate_path_length(&input.file_path) {
         return Ok(err);
     }
@@ -2478,5 +2499,41 @@ neutTest_set);
             }
             other => panic!("Expected EditsApplied, got {:?}", other),
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn protected_plan_replace_rejects_final_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TempDir::new().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let plan_path = root.join("plan.md");
+        let secret_path = root.join("outside.txt");
+        std::fs::write(&secret_path, "secret text").unwrap();
+        symlink(&secret_path, &plan_path).unwrap();
+
+        let mut resources = test_resources(&root);
+        resources.insert(crate::types::resources::ProtectedPlanFilePath(
+            plan_path.clone(),
+        ));
+        let result = xai_tool_runtime::Tool::run(
+            &SearchReplaceTool,
+            test_ctx(resources.into_shared()),
+            make_input("plan.md", "secret", "escaped"),
+        )
+        .await;
+
+        assert!(
+            result.is_err() || matches!(&result, Ok(SearchReplaceOutput::InvalidInput(_))),
+            "a protected plan symlink must not be edited: {result:?}"
+        );
+        assert_eq!(std::fs::read_to_string(secret_path).unwrap(), "secret text");
+        assert!(
+            std::fs::symlink_metadata(plan_path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 }

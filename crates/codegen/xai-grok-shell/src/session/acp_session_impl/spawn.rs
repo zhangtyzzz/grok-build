@@ -403,6 +403,8 @@ pub(crate) async fn spawn_session_actor(
     }
     let chat_state_sampling_config = xai_grok_sampling_types::SamplingConfig {
         base_url: sampling_config.base_url.clone(),
+        model_ref: sampling_config.model_ref.clone(),
+        route_ref: sampling_config.route_ref.clone(),
         model: sampling_config.model.clone(),
         max_completion_tokens: sampling_config.max_completion_tokens,
         temperature: sampling_config.temperature,
@@ -412,6 +414,7 @@ pub(crate) async fn spawn_session_actor(
         context_window: context_window_override.unwrap_or(baseline_context_window),
         reasoning_effort: sampling_config.reasoning_effort,
         stream_tool_calls: Some(sampling_config.stream_tool_calls),
+        prompt_cache: sampling_config.prompt_cache,
     };
     let actor_pruning_config = xai_chat_state::PruningConfig {
         enabled: session_pruning_config.enabled,
@@ -477,6 +480,7 @@ pub(crate) async fn spawn_session_actor(
     *synthetic_trace_tx_shared.lock().unwrap() = tool_context.synthetic_trace_tx.clone();
     tool_context.synthetic_trace_tx_shared = Some(synthetic_trace_tx_shared.clone());
     let mut tool_context = tool_context.with_file_state_handle(file_state_handle);
+    tool_context.session_cmd_tx = Some(cmd_tx.clone());
     let index_root_for_session =
         xai_grok_workspace::session::git::find_git_root_from_path(tool_context.cwd.as_path())
             .unwrap_or_else(|_| tool_context.cwd.to_path_buf());
@@ -518,16 +522,12 @@ pub(crate) async fn spawn_session_actor(
             gateway_enabled: gateway_enabled.clone(),
             persistence_tx: persistence.tx.clone(),
             incremental_bash_output,
-            plan_mode: plan_mode.clone(),
-            current_prompt_mode: current_prompt_mode.clone(),
-            turn_prompt_mode: turn_prompt_mode.clone(),
             session_cmd_tx: cmd_tx.clone(),
             auto_wake_delivered: auto_wake_delivered.clone(),
             synthetic_trace_tx: synthetic_trace_tx_shared.clone(),
             task_output_tool_name: task_output_tool_name.clone(),
             read_tool_name: read_tool_name.clone(),
             auto_wake_enabled: tool_context.auto_wake_enabled,
-            queue_exit_reminder_on_approved_exit: queue_exit_reminder_on_approved_exit.clone(),
             goal_loop_active: tool_context.goal_loop_active_gate.clone(),
         },
     );
@@ -1129,10 +1129,37 @@ pub(crate) async fn spawn_session_actor(
         }
     };
     let doom_loop_recovery = effective_config.resolve_doom_loop_recovery();
+    let model_catalog = models_manager.models();
+    let initial_model_auth_facts = crate::agent::config::find_model_by_locator(
+        &model_catalog,
+        sampling_config.model_ref.as_deref(),
+        sampling_config.model.as_str(),
+        sampling_config.base_url.as_str(),
+    )
+    .map(|entry| {
+        let cache_key = format!(
+            "{}\0{}\0{}",
+            sampling_config.model_ref.as_deref().unwrap_or_default(),
+            sampling_config.model,
+            sampling_config.base_url
+        );
+        let byok = if entry.opts_out_of_ambient_credentials() {
+            crate::agent::auth_method::ModelByok::Byok
+        } else {
+            crate::agent::auth_method::ModelByok::NotByok
+        };
+        (
+            cache_key,
+            crate::agent::config::ModelAuthFacts {
+                byok,
+                auth_scheme: entry.info().auth_scheme,
+            },
+        )
+    });
     let session = Arc::new_cyclic(|weak: &std::sync::Weak<SessionActor>| SessionActor {
         session_info: session_info.clone(),
         auth_method_id,
-        model_auth_facts: std::cell::RefCell::new(None),
+        model_auth_facts: std::cell::RefCell::new(initial_model_auth_facts),
         attribution_callback,
         auth_manager,
         state,
@@ -1386,11 +1413,16 @@ pub(crate) async fn spawn_session_actor(
     }
     {
         let plan_path = session.plan_mode.lock().plan_file_path().to_path_buf();
-        session
-            .agent
-            .borrow()
-            .tool_bridge()
-            .update_resource(xai_grok_tools::types::resources::PlanFilePath(plan_path))
+        let bridge = session.agent.borrow().tool_bridge().clone();
+        bridge
+            .update_resource(xai_grok_tools::types::resources::PlanFilePath(
+                plan_path.clone(),
+            ))
+            .await;
+        bridge
+            .update_resource(xai_grok_tools::types::resources::ProtectedPlanFilePath(
+                plan_path,
+            ))
             .await;
     }
     session.inject_deny_read_globs().await;

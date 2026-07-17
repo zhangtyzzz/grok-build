@@ -3219,7 +3219,10 @@ mod tests {
 
         // A `show_search_hint: false` picker (command palette / arg-picker family):
         // the cursor must track focus (`search_active`), not render always-on.
-        let theme = Theme::current();
+        // Use an explicit truecolor theme: in a non-TTY test process the
+        // current theme may quantize `text_primary` to `Reset`, which is also
+        // the default background of every untouched buffer cell.
+        let theme = Theme::groknight();
         let config = cfg(false, false);
         let area = Rect::new(0, 0, 60, 16);
 

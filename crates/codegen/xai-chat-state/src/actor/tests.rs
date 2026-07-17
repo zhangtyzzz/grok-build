@@ -9,6 +9,7 @@ use xai_grok_sampling_types::{ConversationItem, SamplingConfig};
 use crate::actor::ChatStateActor;
 use crate::events::ChatStateEvent;
 use crate::persistence::{MockChatPersistence, MockPersistenceReceiver, PersistenceRecord};
+use crate::types::{AuthType, Credentials};
 
 /// Helper to build a `SamplingConfig` for tests.
 fn test_config() -> SamplingConfig {
@@ -18,6 +19,8 @@ fn test_config() -> SamplingConfig {
 fn test_config_with_window(context_window: u64) -> SamplingConfig {
     SamplingConfig {
         base_url: "https://api.example.com".to_string(),
+        model_ref: None,
+        route_ref: None,
         model: "test-model".to_string(),
         max_completion_tokens: None,
         temperature: None,
@@ -28,6 +31,7 @@ fn test_config_with_window(context_window: u64) -> SamplingConfig {
             .expect("test context_window must be non-zero"),
         reasoning_effort: None,
         stream_tool_calls: None,
+        prompt_cache: Default::default(),
     }
 }
 
@@ -210,6 +214,8 @@ async fn record_last_turn_usage_round_trip() {
         total_tokens: 1290,
         reasoning_tokens: 0,
         cached_prompt_tokens: 800,
+        cache_write_5m_input_tokens: 0,
+        cache_write_1h_input_tokens: 0,
     };
     h.handle.record_last_turn_usage(usage.clone());
 
@@ -225,6 +231,8 @@ async fn record_last_turn_usage_round_trip() {
         total_tokens: 10000,
         reasoning_tokens: 0,
         cached_prompt_tokens: 0,
+        cache_write_5m_input_tokens: 0,
+        cache_write_1h_input_tokens: 0,
     };
     h.handle.record_last_turn_usage(next);
     let got2 = h
@@ -246,6 +254,8 @@ async fn prompt_usage_ledger_via_handle_resets_and_clears() {
         total_tokens: 12,
         reasoning_tokens: 0,
         cached_prompt_tokens: 0,
+        cache_write_5m_input_tokens: 0,
+        cache_write_1h_input_tokens: 0,
     };
 
     let h = TestHarness::new();
@@ -908,6 +918,8 @@ async fn update_sampling_config_is_queryable() {
     let h = TestHarness::new();
     let new_config = SamplingConfig {
         base_url: "https://new.example.com".to_string(),
+        model_ref: None,
+        route_ref: None,
         model: "grok-3".to_string(),
         max_completion_tokens: Some(4096),
         temperature: Some(0.5),
@@ -917,12 +929,124 @@ async fn update_sampling_config_is_queryable() {
         context_window: NonZeroU64::new(200_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
+        prompt_cache: Default::default(),
     };
     h.handle.update_sampling_config(new_config.clone());
 
     let config = h.handle.get_sampling_config().await.unwrap();
     assert_eq!(config.model, "grok-3");
     assert_eq!(config.context_window, NonZeroU64::new(200_000).unwrap());
+}
+
+#[tokio::test]
+async fn sampling_config_and_credentials_replace_and_read_are_atomic_under_concurrency() {
+    fn provider_snapshot(provider: &str) -> (SamplingConfig, Credentials) {
+        let mut config = test_config();
+        config.base_url = format!("https://{provider}.example/v1");
+        config.model_ref = Some(format!("{provider}-model"));
+        config.model = format!("{provider}-upstream");
+        let credentials = Credentials {
+            api_key: Some(format!("{provider}-secret")),
+            auth_type: AuthType::ApiKey,
+            ..Default::default()
+        };
+        (config, credentials)
+    }
+
+    let h = TestHarness::new();
+    let (config_a, credentials_a) = provider_snapshot("provider-a");
+    let (config_b, credentials_b) = provider_snapshot("provider-b");
+    h.handle
+        .replace_sampling_config_and_credentials(config_a.clone(), credentials_a.clone())
+        .await
+        .expect("chat-state actor accepts initial transport snapshot");
+
+    let writer = h.handle.clone();
+    let reader = h.handle.clone();
+    let write_task = tokio::spawn(async move {
+        for index in 0..1_000 {
+            let (config, credentials) = if index % 2 == 0 {
+                (config_b.clone(), credentials_b.clone())
+            } else {
+                (config_a.clone(), credentials_a.clone())
+            };
+            writer
+                .replace_sampling_config_and_credentials(config, credentials)
+                .await
+                .expect("chat-state actor remains live");
+        }
+    });
+    let read_task = tokio::spawn(async move {
+        for _ in 0..2_000 {
+            let (config, credentials) = reader
+                .get_sampling_config_and_credentials()
+                .await
+                .expect("chat-state actor remains live");
+            let expected_key = if config.base_url.contains("provider-a") {
+                "provider-a-secret"
+            } else if config.base_url.contains("provider-b") {
+                "provider-b-secret"
+            } else {
+                panic!(
+                    "unexpected endpoint in transport snapshot: {}",
+                    config.base_url
+                );
+            };
+            assert_eq!(
+                credentials.api_key.as_deref(),
+                Some(expected_key),
+                "a request transport snapshot must never mix providers"
+            );
+        }
+    });
+
+    write_task.await.expect("writer task");
+    read_task.await.expect("reader task");
+}
+
+#[tokio::test]
+async fn stale_async_credential_refresh_cannot_cross_a_sampling_locator_change() {
+    let h = TestHarness::new();
+    let mut old_config = test_config();
+    old_config.model_ref = Some("provider-a".to_owned());
+    old_config.base_url = "https://provider-a.example/v1".to_owned();
+    let mut new_config = test_config();
+    new_config.model_ref = Some("provider-b".to_owned());
+    new_config.base_url = "https://provider-b.example/v1".to_owned();
+    let provider_b_credentials = Credentials {
+        api_key: Some("provider-b-secret".to_owned()),
+        auth_type: AuthType::ApiKey,
+        ..Default::default()
+    };
+    h.handle
+        .replace_sampling_config_and_credentials(new_config.clone(), provider_b_credentials.clone())
+        .await
+        .expect("replace provider");
+
+    let applied = h
+        .handle
+        .update_credentials_if_sampling_config_matches(
+            old_config,
+            Credentials {
+                api_key: Some("stale-provider-a-secret".to_owned()),
+                auth_type: AuthType::ApiKey,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("chat-state actor remains live");
+    assert!(!applied, "stale refresh must be rejected");
+
+    let (config, credentials) = h
+        .handle
+        .get_sampling_config_and_credentials()
+        .await
+        .expect("transport snapshot");
+    assert_eq!(config.model_ref.as_deref(), Some("provider-b"));
+    assert_eq!(
+        credentials.api_key, provider_b_credentials.api_key,
+        "rejected refresh must leave the new provider secret unchanged"
+    );
 }
 
 #[tokio::test]
@@ -1293,6 +1417,8 @@ async fn build_request_with_tool_definitions() {
 async fn build_request_uses_sampling_config() {
     let config = SamplingConfig {
         base_url: "https://api.example.com".to_string(),
+        model_ref: None,
+        route_ref: None,
         model: "grok-3".to_string(),
         max_completion_tokens: Some(8192),
         temperature: Some(0.7),
@@ -1302,6 +1428,7 @@ async fn build_request_uses_sampling_config() {
         context_window: NonZeroU64::new(128_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
+        prompt_cache: Default::default(),
     };
     let h = TestHarness::with_config(vec![ConversationItem::user("hi")], config);
 
@@ -3397,6 +3524,8 @@ async fn sampling_config_survives_compaction_replacement() {
 
     let config = SamplingConfig {
         base_url: "https://api.example.com".to_string(),
+        model_ref: None,
+        route_ref: None,
         model: "grok-build".to_string(),
         max_completion_tokens: None,
         temperature: Some(0.7),
@@ -3406,6 +3535,7 @@ async fn sampling_config_survives_compaction_replacement() {
         context_window: NonZeroU64::new(500_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
+        prompt_cache: Default::default(),
     };
 
     let h = TestHarness::with_config(
@@ -3480,6 +3610,8 @@ async fn sampling_config_survives_compaction_replacement() {
 async fn model_metadata_lost_after_compaction_then_recovered_on_next_turn() {
     let config = SamplingConfig {
         base_url: "https://api.example.com".to_string(),
+        model_ref: None,
+        route_ref: None,
         model: "grok-build".to_string(),
         max_completion_tokens: None,
         temperature: Some(0.7),
@@ -3489,6 +3621,7 @@ async fn model_metadata_lost_after_compaction_then_recovered_on_next_turn() {
         context_window: NonZeroU64::new(500_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
+        prompt_cache: Default::default(),
     };
 
     let h = TestHarness::with_config(
@@ -3568,6 +3701,8 @@ async fn context_window_downgrade_triggers_auto_compact() {
     // Initial config: 500k context, Responses backend (matches grok-4.5)
     let config = SamplingConfig {
         base_url: "https://api.x.ai/v1".to_string(),
+        model_ref: None,
+        route_ref: None,
         model: "grok-4.5".to_string(),
         max_completion_tokens: None,
         temperature: Some(0.7),
@@ -3577,6 +3712,7 @@ async fn context_window_downgrade_triggers_auto_compact() {
         context_window: NonZeroU64::new(500_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
+        prompt_cache: Default::default(),
     };
 
     let h = TestHarness::with_config(vec![], config);

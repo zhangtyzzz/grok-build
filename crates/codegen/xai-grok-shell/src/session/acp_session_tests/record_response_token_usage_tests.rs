@@ -13,6 +13,8 @@ fn response_with_usage(total_tokens: u32) -> ConversationResponse {
 
             reasoning_tokens: 0,
             cached_prompt_tokens: 0,
+            cache_write_5m_input_tokens: 0,
+            cache_write_1h_input_tokens: 0,
         }),
         cost_usd_ticks: None,
         message_chunks_emitted: 1,
@@ -181,6 +183,7 @@ async fn build_session_info_sources_show_model_fingerprint_from_catalog() {
                 api_key: None,
                 env_key: None,
                 api_base_url: None,
+                provider: None,
             };
             entry.info.show_model_fingerprint = false;
             actor

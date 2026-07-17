@@ -2753,9 +2753,12 @@ mod command_palette_vim_input_tests {
             }
             let area = Rect::new(0, 0, 80, 24);
             let mut buf = Buffer::empty(area);
-            agent.draw_active_modal(area, &mut buf, crate::theme::Theme::current(), false);
+            // Keep cursor detection independent of non-TTY color
+            // quantization, where `text_primary == Reset` and every untouched
+            // buffer cell would otherwise look like the inverse cursor.
+            let theme = crate::theme::Theme::groknight();
+            agent.draw_active_modal(area, &mut buf, theme, false);
 
-            let theme = crate::theme::Theme::current();
             let search_bar = match agent.active_modal.as_ref() {
                 Some(ActiveModal::CommandPalette { state, .. }) => {
                     state

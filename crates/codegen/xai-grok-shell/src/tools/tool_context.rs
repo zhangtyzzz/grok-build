@@ -112,6 +112,16 @@ pub struct ToolContext {
     /// [`BlockingWaitGuard`]). `queue_input` reads it: a prompt arriving while
     /// non-zero takes the send-now path.
     pub blocking_wait_depth: Arc<std::sync::atomic::AtomicUsize>,
+    /// Sender back to the owning session actor.
+    ///
+    /// Tool execution runs in a separate local task while the actor mailbox
+    /// remains live. Plan-mode tool results use this channel with a oneshot
+    /// acknowledgement as an ordering barrier: the actor must finish the
+    /// transition (including the scoped model switch) before the tool loop can
+    /// sample again. Test-only contexts that never execute plan tools may leave
+    /// it unset.
+    pub(crate) session_cmd_tx:
+        Option<tokio::sync::mpsc::UnboundedSender<crate::session::SessionCommand>>,
 }
 impl ToolContext {
     pub fn new(
@@ -151,6 +161,7 @@ impl ToolContext {
             auto_wake_enabled: true,
             goal_loop_active_gate: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             blocking_wait_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            session_cmd_tx: None,
         }
     }
     pub fn with_preloaded_env(
@@ -187,6 +198,7 @@ impl ToolContext {
             auto_wake_enabled: true,
             goal_loop_active_gate: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             blocking_wait_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            session_cmd_tx: None,
         }
     }
     pub fn with_file_state_handle(mut self, handle: FileStateHandle) -> Self {
@@ -243,6 +255,7 @@ mod tests {
                 auto_wake_enabled: true,
                 goal_loop_active_gate: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 blocking_wait_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                session_cmd_tx: None,
             }
         }
     }
