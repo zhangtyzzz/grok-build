@@ -1,14 +1,14 @@
 #!/bin/bash
 #
-# Grok CLI installer — https://x.ai/cli/install.sh
+# Grok CLI installer — custom GitHub Releases distribution
 #
 # Auth: GROK_DEPLOYMENT_KEY (takes precedence) or ~/.grok/auth.json from `grok login`.
-# Env: GROK_CHANNEL (stable|alpha|enterprise, default: stable), GROK_BIN_DIR, GROK_PROXY_URL
+# Env: GROK_CHANNEL (stable by default), GROK_BIN_DIR, GROK_PROXY_URL
 #
 # Usage:
-#   curl -fsSL https://x.ai/cli/install.sh | bash            # latest stable
-#   curl -fsSL https://x.ai/cli/install.sh | bash -s 0.1.42  # specific version
-#   GROK_DEPLOYMENT_KEY=<key> bash <(curl -fsSL https://x.ai/cli/install.sh)
+#   curl -fsSL https://github.com/zhangtyzzz/grok-build/releases/latest/download/install.sh | bash
+#   curl -fsSL https://github.com/zhangtyzzz/grok-build/releases/latest/download/install.sh | bash -s 0.1.42
+#   GROK_DEPLOYMENT_KEY=<key> bash <(curl -fsSL https://github.com/zhangtyzzz/grok-build/releases/latest/download/install.sh)
 #
 # Windows: run under Git for Windows / MSYS2 Bash (same curl | bash flow); WSL
 # uses the Linux binary.
@@ -46,6 +46,17 @@ download_file() {
         else
             wget -q -O - "$url"
         fi
+    fi
+}
+
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    else
+        echo "sha256sum or shasum is required to verify the download" >&2
+        return 1
     fi
 }
 
@@ -151,8 +162,9 @@ case "$(uname -m)" in
     *)                    echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
-BASE_URL_PRIMARY="https://x.ai/cli"
-BASE_URL_FALLBACK="https://storage.googleapis.com/grok-build-public-artifacts/cli"
+RELEASE_REPO="zhangtyzzz/grok-build"
+LATEST_RELEASE_BASE="https://github.com/${RELEASE_REPO}/releases/latest/download"
+TAGGED_RELEASE_BASE="https://github.com/${RELEASE_REPO}/releases/download"
 DOWNLOAD_DIR="$HOME/.grok/downloads"
 BIN_DIR="${GROK_BIN_DIR:-$HOME/.grok/bin}"
 mkdir -p "$DOWNLOAD_DIR" "$BIN_DIR"
@@ -160,26 +172,19 @@ mkdir -p "$DOWNLOAD_DIR" "$BIN_DIR"
 platform="${os}-${arch}"
 CHANNEL="${GROK_CHANNEL:-stable}"
 
-# Pick a working BASE_URL: try Cloudflare-fronted x.ai first, fall back to
-# direct GCS if it's unreachable. The probe doubles as the channel-pointer
-# fetch when no explicit TARGET was passed, so the happy path costs zero
-# extra HTTP requests.
-if [ -z "$TARGET" ]; then echo "Fetching latest ${CHANNEL} version..." >&2; fi
-probe_result=$(download_file "${BASE_URL_PRIMARY}/${CHANNEL}" 2>/dev/null) || true
-if [ -n "$probe_result" ]; then
-    BASE_URL="$BASE_URL_PRIMARY"
-else
-    echo "Note: ${BASE_URL_PRIMARY} unreachable, falling back to direct GCS." >&2
-    BASE_URL="$BASE_URL_FALLBACK"
-    probe_result=$(download_file "${BASE_URL}/${CHANNEL}" 2>/dev/null) || true
-fi
-
 if [ -n "$TARGET" ]; then
     version="$TARGET"
 else
+    if [ "$CHANNEL" != "stable" ]; then
+        echo "Error: automatic GitHub Release resolution supports the stable channel." >&2
+        echo "Pass an explicit prerelease version when installing channel ${CHANNEL}." >&2
+        exit 1
+    fi
+    echo "Fetching latest ${CHANNEL} version..." >&2
+    probe_result=$(download_file "${LATEST_RELEASE_BASE}/${CHANNEL}" 2>/dev/null) || true
     version=$(printf '%s' "$probe_result" | tr -d '\r' | head -n1 | tr -d '[:space:]')
     if [ -z "$version" ]; then
-        echo "Error: failed to fetch latest version from ${BASE_URL_PRIMARY}/${CHANNEL} and ${BASE_URL_FALLBACK}/${CHANNEL}" >&2
+        echo "Error: failed to fetch the ${CHANNEL} release pointer from ${LATEST_RELEASE_BASE}/${CHANNEL}" >&2
         exit 1
     fi
 fi
@@ -189,14 +194,18 @@ if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9._]+)?$ ]]; then
     exit 1
 fi
 
+RELEASE_BASE="${TAGGED_RELEASE_BASE}/v${version}"
+
 if [ -n "$AUTH_SOURCE" ]; then
     echo "Installing Grok $version ($platform, $AUTH_SOURCE)..." >&2
 else
     echo "Installing Grok $version ($platform)..." >&2
 fi
 
-binary_path="$DOWNLOAD_DIR/grok-$platform"
-artifact_base="${BASE_URL}/grok-${version}-${platform}"
+binary_path="$DOWNLOAD_DIR/grok-${version}-${platform}"
+artifact_name="grok-${version}-${platform}"
+artifact_base="${RELEASE_BASE}/${artifact_name}"
+downloaded_asset="$artifact_name"
 
 if [ "$os" = "windows" ]; then
     binary_path="${binary_path}.exe"
@@ -217,6 +226,8 @@ if [ "$os" = "windows" ]; then
             fi
             exit 1
         fi
+    else
+        downloaded_asset="${artifact_name}.exe"
     fi
 elif ! download_file_parallel "$artifact_base" "$binary_tmp"; then
     rm -f "$binary_tmp"
@@ -225,6 +236,25 @@ elif ! download_file_parallel "$artifact_base" "$binary_tmp"; then
     else
         echo "Error: binary download failed from ${artifact_base}" >&2
     fi
+    exit 1
+fi
+
+checksum_manifest=$(download_file "${RELEASE_BASE}/SHA256SUMS" 2>/dev/null) || true
+expected_checksum=$(
+    printf '%s\n' "$checksum_manifest" |
+        awk -v name="$downloaded_asset" '$2 == name { print $1 }'
+)
+if [[ ! "$expected_checksum" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    rm -f "$binary_tmp"
+    echo "Error: SHA256SUMS has no valid entry for ${downloaded_asset}" >&2
+    exit 1
+fi
+actual_checksum=$(sha256_file "$binary_tmp")
+actual_checksum=$(printf '%s' "$actual_checksum" | tr '[:upper:]' '[:lower:]')
+expected_checksum=$(printf '%s' "$expected_checksum" | tr '[:upper:]' '[:lower:]')
+if [ "$actual_checksum" != "$expected_checksum" ]; then
+    rm -f "$binary_tmp"
+    echo "Error: checksum verification failed for ${downloaded_asset}" >&2
     exit 1
 fi
 

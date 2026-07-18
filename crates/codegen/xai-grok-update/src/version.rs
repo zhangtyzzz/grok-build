@@ -11,20 +11,37 @@ use xai_grok_shell::util::grok_home::grok_home;
 
 const TTL_SECONDS_BEFORE_AUTO_UPDATE: Duration = Duration::from_secs(60 * 30);
 const NPM_PACKAGE: &str = "@xai-official/grok";
-pub const GH_RELEASE_REPO: &str = "xai-org-shared/grok-build";
+pub const GH_RELEASE_REPO: &str = "zhangtyzzz/grok-build";
 
-/// Primary CLI base URL: Cloudflare-fronted x.ai endpoint with edge caching
-/// for binaries and origin-respecting no-cache for channel pointers.
-pub(crate) const CLI_BASE_URL_PRIMARY: &str = "https://x.ai/cli";
+/// Latest stable GitHub release assets. Stable releases publish plain-text
+/// channel pointers plus standalone binaries beside the distribution archives.
+pub(crate) const CLI_BASE_URL_PRIMARY: &str =
+    "https://github.com/zhangtyzzz/grok-build/releases/latest/download";
 
-/// Fallback CLI base URL: direct GCS, used when the primary is unreachable
-/// (Cloudflare outage, regional CF egress issue, DNS hijack, etc.).
-pub(crate) const CLI_BASE_URL_FALLBACK: &str =
-    "https://storage.googleapis.com/grok-build-public-artifacts/cli";
+/// Version-specific GitHub release asset base. Downloads use this after the
+/// latest-release channel pointer resolves a concrete version.
+pub(crate) const GH_RELEASE_DOWNLOAD_BASE: &str =
+    "https://github.com/zhangtyzzz/grok-build/releases/download";
 
-/// CLI base URLs in preference order. Callers (channel-pointer fetch, binary
-/// download, in-app updater) try each in turn and stop at the first success.
-pub(crate) const CLI_BASE_URLS: &[&str] = &[CLI_BASE_URL_PRIMARY, CLI_BASE_URL_FALLBACK];
+const GH_RELEASES_API_URL: &str =
+    "https://api.github.com/repos/zhangtyzzz/grok-build/releases?per_page=100";
+
+/// CLI channel-pointer bases in preference order.
+pub(crate) const CLI_BASE_URLS: &[&str] = &[CLI_BASE_URL_PRIMARY];
+
+/// Resolve the download base for a concrete release version.
+///
+/// Tests and private mirrors pass their own base URL through unchanged. The
+/// public latest-release endpoint must become a tag-specific URL so explicit
+/// installs and rollbacks fetch assets from the requested release rather than
+/// whichever release GitHub currently considers latest.
+pub(crate) fn release_asset_base_url(pointer_base: &str, version: &str) -> String {
+    if pointer_base.trim_end_matches('/') == CLI_BASE_URL_PRIMARY {
+        format!("{GH_RELEASE_DOWNLOAD_BASE}/v{version}")
+    } else {
+        pointer_base.trim_end_matches('/').to_string()
+    }
+}
 
 /// Minimal configuration the update system needs from the environment.
 ///
@@ -101,6 +118,54 @@ fn semver_max(a: &str, b: &str) -> Result<String> {
     let va = semver::Version::parse(a)?;
     let vb = semver::Version::parse(b)?;
     Ok(std::cmp::max(va, vb).to_string())
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubApiRelease {
+    tag_name: String,
+    #[serde(default)]
+    draft: bool,
+}
+
+fn latest_version_from_github_releases(
+    channel: &str,
+    releases: &[GitHubApiRelease],
+) -> Result<String> {
+    let include_prereleases = match channel {
+        "stable" => false,
+        "alpha" => true,
+        _ => anyhow::bail!("unsupported GitHub release channel: {channel}"),
+    };
+
+    releases
+        .iter()
+        .filter(|release| !release.draft)
+        .filter_map(|release| {
+            let tag = release
+                .tag_name
+                .strip_prefix('v')
+                .unwrap_or(&release.tag_name);
+            semver::Version::parse(tag).ok()
+        })
+        .filter(|version| include_prereleases || version.pre.is_empty())
+        .max()
+        .map(|version| version.to_string())
+        .ok_or_else(|| anyhow::anyhow!("no {channel} releases found in {GH_RELEASE_REPO}"))
+}
+
+async fn fetch_github_release_api_version(channel: &str) -> Result<String> {
+    let releases = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .user_agent("grok-build-updater")
+        .build()?
+        .get(GH_RELEASES_API_URL)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Vec<GitHubApiRelease>>()
+        .await?;
+    latest_version_from_github_releases(channel, &releases)
 }
 
 /// Fetch the latest version from npm registry using `npm view`.
@@ -227,7 +292,8 @@ async fn fetch_gh_release_latest(exclude_pre: bool) -> Result<String> {
 /// Fetch the latest version from a public CLI channel pointer.
 ///
 /// Reads `{base}/{channel}` which contains a plain-text semver string
-/// (e.g. `0.1.181`). No auth required — the upstream bucket is public.
+/// (e.g. `0.2.102`). No auth is required; the pointer is a GitHub Release
+/// asset.
 ///
 /// For the alpha channel, fetches both `alpha` and `stable` pointers and
 /// returns the semver-greater, matching the behavior of the npm and
@@ -235,12 +301,11 @@ async fn fetch_gh_release_latest(exclude_pre: bool) -> Result<String> {
 ///
 /// Tries each base URL in [`CLI_BASE_URLS`] in order and stops at the first
 /// success. Each individual base also retries up to 3 times with exponential
-/// backoff (1s, 2s, 4s) on transient failures before falling through to the
-/// next base.
+/// backoff (1s, 2s, 4s) on transient failures.
 pub(crate) async fn fetch_gcs_version(channel: &str) -> Result<String> {
     let mut last_err: Option<anyhow::Error> = None;
     for (i, base) in CLI_BASE_URLS.iter().enumerate() {
-        match fetch_gcs_version_from_base(channel, base).await {
+        match fetch_internal_version_from_base(channel, base).await {
             Ok(v) => return Ok(v),
             Err(e) => {
                 if i + 1 < CLI_BASE_URLS.len() {
@@ -255,6 +320,21 @@ pub(crate) async fn fetch_gcs_version(channel: &str) -> Result<String> {
         }
     }
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no CLI base URLs configured")))
+}
+
+/// Resolve a channel from the configured public distribution or a test/private
+/// mirror. GitHub's mutable `latest` URL intentionally excludes prereleases,
+/// so the alpha channel uses the public Releases API and selects the greatest
+/// stable-or-prerelease SemVer.
+pub(crate) async fn fetch_internal_version_from_base(
+    channel: &str,
+    base_url: &str,
+) -> Result<String> {
+    if channel == "alpha" && base_url.trim_end_matches('/') == CLI_BASE_URL_PRIMARY {
+        fetch_github_release_api_version(channel).await
+    } else {
+        fetch_gcs_version_from_base(channel, base_url).await
+    }
 }
 
 /// Test-only entry point: same as [`fetch_gcs_version`] but reads from
@@ -570,6 +650,49 @@ pub fn channel_label() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn github_release_api_selection_respects_channel_and_semver() {
+        let releases = vec![
+            GitHubApiRelease {
+                tag_name: "v0.2.104-alpha.2".to_string(),
+                draft: false,
+            },
+            GitHubApiRelease {
+                tag_name: "v0.2.103".to_string(),
+                draft: false,
+            },
+            GitHubApiRelease {
+                tag_name: "v0.2.105".to_string(),
+                draft: true,
+            },
+            GitHubApiRelease {
+                tag_name: "not-semver".to_string(),
+                draft: false,
+            },
+        ];
+
+        assert_eq!(
+            latest_version_from_github_releases("stable", &releases).unwrap(),
+            "0.2.103"
+        );
+        assert_eq!(
+            latest_version_from_github_releases("alpha", &releases).unwrap(),
+            "0.2.104-alpha.2"
+        );
+    }
+
+    #[test]
+    fn release_asset_base_resolves_latest_pointer_to_versioned_tag() {
+        assert_eq!(
+            release_asset_base_url(CLI_BASE_URL_PRIMARY, "0.2.102"),
+            "https://github.com/zhangtyzzz/grok-build/releases/download/v0.2.102"
+        );
+        assert_eq!(
+            release_asset_base_url("http://127.0.0.1:3000/", "0.2.102"),
+            "http://127.0.0.1:3000"
+        );
+    }
 
     /// Verifies that a future `checked_at` timestamp (e.g. from clock skew or
     /// NTP time-warp) is never considered fresh. Without the clock-skew guard

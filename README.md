@@ -43,13 +43,15 @@ for the version of the code present in this tree.
 Prebuilt binaries are published for macOS, Linux, and Windows:
 
 ```sh
-curl -fsSL https://x.ai/cli/install.sh | bash   # macOS / Linux / Git Bash
-irm https://x.ai/cli/install.ps1 | iex          # Windows PowerShell
+curl -fsSL https://github.com/zhangtyzzz/grok-build/releases/latest/download/install.sh | bash
+irm https://github.com/zhangtyzzz/grok-build/releases/latest/download/install.ps1 | iex
 grok --version
 ```
 
-See the [changelog](https://x.ai/build/changelog) for the latest fixes,
-features, and improvements in each release.
+The installers detect the current platform, verify the downloaded binary
+against the release checksum, and configure in-app updates to use this
+repository's GitHub Releases. See [Releases](https://github.com/zhangtyzzz/grok-build/releases)
+for the published versions.
 
 ## Building from source
 

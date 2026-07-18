@@ -51,11 +51,12 @@ const INSTALLER_BLOCK_START: &str = "# >>> grok installer >>>";
 
 /// Write a fake `curl` that intercepts every download `install.sh` performs.
 /// `$FAKE_MODE` (full|truncate|garbage) selects the corruption.
-fn write_fake_curl(dir: &Path) {
+fn write_fake_curl(dir: &Path, platform: &str) {
     let body = format!(
         r#"#!/bin/bash
 mode="${{FAKE_MODE:-full}}"
 fullsize={fullsize}
+platform="{platform}"
 head=0; out=""; want_code=0; url=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -79,11 +80,22 @@ if [ -n "$out" ]; then
   esac
   exit 0
 fi
-printf '0.1.181'
+case "$url" in
+  */SHA256SUMS)
+    if command -v sha256sum >/dev/null 2>&1; then
+      hash=$(printf '%s' '{good}' | sha256sum | awk '{{print $1}}')
+    else
+      hash=$(printf '%s' '{good}' | shasum -a 256 | awk '{{print $1}}')
+    fi
+    printf '%s  grok-0.1.181-%s\n' "$hash" "$platform"
+    ;;
+  *) printf '0.1.181' ;;
+esac
 exit 0
 "#,
         fullsize = GOOD_SCRIPT.len(),
         good = GOOD_SCRIPT,
+        platform = platform,
     );
     let path = dir.join("curl");
     std::fs::write(&path, body).unwrap();
@@ -243,7 +255,7 @@ fn run_shell_rc_case(case: &ShellRcCase) {
     };
     let platform = host_platform();
     let fakedir = tempfile::tempdir().unwrap();
-    write_fake_curl(fakedir.path());
+    write_fake_curl(fakedir.path(), &platform);
 
     let root = tempfile::tempdir().unwrap();
     let (home_path, rc_path, stow_target, expected_link) = setup_rc(root.path(), case);
@@ -307,7 +319,7 @@ fn install_sh_blitz_keeps_grok_runnable_under_corruption() {
     };
     let platform = host_platform();
     let fakedir = tempfile::tempdir().unwrap();
-    write_fake_curl(fakedir.path());
+    write_fake_curl(fakedir.path(), &platform);
 
     // Each entry: (mode, should the installer succeed?). Loop a few rounds so a
     // re-install over an existing good install is also exercised.

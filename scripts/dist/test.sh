@@ -172,6 +172,16 @@ WINDOWS_ARCHIVE="$(
 "$DIST" verify "$WINDOWS_ARCHIVE"
 [[ "$(wc -l <"$OUTPUT/SHA256SUMS" | tr -d '[:space:]')" == "2" ]]
 "$DIST" verify "$ARCHIVE"
+cp "$FAKE_BINARY" "$OUTPUT/grok-0.0.0-test.1-macos-aarch64"
+cp "$REPO_ROOT/crates/codegen/xai-grok-pager/scripts/install.sh" \
+    "$OUTPUT/install.sh"
+cp "$REPO_ROOT/crates/codegen/xai-grok-pager/scripts/install.ps1" \
+    "$OUTPUT/install.ps1"
+"$DIST" checksums --output-dir "$OUTPUT"
+[[ "$(wc -l <"$OUTPUT/SHA256SUMS" | tr -d '[:space:]')" == "5" ]]
+grep -F "grok-0.0.0-test.1-macos-aarch64" "$OUTPUT/SHA256SUMS" >/dev/null
+grep -F "install.sh" "$OUTPUT/SHA256SUMS" >/dev/null
+grep -F "install.ps1" "$OUTPUT/SHA256SUMS" >/dev/null
 
 WINDOWS_TZ_OUTPUT="$TEST_ROOT/output-windows-other-tz"
 WINDOWS_TZ_ARCHIVE="$(

@@ -1,14 +1,14 @@
 #
-# Grok CLI installer for PowerShell — https://x.ai/cli/install.ps1
+# Grok CLI installer for PowerShell — custom GitHub Releases distribution
 #
 # Auth: GROK_DEPLOYMENT_KEY env var (takes precedence) or ~/.grok/auth.json from `grok login`.
-# Env: GROK_CHANNEL (stable|alpha|enterprise, default: stable), GROK_BIN_DIR, GROK_PROXY_URL
+# Env: GROK_CHANNEL (stable by default), GROK_BIN_DIR, GROK_PROXY_URL
 #
 # Usage:
-#   irm https://x.ai/cli/install.ps1 | iex                                       # latest stable
-#   & ([scriptblock]::Create((irm https://x.ai/cli/install.ps1))) -Version 0.1.42 # specific version
-#   $env:GROK_VERSION="0.1.42"; irm https://x.ai/cli/install.ps1 | iex           # specific version (alt)
-#   $env:GROK_DEPLOYMENT_KEY="<key>"; irm https://x.ai/cli/install.ps1 | iex
+#   irm https://github.com/zhangtyzzz/grok-build/releases/latest/download/install.ps1 | iex
+#   & ([scriptblock]::Create((irm https://github.com/zhangtyzzz/grok-build/releases/latest/download/install.ps1))) -Version 0.1.42
+#   $env:GROK_VERSION="0.1.42"; irm https://github.com/zhangtyzzz/grok-build/releases/latest/download/install.ps1 | iex
+#   $env:GROK_DEPLOYMENT_KEY="<key>"; irm https://github.com/zhangtyzzz/grok-build/releases/latest/download/install.ps1 | iex
 #
 
 param(
@@ -31,7 +31,7 @@ if (-not $Version -and $env:GROK_VERSION) {
 
 # This script is Windows-only. PS 5.1 has no Platform property and only runs on Windows.
 if ($PSVersionTable.Platform -and $PSVersionTable.Platform -ne 'Win32NT') {
-    Write-Error "This installer is for Windows. On macOS/Linux, use: curl -fsSL https://x.ai/cli/install.sh | bash"
+    Write-Error "This installer is for Windows. On macOS/Linux, use: curl -fsSL https://github.com/zhangtyzzz/grok-build/releases/latest/download/install.sh | bash"
     exit 1
 }
 
@@ -147,8 +147,9 @@ $platform = "windows-$arch"
 
 # --- Resolve version and channel ---
 
-$BaseUrlPrimary = 'https://x.ai/cli'
-$BaseUrlFallback = 'https://storage.googleapis.com/grok-build-public-artifacts/cli'
+$ReleaseRepo = 'zhangtyzzz/grok-build'
+$LatestReleaseBase = "https://github.com/$ReleaseRepo/releases/latest/download"
+$TaggedReleaseBase = "https://github.com/$ReleaseRepo/releases/download"
 $DownloadDir = Join-Path $GrokDir 'downloads'
 $BinDir = if ($env:GROK_BIN_DIR) { $env:GROK_BIN_DIR } else { Join-Path $GrokDir 'bin' }
 
@@ -157,27 +158,29 @@ New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 
 $Channel = if ($env:GROK_CHANNEL) { $env:GROK_CHANNEL } else { 'stable' }
 
-# Pick a working BaseUrl: try Cloudflare-fronted x.ai first, fall back to
-# direct GCS if it's unreachable. The probe doubles as the channel-pointer
-# fetch when no -Version was passed, so the happy path costs zero extra requests.
-if (-not $Version) { Write-Host "Fetching latest $Channel version..." -ForegroundColor DarkGray }
-$probeResult = Download-String "$BaseUrlPrimary/$Channel"
-if ($probeResult) {
-    $BaseUrl = $BaseUrlPrimary
-} else {
-    Write-Host "Note: $BaseUrlPrimary unreachable, falling back to direct GCS." -ForegroundColor Yellow
-    $BaseUrl = $BaseUrlFallback
-    $probeResult = Download-String "$BaseUrl/$Channel"
-}
-
 if ($Version) {
     $resolvedVersion = $Version
-} elseif ($probeResult) {
-    $resolvedVersion = $probeResult.Trim()
 } else {
-    Write-Error "Failed to fetch latest version from $BaseUrlPrimary/$Channel and $BaseUrlFallback/$Channel"
+    if ($Channel -ne 'stable') {
+        Write-Error "Automatic GitHub Release resolution supports the stable channel. Pass an explicit prerelease version when installing channel $Channel."
+        exit 1
+    }
+    Write-Host "Fetching latest $Channel version..." -ForegroundColor DarkGray
+    $probeResult = Download-String "$LatestReleaseBase/$Channel"
+    if ($probeResult) {
+        $resolvedVersion = $probeResult.Trim()
+    } else {
+        Write-Error "Failed to fetch the $Channel release pointer from $LatestReleaseBase/$Channel"
+        exit 1
+    }
+}
+
+if ($resolvedVersion -notmatch '^\d+\.\d+\.\d+(-[A-Za-z0-9._]+)?$') {
+    Write-Error "Invalid release version: $resolvedVersion"
     exit 1
 }
+
+$ReleaseBase = "$TaggedReleaseBase/v$resolvedVersion"
 
 if ($AuthSource) {
     Write-Host "Installing Grok $resolvedVersion ($platform, $AuthSource)..." -ForegroundColor Cyan
@@ -187,13 +190,14 @@ if ($AuthSource) {
 
 # --- Download binary ---
 
-$binaryPath = Join-Path $DownloadDir "grok-$platform.exe"
-$artifactBase = "$BaseUrl/grok-$resolvedVersion-$platform"
+$binaryPath = Join-Path $DownloadDir "grok-$resolvedVersion-$platform.exe"
+$artifactName = "grok-$resolvedVersion-$platform"
 
 $downloaded = $false
-foreach ($url in @("$artifactBase.exe", $artifactBase)) {
+foreach ($candidate in @("$artifactName.exe", $artifactName)) {
     try {
-        Download-File $url $binaryPath
+        Download-File "$ReleaseBase/$candidate" $binaryPath
+        $downloadedAssetName = $candidate
         $downloaded = $true
         break
     } catch {
@@ -203,7 +207,27 @@ foreach ($url in @("$artifactBase.exe", $artifactBase)) {
 
 if (-not $downloaded) {
     if (Test-Path $binaryPath) { Remove-Item $binaryPath -Force }
-    Write-Error "Binary download failed from $artifactBase.exe and $artifactBase"
+    Write-Error "Binary download failed from $ReleaseBase/$artifactName.exe and $ReleaseBase/$artifactName"
+    exit 1
+}
+
+$checksumManifest = Download-String "$ReleaseBase/SHA256SUMS"
+$escapedAssetName = [regex]::Escape($downloadedAssetName)
+$checksumMatch = if ($checksumManifest) {
+    [regex]::Match($checksumManifest, "(?m)^([0-9a-fA-F]{64})\s+$escapedAssetName\s*$")
+} else {
+    $null
+}
+if (-not $checksumMatch -or -not $checksumMatch.Success) {
+    if (Test-Path $binaryPath) { Remove-Item $binaryPath -Force }
+    Write-Error "SHA256SUMS has no valid entry for $downloadedAssetName"
+    exit 1
+}
+$expectedChecksum = $checksumMatch.Groups[1].Value.ToLowerInvariant()
+$actualChecksum = (Get-FileHash -Path $binaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actualChecksum -ne $expectedChecksum) {
+    if (Test-Path $binaryPath) { Remove-Item $binaryPath -Force }
+    Write-Error "Checksum verification failed for $downloadedAssetName"
     exit 1
 }
 
