@@ -32,6 +32,13 @@ cargo build --locked \
   --target TARGET
 ```
 
+The `release-dist` feature also enables the fork's compile-time privacy
+boundary. It cannot be relaxed by environment variables, local configuration,
+managed policy, or remote settings. Every release smoke test requires
+`grok inspect --json` to contain `"privacyHardened": true`; see
+[Privacy hardening](privacy-hardening.md) for the exact blocked and retained
+network paths.
+
 The tool paths and explicit version labels are required for release builds so
 that a successful build cannot silently omit or mislabel the embedded search
 tools. This also works for cross-target binaries that cannot execute on the

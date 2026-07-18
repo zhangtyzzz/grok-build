@@ -8,6 +8,7 @@ edition.workspace = true
 default = []
 unstable = []
 default-bazel = []
+privacy-hardening = ["xai-grok-telemetry/privacy-hardening"]
 
 [dependencies]
 dunce = { workspace = true }

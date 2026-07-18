@@ -30,6 +30,9 @@ static CONFIG: OnceLock<Config> = OnceLock::new();
 /// start; the returned guard must outlive the process. No-op guard when
 /// `config.disabled`.
 pub fn init(config: Config) -> ClientInitGuard {
+    if crate::PRIVACY_HARDENED {
+        return sentry::init(ClientOptions::default());
+    }
     let config = CONFIG.get_or_init(|| config);
 
     if config.disabled {

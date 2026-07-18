@@ -25,6 +25,9 @@ pub(crate) fn spawn_trace_upload<T: Serialize + Send + 'static>(
     payload: &T,
     artifact_tracker: Option<super::manifest::ArtifactTracker>,
 ) {
+    if crate::privacy::is_hardened_build() {
+        return;
+    }
     let Some(prefix) = gcs_config.gcs_prefix.as_deref() else {
         tracing::debug!("Skipping request upload: gcs_prefix is not set");
         return;
@@ -86,6 +89,9 @@ pub(crate) async fn upload_tool_definitions(
     tool_definitions: &[ToolDefinition],
     artifact_tracker: Option<&super::manifest::ArtifactTracker>,
 ) {
+    if crate::privacy::is_hardened_build() {
+        return;
+    }
     let Some(prefix) = gcs_config.gcs_prefix.as_deref() else {
         tracing::debug!("Skipping tool definitions upload: gcs_prefix is not set");
         return;
@@ -393,6 +399,9 @@ pub(crate) async fn upload_subagent_metadata(
     upload_method: crate::session::repo_changes::UploadMethod,
     auth_manager: std::sync::Arc<crate::auth::AuthManager>,
 ) {
+    if crate::privacy::is_hardened_build() {
+        return;
+    }
     let json = match serde_json::to_vec_pretty(metadata) {
         Ok(j) => j,
         Err(e) => {
@@ -589,6 +598,9 @@ pub(crate) async fn upload_artifact_to_gcs(
     content_type: &str,
     artifact: &str,
 ) -> Option<String> {
+    if crate::privacy::is_hardened_build() {
+        return None;
+    }
     let _upload_start = std::time::Instant::now();
     let config = ctx.gcs_config.with_auth(Some(ctx.auth_manager.clone()));
     match upload_bytes(&config, gcs_path, content, content_type).await {
@@ -1370,6 +1382,11 @@ pub(crate) async fn upload_trace_artifact_blocking(
     artifact_name: &str,
     direct_attempt_started: Option<&std::sync::atomic::AtomicBool>,
 ) -> anyhow::Result<()> {
+    if crate::privacy::is_hardened_build() {
+        return Err(anyhow::anyhow!(
+            "trace uploads are disabled by this distribution"
+        ));
+    }
     let queue_result = if let Some(queue) = &ctx.upload_queue {
         let session_id = ctx.session_info.id.0.to_string();
         match queue
@@ -1480,6 +1497,11 @@ pub(crate) async fn upload_trace_artifact_deferred(
     artifact_name: &str,
     deadline: tokio::time::Instant,
 ) -> anyhow::Result<()> {
+    if crate::privacy::is_hardened_build() {
+        return Err(anyhow::anyhow!(
+            "trace uploads are disabled by this distribution"
+        ));
+    }
     if let Some(queue) = &ctx.upload_queue {
         let session_id = ctx.session_info.id.0.to_string();
         let outcome = queue
@@ -1557,6 +1579,9 @@ pub(crate) async fn upload_trace_artifact(
     content_type: &str,
     artifact_name: &str,
 ) {
+    if crate::privacy::is_hardened_build() {
+        return;
+    }
     let (ok, err_msg) = if let Some(queue) = &ctx.upload_queue {
         let session_id = ctx.session_info.id.0.to_string();
         match queue

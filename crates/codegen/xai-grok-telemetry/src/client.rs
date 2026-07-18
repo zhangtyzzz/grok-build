@@ -320,6 +320,10 @@ pub fn init(
 ) {
     let lock = TELEMETRY_CLIENT.get_or_init(|| Mutex::new(None));
     let mut guard = lock.lock().unwrap_or_else(|err| err.into_inner());
+    if crate::PRIVACY_HARDENED {
+        *guard = None;
+        return;
+    }
     *guard = if mode.is_disabled() {
         None
     } else {
@@ -353,7 +357,7 @@ pub fn init_if_needed(
     subscription_tier: Option<String>,
     http_client: reqwest::Client,
 ) {
-    if mode.is_disabled() {
+    if crate::PRIVACY_HARDENED || mode.is_disabled() {
         return;
     }
     let lock = TELEMETRY_CLIENT.get_or_init(|| Mutex::new(None));
@@ -461,5 +465,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[cfg(feature = "privacy-hardening")]
+    #[test]
+    fn privacy_hardening_refuses_an_enabled_client() {
+        init(
+            TelemetryConfig::default(),
+            TelemetryMode::Enabled,
+            Some("test-user".to_string()),
+            None,
+            None,
+            None,
+            "test-version".to_string(),
+            None,
+            reqwest::Client::new(),
+        );
+
+        assert!(!is_enabled());
+        assert!(!is_session_metrics_enabled());
     }
 }

@@ -93,4 +93,8 @@ default-bazel = [
     ]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc-ctl"]
 sandbox-enforce = ["xai-grok-pager/sandbox-enforce"]
-release-dist = ["xai-grok-pager/release-dist"]
+release-dist = [
+    "xai-grok-pager/release-dist",
+    "xai-grok-shell/privacy-hardening",
+    "xai-grok-telemetry/privacy-hardening",
+]

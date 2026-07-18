@@ -2520,6 +2520,7 @@ async fn prepare_image_gen_config_fails_open_without_auth() {
         "no resolved auth ⇒ fail open (tools not tier-restricted)"
     );
 }
+#[cfg(not(feature = "privacy-hardening"))]
 #[tokio::test]
 async fn data_collection_enabled_for_normal_user() {
     let agent = build_agent_with_auth(crate::auth::GrokAuth::test_default());
@@ -2581,6 +2582,7 @@ async fn data_collection_disabled_for_zdr_plus_opt_out() {
         "ZDR + opt-out must have data collection disabled"
     );
 }
+#[cfg(not(feature = "privacy-hardening"))]
 #[tokio::test]
 async fn data_collection_enabled_for_non_zdr_team_with_unrelated_blocks() {
     let agent = build_agent_with_auth(crate::auth::GrokAuth {
@@ -2595,6 +2597,19 @@ async fn data_collection_enabled_for_non_zdr_team_with_unrelated_blocks() {
         "non-ZDR blocked reasons must not disable data collection"
     );
 }
+#[cfg(feature = "privacy-hardening")]
+#[tokio::test]
+async fn privacy_hardening_disables_collection_for_normal_user() {
+    let agent = build_agent_with_auth(crate::auth::GrokAuth::test_default());
+    enable_product_telemetry(&agent);
+    enable_trace_upload_config(&agent);
+
+    assert!(agent.is_data_collection_disabled());
+    assert!(!agent.product_analytics_enabled());
+    assert!(agent.trace_upload_config_snapshot().is_none());
+    assert!(agent.feedback_client().is_none());
+    assert!(agent.build_registry_config().is_none());
+}
 fn enable_product_telemetry(agent: &MvpAgent) {
     agent.cfg.borrow_mut().features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
 }
@@ -2605,12 +2620,14 @@ fn enable_trace_upload_config(agent: &MvpAgent) {
     cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
     cfg.telemetry.trace_upload = Some(true);
 }
+#[cfg(not(feature = "privacy-hardening"))]
 #[tokio::test]
 async fn product_analytics_enabled_for_normal_user_with_telemetry_on() {
     let agent = build_agent_with_auth(crate::auth::GrokAuth::test_default());
     enable_product_telemetry(&agent);
     assert!(agent.product_analytics_enabled());
 }
+#[cfg(not(feature = "privacy-hardening"))]
 #[tokio::test]
 async fn product_analytics_enabled_despite_coding_retention_opt_out() {
     let agent = build_agent_with_auth(crate::auth::GrokAuth {

@@ -575,6 +575,10 @@ async fn upload_pair(
         };
     }
 
+    if crate::privacy::is_hardened_build() {
+        return false;
+    }
+
     let Some(handles) = handles else {
         tracing::warn!(
             object_path = %heap_object,

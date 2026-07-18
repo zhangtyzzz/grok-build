@@ -10,6 +10,9 @@ authors = ["xAI"]
 default = []
 default-bazel = []
 memory-log = []
+# Distribution-only kill switch. When enabled, every network-capable
+# telemetry backend stays dormant even if a caller passes enabled config.
+privacy-hardening = []
 
 [dependencies]
 anyhow = { workspace = true }

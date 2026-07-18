@@ -238,6 +238,11 @@ jobs:
           printf '%s\n' "$version_output"
           "$grok" --help >/dev/null
           "$grok" completions bash >/dev/null
+          inspect_output="$("$grok" inspect --json)"
+          [[ "$inspect_output" == *'"privacyHardened": true'* ]] || {
+            echo "release artifact is missing compile-time privacy hardening" >&2
+            exit 1
+          }
 
       - name: Attest release archive provenance
         id: provenance

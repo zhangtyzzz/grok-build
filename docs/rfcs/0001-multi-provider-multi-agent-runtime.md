@@ -25,8 +25,9 @@
    scope、只读边界、live-session 注入、幂等和持久化必须留在核心。
 6. **Anthropic 1h cache 和 portable distribution 是原生能力。**
 7. **Reviewer 策略不随 terminal/runtime 分发。** 核心只提供 command hook
-   与 live-session notify 原语；agent、prompt、触发器和 adapter 由独立的
-   `grok-build-configs` plugin 维护。
+   与 live-session notify 原语；任务 prompt、触发器和 adapter 由独立的
+   `grok-build-configs` plugin 维护。共享插件不注册泛化 reviewer agent，
+   默认沿用普通 headless session 的 model/route/provider 解析。
 
 这使“Hook 只能执行 command”不再是限制：command 是薄适配器，它可以启动
 另一个 `grok -p` 进程，完成后再调用受约束的 `sessions notify` CLI。
@@ -268,14 +269,15 @@ PostToolUse event
   -> validate successful direct git commit
   -> claim (repo, commit SHA) idempotency key
   -> detach reviewer worker with stdin/stdout/stderr closed or redirected
-  -> grok -p ... --agent reviewer [--model route:reviewer]
+  -> grok -p ... [--agent <optional-local-agent>] [--model <optional-model-or-route>]
   -> save review.md
   -> grok sessions notify --session ... --id ... --message-file ... --wake
 ```
 
 Reviewer 是独立 headless session，不 resume parent，也不共享 parent actor。
-它可以通过 agent frontmatter或 `GROK_REVIEWER_MODEL` 使用不同 model/route、
-prompt、skills 和只读工具集。
+默认不传 `--agent` 或 `--model`，因此使用用户正常配置的默认
+model/route/provider（包括自定义 API provider）。需要独立审查策略的本地
+fork 才通过 `GROK_REVIEWER_AGENT` 或 `GROK_REVIEWER_MODEL` 显式覆盖。
 
 ### 7.2 Hook 配置
 
@@ -289,11 +291,7 @@ prompt、skills 和只读工具集。
           {
             "type": "command",
             "command": "bash \"${GROK_PLUGIN_ROOT}/scripts/reviewer-hook.sh\"",
-            "timeout": 3,
-            "env": {
-              "GROK_REVIEWER_AGENT": "reviewer",
-              "GROK_REVIEWER_MODEL": "route:reviewer"
-            }
+            "timeout": 3
           }
         ]
       }
@@ -302,24 +300,9 @@ prompt、skills 和只读工具集。
 }
 ```
 
-Reviewer agent 示例：
-
-```markdown
----
-name: reviewer
-description: Independently reviews a committed change
-model: route:reviewer
-tools:
-  - read_file
-  - list_dir
-  - grep
-permissionMode: plan
----
-
-Review the requested commit and surrounding code. Report correctness,
-security, regression, and test gaps with file/line evidence. Do not modify
-files. State explicitly when no blocking finding exists.
-```
+共享配置不包含 reviewer agent definition，避免与内置 `/review` 的命名和
+persona 解析混淆。确实需要专用 agent 的用户可以在自己的本地配置中定义，
+再显式设置 `GROK_REVIEWER_AGENT`。
 
 ### 7.3 Hook adapter 不变量
 
@@ -392,7 +375,8 @@ Reviewer 无权替 main 作最终决定，也不能通过输出提升权限。
 
 - Planner 的领域方法：skill；
 - Planner 的额外约束：`[modes.plan].instructions`；
-- Reviewer persona、模型、tools、skills：agent definition；
+- Reviewer 默认沿用普通 headless 配置；可选的专用 persona、模型、tools、
+  skills 才放在用户自己的 agent definition；
 - 何时触发 review：hook matcher/adapter；
 - 一组可复用配置：profile 或 plugin。
 
@@ -400,7 +384,6 @@ Reviewer 无权替 main 作最终决定，也不能通过输出提升权限。
 
 ```text
 plugin.json
-agents/reviewer.md
 skills/architecture/SKILL.md
 hooks/reviewer-after-commit.json
 scripts/reviewer-hook.sh

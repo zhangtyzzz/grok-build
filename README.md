@@ -94,6 +94,10 @@ Repository contributor documentation:
 
 - [Architecture](docs/ARCHITECTURE.md) — runtime flow, crate boundaries, state,
   and where to make changes.
+- [Privacy hardening](docs/privacy-hardening.md) — the compile-time data
+  collection boundary applied to custom release artifacts.
+- [Release distribution](docs/release-distribution.md) — reproducible package,
+  verification, and publication workflow.
 - [Multi-provider and multi-agent RFC](docs/rfcs/0001-multi-provider-multi-agent-runtime.md)
   — the implemented provider/model registry, scoped Plan Mode, asynchronous
   external-agent notification contract, Anthropic prompt caching, and

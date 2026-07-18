@@ -397,6 +397,9 @@ impl MvpAgent {
     fn feedback_credentials(
         &self,
     ) -> Option<(String, Option<String>, Option<String>, Option<String>)> {
+        if crate::privacy::is_hardened_build() {
+            return None;
+        }
         if !self.has_proxy_credentials() {
             return None;
         }
@@ -451,6 +454,9 @@ impl MvpAgent {
     }
     /// Build a `FeedbackClient` with resolved feedback URL and credentials.
     pub(crate) fn feedback_client(&self) -> Option<FeedbackClient> {
+        if crate::privacy::is_hardened_build() {
+            return None;
+        }
         let (base_url, user_token, alpha_test_key, deployment_key) = self
             .feedback_credentials()?;
         Some(
@@ -464,6 +470,9 @@ impl MvpAgent {
     pub(super) fn build_registry_config(
         &self,
     ) -> Option<crate::session::RegistryConfig> {
+        if crate::privacy::is_hardened_build() {
+            return None;
+        }
         let remote = self
             .cfg
             .borrow()
@@ -538,11 +547,10 @@ impl MvpAgent {
             ..crate::session::slash_commands::CommandAvailability::default()
         }
     }
-    /// `true` when data collection should be suppressed (team ZDR or
-    /// coding-data-retention opt-out). Delegates to
-    /// [`AuthManager::is_data_collection_disabled`].
+    /// `true` when data collection should be suppressed by the distribution,
+    /// team ZDR, or coding-data-retention opt-out.
     pub(crate) fn is_data_collection_disabled(&self) -> bool {
-        self.auth_manager.is_data_collection_disabled()
+        crate::privacy::is_hardened_build() || self.auth_manager.is_data_collection_disabled()
     }
     /// Telemetry enabled and not ZDR. Same gate as session `telemetry_enabled`.
     pub(crate) fn product_analytics_enabled(&self) -> bool {
@@ -2196,6 +2204,9 @@ impl MvpAgent {
         crate::upload::turn::TraceUploadReason,
     ) {
         use crate::upload::turn::TraceUploadReason;
+        if crate::privacy::is_hardened_build() {
+            return (None, TraceUploadReason::FeatureOff);
+        }
         if self.is_data_collection_disabled() {
             crate::upload::trace::spawn_startup_spill_reconcile(
                 crate::util::grok_home::grok_home(),

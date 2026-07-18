@@ -185,7 +185,7 @@ pub async fn maybe_upload_index(
     gcs_config: xai_file_utils::TraceExportConfig,
     auth_manager: Option<std::sync::Arc<crate::auth::AuthManager>>,
 ) {
-    if !config.enabled {
+    if crate::privacy::is_hardened_build() || !config.enabled {
         return;
     }
     if !upload_debounce_ok() {
@@ -272,7 +272,7 @@ pub async fn maybe_download_index(
     gcs_config: &xai_file_utils::TraceExportConfig,
     auth_manager: Option<std::sync::Arc<crate::auth::AuthManager>>,
 ) -> bool {
-    if !config.enabled {
+    if crate::privacy::is_hardened_build() || !config.enabled {
         return false;
     }
 

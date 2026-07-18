@@ -148,6 +148,9 @@ pub(crate) async fn upload_to_auth_diagnostics(
     upload_method: &crate::session::repo_changes::UploadMethod,
     auth_manager: Arc<crate::auth::AuthManager>,
 ) {
+    if crate::privacy::is_hardened_build() {
+        return;
+    }
     let user_id = user_id.replace('/', "_");
     let ts = chrono::Utc::now().timestamp_millis();
     let version = xai_grok_version::VERSION;
