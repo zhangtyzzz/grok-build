@@ -30,6 +30,10 @@ pub mod session_ctx;
 pub mod session_metrics;
 pub mod unified_log;
 
+/// `true` for custom distribution artifacts that force every
+/// network-capable telemetry backend dormant.
+pub const PRIVACY_HARDENED: bool = cfg!(feature = "privacy-hardening");
+
 pub use client::{
     Metadata, TelemetryClient, UserContext, init, init_if_needed, is_enabled,
     is_session_metrics_enabled,

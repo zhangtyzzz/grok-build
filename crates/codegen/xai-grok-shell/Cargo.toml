@@ -1,13 +1,14 @@
 [package]
 license = "Apache-2.0"
 name = "xai-grok-shell"
-version = "0.2.103"
+version = "0.2.104"
 edition.workspace = true
 
 [features]
 default = []
 unstable = []
 default-bazel = []
+privacy-hardening = ["xai-grok-telemetry/privacy-hardening"]
 
 [dependencies]
 dunce = { workspace = true }

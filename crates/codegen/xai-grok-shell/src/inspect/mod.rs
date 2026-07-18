@@ -56,6 +56,8 @@ impl std::fmt::Display for Scope {
 pub struct InspectReport {
     pub grok_version: String,
     pub channel: String,
+    /// Compile-time distribution policy; cannot be loosened by runtime config.
+    pub privacy_hardened: bool,
     pub cwd: String,
     pub project_root: Option<String>,
     /// Folder-trust verdict for `cwd`: when false, repo-local project hooks,
@@ -390,6 +392,7 @@ async fn build_report(cwd: &Path) -> InspectReport {
         channel: crate::util::config::channel_name_from_cache()
             .unwrap_or("unknown")
             .to_string(),
+        privacy_hardened: crate::privacy::is_hardened_build(),
         cwd: cwd.display().to_string(),
         project_root: git_root.map(|p| p.display().to_string()),
         project_trusted,
@@ -1272,6 +1275,10 @@ fn print_human(r: &InspectReport) {
     println!();
     println!("  Environment");
     println!("  {TREE} Version: {} [{}]", r.grok_version, r.channel);
+    println!(
+        "  {TREE} Privacy hardened: {}",
+        if r.privacy_hardened { "yes" } else { "no" }
+    );
     println!("  {TREE} CWD: {}", r.cwd);
     if let Some(ref root) = r.project_root {
         println!("  {TREE} Git root: {}", root);

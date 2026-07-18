@@ -50,6 +50,14 @@ The composition root is
 services such as the allocator hooks, crash handling, telemetry, sandbox
 requirements, and Tokio runtime before dispatching the selected mode.
 
+The composition root's `release-dist` feature also enables
+`xai-grok-shell/privacy-hardening`. That compile-time policy forces collection
+and reporting gates closed in the shell and independently leaves all
+network-capable backends dormant in `xai-grok-telemetry`. Keeping the policy
+at the distribution boundary preserves upstream-compatible developer builds
+while preventing runtime configuration or remote settings from loosening a
+published artifact. See `docs/privacy-hardening.md`.
+
 | Mode | Entry path | Responsibility |
 | --- | --- | --- |
 | Interactive | no subcommand or prompt flag | Starts `xai-grok-pager`, which owns terminal input, rendering, panes, and session UI. |
@@ -148,9 +156,10 @@ An asynchronous reviewer is one use of the generic extension boundary:
 1. A command-only `PostToolUse` hook recognizes a successful direct
    `git commit`, atomically claims the repository/commit pair, and launches a
    detached headless reviewer.
-2. The reviewer uses a normal named agent definition, so its model or route,
-   prompt, and tool set remain plugin configuration maintained outside this
-   runtime repository.
+2. The reviewer starts as a normal headless session without a model pin, so
+   the user's configured default model or logical route—including a custom
+   provider—is resolved by the regular runtime. A local plugin fork may opt
+   into explicit agent or model overrides.
 3. On completion it calls `grok sessions notify` with a stable notification
    ID.
 4. The leader accepts the result only for an already-live session, queues it

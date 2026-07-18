@@ -360,6 +360,11 @@ async fn handle_feedback(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult 
 /// - `x.ai/review/comment`: record a new inline code comment to cloud storage
 /// - `x.ai/review/comment/delete`: record a tombstone event for a deleted comment
 async fn handle_review(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
+    if crate::privacy::is_hardened_build() {
+        return Err(acp::Error::internal_error()
+            .data("Review comment reporting is disabled by this distribution."));
+    }
+
     match args.method.as_ref() {
         "x.ai/review/comment" => {
             let request: CommentRequest = parse_params(args)?;

@@ -2291,6 +2291,9 @@ impl Config {
         self.resolve_two_pass_compaction().value
     }
     pub(crate) fn resolve_telemetry_mode(&self) -> Resolved<TelemetryMode> {
+        if crate::privacy::is_hardened_build() {
+            return Resolved::new(TelemetryMode::Disabled, ConfigSource::Default);
+        }
         if let Some(mode) = self.requirements.telemetry.pinned() {
             return Resolved::new(mode, ConfigSource::Requirement);
         }
@@ -2313,6 +2316,9 @@ impl Config {
         Resolved::new(TelemetryMode::Disabled, ConfigSource::Default)
     }
     pub(crate) fn resolve_trace_upload(&self) -> Resolved<bool> {
+        if crate::privacy::is_hardened_build() {
+            return Resolved::new(false, ConfigSource::Default);
+        }
         let mode = self.resolve_telemetry_mode();
         let ff = if mode.value.is_disabled() {
             None
@@ -2379,6 +2385,9 @@ impl Config {
         )
     }
     pub(crate) fn resolve_feedback(&self) -> Resolved<bool> {
+        if crate::privacy::is_hardened_build() {
+            return Resolved::new(false, ConfigSource::Default);
+        }
         let ff = self
             .remote_settings
             .as_ref()
@@ -3157,6 +3166,9 @@ impl SyncBoolFlag {
 /// Sync slice of [`Config::resolve_telemetry_mode`] for use before the tokio
 /// runtime (e.g. `init_sentry`). `true` only when explicitly off.
 pub fn is_telemetry_disabled_sync() -> bool {
+    if crate::privacy::is_hardened_build() {
+        return true;
+    }
     !SyncBoolFlag::new(telemetry_enabled_from_toml)
         .disable_env("DISABLE_TELEMETRY")
         .enable_env(grok_telemetry_env_enabled)
@@ -3166,6 +3178,9 @@ pub fn is_telemetry_disabled_sync() -> bool {
 /// *explicitly* off; absence is not disabled (`.default(true)`) so remote-only
 /// enablement still builds the OTLP exporter (the runtime gate then governs it).
 pub fn is_telemetry_explicitly_disabled_sync() -> bool {
+    if crate::privacy::is_hardened_build() {
+        return true;
+    }
     !SyncBoolFlag::new(telemetry_enabled_from_toml)
         .disable_env("DISABLE_TELEMETRY")
         .enable_env(grok_telemetry_env_enabled)
@@ -3175,6 +3190,9 @@ pub fn is_telemetry_explicitly_disabled_sync() -> bool {
 /// Sync sibling of [`is_telemetry_disabled_sync`] scoped to Sentry. Inherits
 /// from telemetry when no Sentry-specific signal is set.
 pub fn is_error_reporting_disabled_sync() -> bool {
+    if crate::privacy::is_hardened_build() {
+        return true;
+    }
     !SyncBoolFlag::new(error_reporting_enabled_from_toml)
         .disable_env("DISABLE_ERROR_REPORTING")
         .enable_env(|| env_bool("GROK_ERROR_REPORTING"))
@@ -3223,6 +3241,9 @@ pub(crate) fn read_requirements_toml() -> Option<toml::Value> {
 /// `internal_pipeline_consumed_otel_vars` simultaneously blocks the external
 /// stream — exactly the split this design forbids.
 pub(crate) fn external_otel_master_switch_resolved() -> bool {
+    if crate::privacy::is_hardened_build() {
+        return false;
+    }
     external_otel_master_switch_from(
         xai_grok_config::load_merged_requirements().as_ref(),
         env_bool("GROK_EXTERNAL_OTEL"),
@@ -3259,6 +3280,9 @@ pub(crate) fn external_otel_master_switch_from(
 pub fn resolve_external_otel_config(
     client: xai_grok_telemetry::external::config::ExternalClientInfo,
 ) -> Option<xai_grok_telemetry::external::ExternalOtelConfig> {
+    if crate::privacy::is_hardened_build() {
+        return None;
+    }
     resolve_external_otel_config_with(
         crate::config::load_effective_config().ok().as_ref(),
         xai_grok_config::load_merged_requirements().as_ref(),
@@ -12199,5 +12223,42 @@ default = "grok-4.5"
         let r = resolve_mcp_recursive_config_watch(None, None, None, None, Some(false));
         assert!(!r.value);
         assert_eq!(r.source, ConfigSource::Remote);
+    }
+
+    #[cfg(feature = "privacy-hardening")]
+    #[test]
+    #[serial]
+    fn privacy_hardening_overrides_enabling_config_env_and_remote_settings() {
+        let _telemetry = EnvGuard::set("GROK_TELEMETRY_ENABLED", "1");
+        let _trace_upload = EnvGuard::set("GROK_TELEMETRY_TRACE_UPLOAD", "1");
+        let _feedback = EnvGuard::set("GROK_FEEDBACK_ENABLED", "1");
+        let _error_reporting = EnvGuard::set("GROK_ERROR_REPORTING", "1");
+        let _external_otel = EnvGuard::set("GROK_EXTERNAL_OTEL", "1");
+        let _storage = EnvGuard::set("GROK_STORAGE_MODE", "writeback");
+
+        let remote = crate::util::config::RemoteSettings {
+            telemetry_enabled: Some(true),
+            trace_upload_enabled: Some(true),
+            feedback_enabled: Some(true),
+            writeback_enabled: Some(true),
+            ..Default::default()
+        };
+        let mut cfg = Config::default();
+        cfg.features.telemetry = Some(TelemetryMode::Enabled);
+        cfg.features.feedback = Some(true);
+        cfg.telemetry.trace_upload = Some(true);
+        cfg.remote_settings = Some(remote.clone());
+
+        assert_eq!(cfg.resolve_telemetry_mode().value, TelemetryMode::Disabled);
+        assert!(!cfg.resolve_trace_upload().value);
+        assert!(!cfg.resolve_feedback().value);
+        assert!(is_telemetry_disabled_sync());
+        assert!(is_telemetry_explicitly_disabled_sync());
+        assert!(is_error_reporting_disabled_sync());
+        assert!(!external_otel_master_switch_resolved());
+        assert_eq!(
+            crate::config::StorageMode::resolve(Some("writeback"), Some(&remote)),
+            crate::config::StorageMode::Local
+        );
     }
 }

@@ -1980,6 +1980,10 @@ fn init_remote_sync(
     storage_mode: StorageMode,
     auth_manager: Option<Arc<crate::auth::AuthManager>>,
 ) -> io::Result<Option<RemoteSync>> {
+    if crate::privacy::is_hardened_build() {
+        return Ok(None);
+    }
+
     match storage_mode {
         StorageMode::Local => Ok(None),
         StorageMode::Writeback => {
