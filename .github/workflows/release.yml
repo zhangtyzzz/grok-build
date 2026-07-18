@@ -196,7 +196,17 @@ jobs:
             "$PWD"/*) archive="${archive#"$PWD"/}" ;;
             *) echo "archive was created outside the workspace: $archive" >&2; exit 1 ;;
           esac
+          platform="$(node scripts/dist/target.mjs "${{ matrix.target }}" platform)"
+          arch="$(node scripts/dist/target.mjs "${{ matrix.target }}" arch)"
+          extension=""
+          if [[ "$platform" == windows ]]; then
+            extension=".exe"
+          fi
+          binary_asset="release-output/grok-${{ needs.metadata.outputs.version }}-${platform}-${arch}${extension}"
+          cp -- "$binary" "$binary_asset"
+          chmod 0755 "$binary_asset"
           echo "archive=$archive" >>"$GITHUB_OUTPUT"
+          echo "binary_asset=$binary_asset" >>"$GITHUB_OUTPUT"
 
       - name: Smoke-test installed payload
         env:
@@ -256,6 +266,7 @@ jobs:
             release-output/*.tar.gz
             release-output/*.zip
             release-output/*.sigstore.json
+            release-output/grok-${{ needs.metadata.outputs.version }}-*
           if-no-files-found: error
           retention-days: 14
 
@@ -284,13 +295,15 @@ jobs:
           path: release-candidate
           merge-multiple: true
 
-      - name: Verify six unique archives and global checksums
+      - name: Verify release assets and global checksums
         id: result
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
+          RELEASE_CHANNEL: ${{ needs.metadata.outputs.channel }}
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
           mapfile -t archives < <(
@@ -301,12 +314,20 @@ jobs:
             find release-candidate -maxdepth 1 -type f \
               -name '*.sigstore.json' -print | LC_ALL=C sort
           )
+          mapfile -t binaries < <(
+            find release-candidate -maxdepth 1 -type f \
+              -name "grok-${RELEASE_VERSION}-*" -print | LC_ALL=C sort
+          )
           test "${#archives[@]}" -eq 6 || {
             echo "expected six release archives, found ${#archives[@]}" >&2
             exit 1
           }
           test "${#bundles[@]}" -eq 6 || {
             echo "expected six provenance bundles, found ${#bundles[@]}" >&2
+            exit 1
+          }
+          test "${#binaries[@]}" -eq 6 || {
+            echo "expected six standalone binaries, found ${#binaries[@]}" >&2
             exit 1
           }
           expected=(
@@ -324,6 +345,21 @@ jobs:
               exit 1
             }
           done
+          expected_binaries=(
+            "grok-${RELEASE_VERSION}-linux-aarch64"
+            "grok-${RELEASE_VERSION}-linux-x86_64"
+            "grok-${RELEASE_VERSION}-macos-aarch64"
+            "grok-${RELEASE_VERSION}-macos-x86_64"
+            "grok-${RELEASE_VERSION}-windows-aarch64.exe"
+            "grok-${RELEASE_VERSION}-windows-x86_64.exe"
+          )
+          for index in "${!binaries[@]}"; do
+            actual="$(basename "${binaries[$index]}")"
+            test "$actual" = "${expected_binaries[$index]}" || {
+              echo "unexpected standalone binary at index $index: $actual" >&2
+              exit 1
+            }
+          done
           for archive in "${archives[@]}"; do
             bundle="$archive.sigstore.json"
             test -f "$bundle"
@@ -334,8 +370,16 @@ jobs:
               --source-digest "$RELEASE_COMMIT" >/dev/null
             scripts/dist.sh verify "$archive"
           done
+          cp crates/codegen/xai-grok-pager/scripts/install.sh \
+            release-candidate/install.sh
+          cp crates/codegen/xai-grok-pager/scripts/install.ps1 \
+            release-candidate/install.ps1
+          chmod 0755 release-candidate/install.sh
+          if [[ "$RELEASE_CHANNEL" == stable ]]; then
+            printf '%s\n' "$RELEASE_VERSION" >release-candidate/stable
+          fi
           scripts/dist.sh checksums --output-dir release-candidate
-          test "$(wc -l <release-candidate/SHA256SUMS)" -eq 6
+          test "$(wc -l <release-candidate/SHA256SUMS)" -eq 14
           artifact_name="release-candidate-${{ needs.metadata.outputs.version }}"
           echo "artifact_name=$artifact_name" >>"$GITHUB_OUTPUT"
 

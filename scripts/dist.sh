@@ -814,7 +814,13 @@ write_checksums() {
     [[ -d "$output_dir" ]] || die "checksum directory does not exist: $output_dir"
     (
         shopt -s nullglob
-        local files=("$output_dir"/*.tar.gz "$output_dir"/*.zip)
+        local files=(
+            "$output_dir"/*.tar.gz
+            "$output_dir"/*.zip
+            "$output_dir"/grok-[0-9]*
+        )
+        [[ -f "$output_dir/install.sh" ]] && files+=("$output_dir/install.sh")
+        [[ -f "$output_dir/install.ps1" ]] && files+=("$output_dir/install.ps1")
         [[ ${#files[@]} -gt 0 ]] || die "no distribution archives found in $output_dir"
         local temporary="$output_dir/.SHA256SUMS.tmp.$$"
         : >"$temporary"

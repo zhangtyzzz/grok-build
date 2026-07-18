@@ -8,7 +8,8 @@ use std::os::unix::process::CommandExt;
 
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
-use tokio::io::AsyncWriteExt;
+use sha2::{Digest, Sha256};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::version::{
     UpdateConfig, fetch_latest_version, get_installed_grok_version, get_latest_version,
@@ -29,9 +30,9 @@ const MSG_RUN_UPDATE_MANUAL: &str = "Run `grok update` to get the latest version
 /// Manual-install one-liner for this platform's bootstrap installer.
 fn manual_install_cmd() -> &'static str {
     if cfg!(windows) {
-        "irm https://x.ai/cli/install.ps1 | iex"
+        "irm https://github.com/zhangtyzzz/grok-build/releases/latest/download/install.ps1 | iex"
     } else {
-        "curl -fsSL https://x.ai/cli/install.sh | bash"
+        "curl -fsSL https://github.com/zhangtyzzz/grok-build/releases/latest/download/install.sh | bash"
     }
 }
 
@@ -39,7 +40,10 @@ fn manual_install_cmd() -> &'static str {
 fn reinstall_hint(installer: &str) -> String {
     match installer {
         "npm" => "Please reinstall via npm:\n  npm i -g @xai-official/grok".to_string(),
-        "gh-release" => "Please reinstall via GitHub Releases:\n  gh release download --repo xai-org-shared/grok-build --pattern 'grok-*' --output grok && chmod +x grok".to_string(),
+        "gh-release" => format!(
+            "Please reinstall from the custom GitHub Release:\n  {}",
+            manual_install_cmd()
+        ),
         _ => format!("Please reinstall via:\n  {}", manual_install_cmd()),
     }
 }
@@ -1057,14 +1061,14 @@ async fn remove_stale_pager(bin_dir: &std::path::Path) {
     }
 }
 
-/// Fetch a CLI object from GCS. On Windows the public bucket may use a `.exe`
-/// suffix; try that first, then the extensionless name used on macOS/Linux.
+/// Fetch a CLI release asset. On Windows releases use a `.exe` suffix; try
+/// that first, then the extensionless name used by private mirrors and tests.
 async fn download_cli_artifact_from_gcs(
     gcs_base_url: &str,
     object_name: &str,
     dest: &std::path::Path,
     with_progress: bool,
-) -> Result<()> {
+) -> Result<String> {
     let base = gcs_base_url.trim_end_matches('/');
     #[cfg(windows)]
     {
@@ -1075,16 +1079,81 @@ async fn download_cli_artifact_from_gcs(
             download_silent(&with_exe, dest).await
         };
         match r {
-            Ok(()) => return Ok(()),
+            Ok(()) => return Ok(format!("{object_name}.exe")),
             Err(e) => tracing::debug!("{with_exe} not found, trying extensionless: {e}"),
         }
     }
     let url = format!("{}/{}", base, object_name);
     if with_progress {
-        download_with_progress(&url, dest).await
+        download_with_progress(&url, dest).await?;
     } else {
-        download_silent(&url, dest).await
+        download_silent(&url, dest).await?;
     }
+    Ok(object_name.to_string())
+}
+
+fn checksum_from_manifest<'a>(manifest: &'a str, asset_name: &str) -> Option<&'a str> {
+    manifest.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let checksum = fields.next()?;
+        let name = fields.next()?.trim_start_matches('*');
+        if fields.next().is_none()
+            && name == asset_name
+            && checksum.len() == 64
+            && checksum.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            Some(checksum)
+        } else {
+            None
+        }
+    })
+}
+
+async fn sha256_file(path: &std::path::Path) -> Result<String> {
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .with_context(|| format!("failed to open {} for checksum", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .await
+            .with_context(|| format!("failed to read {} for checksum", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+async fn verify_github_release_checksum(
+    release_base: &str,
+    asset_name: &str,
+    binary_path: &std::path::Path,
+) -> Result<()> {
+    let manifest_url = format!("{}/SHA256SUMS", release_base.trim_end_matches('/'));
+    let manifest = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent("grok-build-updater")
+        .build()?
+        .get(&manifest_url)
+        .send()
+        .await
+        .with_context(|| format!("failed to download {manifest_url}"))?
+        .error_for_status()
+        .with_context(|| format!("failed to download {manifest_url}"))?
+        .text()
+        .await
+        .with_context(|| format!("failed to read {manifest_url}"))?;
+    let expected = checksum_from_manifest(&manifest, asset_name)
+        .ok_or_else(|| anyhow::anyhow!("SHA256SUMS has no valid entry for {asset_name}"))?;
+    let actual = sha256_file(binary_path).await?;
+    if !actual.eq_ignore_ascii_case(expected) {
+        anyhow::bail!("checksum verification failed for {asset_name}");
+    }
+    Ok(())
 }
 
 async fn install_internal(target: Option<&str>, update_config: &UpdateConfig) -> Result<()> {
@@ -1182,7 +1251,7 @@ async fn download_verified_from_base(
             v.to_string()
         }
         None => {
-            crate::version::fetch_gcs_version_from_base(&update_config.channel, gcs_base_url)
+            crate::version::fetch_internal_version_from_base(&update_config.channel, gcs_base_url)
                 .await?
         }
     };
@@ -1196,8 +1265,21 @@ async fn download_verified_from_base(
 
     eprintln!("  Downloading grok v{} ({})...", version, platform);
 
+    // Resolve the mutable latest-release pointer to the concrete tag before
+    // downloading. Private mirrors and test servers keep their supplied base.
+    let artifact_base = crate::version::release_asset_base_url(gcs_base_url, &version);
+
     // Published already +x (see `publish_downloaded_artifact`).
-    download_cli_artifact_from_gcs(gcs_base_url, &binary_name, &binary_path, true).await?;
+    let downloaded_asset =
+        download_cli_artifact_from_gcs(&artifact_base, &binary_name, &binary_path, true).await?;
+
+    if artifact_base.starts_with(crate::version::GH_RELEASE_DOWNLOAD_BASE)
+        && let Err(error) =
+            verify_github_release_checksum(&artifact_base, &downloaded_asset, &binary_path).await
+    {
+        let _ = tokio::fs::remove_file(&binary_path).await;
+        return Err(error);
+    }
 
     // Smoke-test: run the binary before activating it. A truncated or
     // corrupt download is caught here and never becomes the active grok.
@@ -1901,7 +1983,7 @@ async fn gh_release_download(tag: &str, pattern: &str, dest: &std::path::Path) -
     Ok(())
 }
 
-/// Download and install grok from GitHub Releases (xai-org-shared/grok-build).
+/// Download and install grok from the configured GitHub Releases repository.
 ///
 /// Uses `gh release download` to fetch the binary matching the current platform.
 /// This works anywhere the `gh` CLI is authenticated, without needing npm or
@@ -2356,6 +2438,33 @@ async fn refresh_deployment_config() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_checksum_manifest_requires_exact_asset_name() {
+        let manifest = "\
+b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9  grok-0.2.103-linux-x86_64
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  grok-0.2.103-linux-aarch64
+";
+        assert_eq!(
+            checksum_from_manifest(manifest, "grok-0.2.103-linux-x86_64"),
+            Some("b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9")
+        );
+        assert_eq!(
+            checksum_from_manifest(manifest, "grok-0.2.103-linux-x86_64.exe"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sha256_file_matches_known_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("binary");
+        tokio::fs::write(&path, b"hello world").await.unwrap();
+        assert_eq!(
+            sha256_file(&path).await.unwrap(),
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+    }
 
     #[test]
     fn test_tmp_download_path_is_unique_per_version_and_per_attempt() {
@@ -3220,14 +3329,14 @@ mod tests {
     }
 
     #[test]
-    fn test_reinstall_hint_gh_release_mentions_gh_command() {
+    fn test_reinstall_hint_gh_release_mentions_custom_installer() {
         let hint = reinstall_hint("gh-release");
         assert!(
-            hint.contains("gh release download"),
-            "should suggest gh release download: {hint}"
+            hint.contains("releases/latest/download"),
+            "should suggest the custom release installer: {hint}"
         );
         assert!(
-            hint.contains("xai-org-shared/grok-build"),
+            hint.contains("zhangtyzzz/grok-build"),
             "should name the repo: {hint}"
         );
     }
