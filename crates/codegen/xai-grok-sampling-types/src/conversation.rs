@@ -3007,6 +3007,64 @@ pub fn dedup_duplicate_tool_results(conversation: &mut Vec<ConversationItem>) ->
 // Anthropic Messages API Conversion
 // ============================================================================
 
+/// Build an `ephemeral` cache breakpoint for the given TTL. Anthropic defaults
+/// an omitted TTL to five minutes, so the 5m case leaves `ttl` absent to
+/// preserve the legacy wire shape; one hour must be explicit. Shared by the
+/// system-prefix and conversation-prefix breakpoints so their wire encoding
+/// cannot drift.
+fn ephemeral_cache_control(ttl: crate::PromptCacheTtl) -> crate::messages::CacheControl {
+    crate::messages::CacheControl {
+        r#type: "ephemeral".to_string(),
+        ttl: match ttl {
+            crate::PromptCacheTtl::FiveMinutes => None,
+            crate::PromptCacheTtl::OneHour => Some(crate::PromptCacheTtl::OneHour),
+        },
+    }
+}
+
+/// Place a cache breakpoint on the final message so the growing conversation
+/// prefix is cached, not just the static system block.
+///
+/// Only `Text` and `ToolResult` blocks carry `cache_control` on the wire, so we
+/// attach to the last such block, walking back past any trailing non-cacheable
+/// blocks (image / tool_use / thinking). If the final message has no cacheable
+/// block at all (e.g. a lone image, or a thinking-only assistant tail), this is
+/// a whole-message no-op: that turn's prefix simply isn't cached (no fallback
+/// to an earlier message), which is acceptable graceful degradation.
+fn apply_conversation_cache_breakpoint(
+    messages: &mut [crate::messages::Message],
+    cache_control: crate::messages::CacheControl,
+) {
+    use crate::messages::{ContentBlock, MessageContent};
+    let Some(last_msg) = messages.last_mut() else {
+        return;
+    };
+    match &mut last_msg.content {
+        MessageContent::Text(text) => {
+            last_msg.content = MessageContent::Blocks(vec![ContentBlock::Text {
+                text: std::mem::take(text),
+                cache_control: Some(cache_control),
+            }]);
+        }
+        MessageContent::Blocks(blocks) => {
+            for block in blocks.iter_mut().rev() {
+                match block {
+                    ContentBlock::Text {
+                        cache_control: cc, ..
+                    }
+                    | ContentBlock::ToolResult {
+                        cache_control: cc, ..
+                    } => {
+                        *cc = Some(cache_control);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 /// Convert a ConversationRequest to Anthropic MessagesRequest using the
 /// backwards-compatible five-minute stable-prefix cache policy.
 pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::MessagesRequest {
@@ -3019,12 +3077,11 @@ pub fn build_messages_request_with_cache_policy(
     req: &ConversationRequest,
     prompt_cache: crate::PromptCachePolicy,
 ) -> crate::messages::MessagesRequest {
+    use crate::PromptCacheMode;
     use crate::messages::{
-        CacheControl, ContentBlock, ImageSource, Message, MessageContent, MessageRole,
-        MessagesRequest, OutputConfig, SystemParam, TextBlock, ToolChoiceParam, ToolParam,
-        ToolResultContent,
+        ContentBlock, ImageSource, Message, MessageContent, MessageRole, MessagesRequest,
+        OutputConfig, SystemParam, TextBlock, ToolChoiceParam, ToolParam, ToolResultContent,
     };
-    use crate::{PromptCacheMode, PromptCacheTtl};
 
     let mut system_blocks: Vec<TextBlock> = Vec::new();
     let mut messages: Vec<Message> = Vec::new();
@@ -3243,13 +3300,28 @@ pub fn build_messages_request_with_cache_policy(
     if prompt_cache.mode == PromptCacheMode::StablePrefix
         && let Some(last) = system_blocks.last_mut()
     {
-        last.cache_control = Some(CacheControl {
-            r#type: "ephemeral".to_string(),
-            ttl: match prompt_cache.ttl {
-                PromptCacheTtl::FiveMinutes => None,
-                PromptCacheTtl::OneHour => Some(PromptCacheTtl::OneHour),
-            },
-        });
+        last.cache_control = Some(ephemeral_cache_control(prompt_cache.ttl));
+    }
+
+    // Cache the conversation prefix as well. A single system-prefix breakpoint
+    // only caches the (static) system prompt; the growing tool/assistant/user
+    // history is re-billed in full on every step of an agentic loop. Placing a
+    // second `ephemeral` breakpoint on the last block of the final message lets
+    // each turn extend the cached prefix, so the next request reads the entire
+    // prior conversation from cache (Anthropic reads the longest matching
+    // cached prefix; two breakpoints stay well under the four-breakpoint cap).
+    //
+    // Cost note: under the default `StablePrefix` policy this marks the tail on
+    // *every* request, so a one-shot caller with no follow-up turn pays the
+    // cache-write surcharge (~25% on the written tokens) without a later read.
+    // Anthropic's ~1024-token minimum-cacheable-prefix floor suppresses the
+    // write for small prompts, and the agentic loop recovers the cost many
+    // times over on subsequent reads, so the tradeoff favors the common case.
+    if prompt_cache.mode == PromptCacheMode::StablePrefix {
+        apply_conversation_cache_breakpoint(
+            &mut messages,
+            ephemeral_cache_control(prompt_cache.ttl),
+        );
     }
 
     // Build system param
@@ -5209,6 +5281,173 @@ mod tests {
             json.get("system").and_then(serde_json::Value::as_str),
             Some("Stable system prompt"),
             "a single uncached system block should retain the compact text form"
+        );
+    }
+
+    #[test]
+    fn messages_stable_prefix_also_caches_conversation_tail() {
+        // The final message (here the sole user turn) must carry a second
+        // ephemeral breakpoint so the growing conversation prefix is cached and
+        // read back on the next agentic step, not just the static system block.
+        let json =
+            serde_json::to_value(build_messages_request(&messages_cache_test_request())).unwrap();
+        let tail = json
+            .pointer("/messages/0/content/0/cache_control")
+            .expect("stable-prefix must cache the last message's tail block");
+        assert_eq!(
+            tail.get("type").and_then(serde_json::Value::as_str),
+            Some("ephemeral")
+        );
+        assert!(
+            tail.get("ttl").is_none(),
+            "default 5m must stay implicit on the conversation breakpoint too: {json:#}"
+        );
+        // System and conversation breakpoints must coexist on the same request
+        // (exactly two), guarding against a refactor dropping either one.
+        assert!(
+            json.pointer("/system/0/cache_control").is_some(),
+            "the system-prefix breakpoint must remain alongside the conversation one: {json:#}"
+        );
+        assert_eq!(
+            json.to_string().matches("cache_control").count(),
+            2,
+            "exactly two breakpoints (system + conversation) expected: {json:#}"
+        );
+    }
+
+    #[test]
+    fn conversation_breakpoint_converts_plain_text_message() {
+        // Defensive `MessageContent::Text` arm: the current builder always emits
+        // `Blocks`, but if a bare-text message reaches the helper it must be
+        // promoted to a single cached text block rather than silently skipped.
+        use crate::messages::{ContentBlock, Message, MessageContent, MessageRole};
+        let mut messages = vec![Message {
+            role: MessageRole::User,
+            content: MessageContent::Text("plain user turn".to_string()),
+        }];
+        apply_conversation_cache_breakpoint(
+            &mut messages,
+            ephemeral_cache_control(crate::PromptCacheTtl::OneHour),
+        );
+        let MessageContent::Blocks(blocks) = &messages[0].content else {
+            panic!("a bare-text message must be promoted to Blocks");
+        };
+        assert!(
+            matches!(
+                &blocks[0],
+                ContentBlock::Text { text, cache_control: Some(_) } if text == "plain user turn"
+            ),
+            "the promoted text block must preserve its text and carry the breakpoint"
+        );
+    }
+
+    #[test]
+    fn messages_one_hour_cache_extends_to_conversation_tail() {
+        let json = serde_json::to_value(build_messages_request_with_cache_policy(
+            &messages_cache_test_request(),
+            crate::PromptCachePolicy::STABLE_PREFIX_1H,
+        ))
+        .unwrap();
+        assert_eq!(
+            json.pointer("/messages/0/content/0/cache_control/ttl")
+                .and_then(serde_json::Value::as_str),
+            Some("1h"),
+            "one-hour policy must extend the explicit TTL to the conversation breakpoint: {json:#}"
+        );
+    }
+
+    #[test]
+    fn conversation_breakpoint_lands_on_tool_result_tail() {
+        // The real agentic case: the final message is a user turn whose last
+        // block is a ToolResult (Blocks path, not the Text->Blocks conversion).
+        use crate::messages::{
+            ContentBlock, Message, MessageContent, MessageRole, ToolResultContent,
+        };
+        let mut messages = vec![Message {
+            role: MessageRole::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "tool-1".to_string(),
+                content: ToolResultContent::Text("output".to_string()),
+                cache_control: None,
+            }]),
+        }];
+        apply_conversation_cache_breakpoint(
+            &mut messages,
+            ephemeral_cache_control(crate::PromptCacheTtl::OneHour),
+        );
+        let json = serde_json::to_value(&messages).unwrap();
+        assert_eq!(
+            json.pointer("/0/content/0/cache_control/ttl")
+                .and_then(serde_json::Value::as_str),
+            Some("1h"),
+            "the agentic ToolResult tail must carry the conversation breakpoint: {json:#}"
+        );
+    }
+
+    #[test]
+    fn conversation_breakpoint_walks_back_past_trailing_noncacheable_block() {
+        // A production-shaped assistant turn: [Text, ToolUse]. ToolUse can't carry
+        // cache_control, so the breakpoint must skip it and land on the Text block
+        // rather than being silently dropped.
+        use crate::messages::{ContentBlock, Message, MessageContent, MessageRole};
+        let mut messages = vec![Message {
+            role: MessageRole::Assistant,
+            content: MessageContent::Blocks(vec![
+                ContentBlock::Text {
+                    text: "let me call a tool".to_string(),
+                    cache_control: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "call-1".to_string(),
+                    name: "search".to_string(),
+                    input: serde_json::json!({"q": "x"}),
+                },
+            ]),
+        }];
+        apply_conversation_cache_breakpoint(
+            &mut messages,
+            ephemeral_cache_control(crate::PromptCacheTtl::FiveMinutes),
+        );
+        let MessageContent::Blocks(blocks) = &messages[0].content else {
+            panic!("expected blocks");
+        };
+        assert!(
+            matches!(
+                &blocks[0],
+                ContentBlock::Text {
+                    cache_control: Some(_),
+                    ..
+                }
+            ),
+            "breakpoint must land on the Text block when a ToolUse trails it"
+        );
+        let json = serde_json::to_value(&messages).unwrap();
+        assert!(
+            json.pointer("/0/content/1/cache_control").is_none(),
+            "the trailing tool_use block must not carry cache_control: {json:#}"
+        );
+    }
+
+    #[test]
+    fn conversation_breakpoint_noops_without_cacheable_block() {
+        // No Text/ToolResult block anywhere in the final message: a whole-message
+        // no-op (that turn's prefix simply isn't cached), never a panic.
+        use crate::messages::{ContentBlock, Message, MessageContent, MessageRole};
+        let mut messages = vec![Message {
+            role: MessageRole::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::Thinking {
+                thinking: "only thinking".to_string(),
+                signature: String::new(),
+            }]),
+        }];
+        apply_conversation_cache_breakpoint(
+            &mut messages,
+            ephemeral_cache_control(crate::PromptCacheTtl::OneHour),
+        );
+        let json = serde_json::to_value(&messages).unwrap();
+        assert!(
+            !json.to_string().contains("cache_control"),
+            "a message with no cacheable block must stay a no-op: {json:#}"
         );
     }
 
