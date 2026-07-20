@@ -3041,10 +3041,16 @@ fn apply_conversation_cache_breakpoint(
     };
     match &mut last_msg.content {
         MessageContent::Text(text) => {
-            last_msg.content = MessageContent::Blocks(vec![ContentBlock::Text {
-                text: std::mem::take(text),
-                cache_control: Some(cache_control),
-            }]);
+            // Anthropic rejects empty cached text blocks ("text content blocks
+            // must be non-empty"). This arm is unreachable from the current
+            // builder (it always emits `Blocks`), but guard the empty case so a
+            // future bare-text path can never mint an invalid breakpoint.
+            if !text.is_empty() {
+                last_msg.content = MessageContent::Blocks(vec![ContentBlock::Text {
+                    text: std::mem::take(text),
+                    cache_control: Some(cache_control),
+                }]);
+            }
         }
         MessageContent::Blocks(blocks) => {
             for block in blocks.iter_mut().rev() {
@@ -5338,6 +5344,75 @@ mod tests {
                 ContentBlock::Text { text, cache_control: Some(_) } if text == "plain user turn"
             ),
             "the promoted text block must preserve its text and carry the breakpoint"
+        );
+    }
+
+    #[test]
+    fn conversation_breakpoint_skips_empty_text_message() {
+        // An empty bare-text message must not be promoted to an (invalid) empty
+        // cached text block; leave it untouched.
+        use crate::messages::{Message, MessageContent, MessageRole};
+        let mut messages = vec![Message {
+            role: MessageRole::User,
+            content: MessageContent::Text(String::new()),
+        }];
+        apply_conversation_cache_breakpoint(
+            &mut messages,
+            ephemeral_cache_control(crate::PromptCacheTtl::OneHour),
+        );
+        assert!(
+            matches!(&messages[0].content, MessageContent::Text(t) if t.is_empty()),
+            "empty text must stay an untouched no-op, not an empty cached block"
+        );
+    }
+
+    #[test]
+    fn conversation_breakpoint_lands_on_last_cacheable_block() {
+        // Multiple cacheable blocks: the breakpoint must land on the LAST one
+        // (the ToolResult), not the earlier Text.
+        use crate::messages::{
+            ContentBlock, Message, MessageContent, MessageRole, ToolResultContent,
+        };
+        let mut messages = vec![Message {
+            role: MessageRole::User,
+            content: MessageContent::Blocks(vec![
+                ContentBlock::Text {
+                    text: "here are the results".to_string(),
+                    cache_control: None,
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "tool-1".to_string(),
+                    content: ToolResultContent::Text("output".to_string()),
+                    cache_control: None,
+                },
+            ]),
+        }];
+        apply_conversation_cache_breakpoint(
+            &mut messages,
+            ephemeral_cache_control(crate::PromptCacheTtl::OneHour),
+        );
+        let MessageContent::Blocks(blocks) = &messages[0].content else {
+            panic!("expected blocks");
+        };
+        assert!(
+            matches!(
+                &blocks[0],
+                ContentBlock::Text {
+                    cache_control: None,
+                    ..
+                }
+            ),
+            "the earlier Text block must not carry the breakpoint"
+        );
+        assert!(
+            matches!(
+                &blocks[1],
+                ContentBlock::ToolResult {
+                    cache_control: Some(_),
+                    ..
+                }
+            ),
+            "the breakpoint must land on the last cacheable block (ToolResult)"
         );
     }
 
