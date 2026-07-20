@@ -3007,6 +3007,16 @@ pub fn dedup_duplicate_tool_results(conversation: &mut Vec<ConversationItem>) ->
 // Anthropic Messages API Conversion
 // ============================================================================
 
+/// Whether a tool-result payload carries no cacheable content (so a cache
+/// breakpoint would sit on an empty block).
+fn tool_result_content_is_empty(content: &crate::messages::ToolResultContent) -> bool {
+    use crate::messages::ToolResultContent;
+    match content {
+        ToolResultContent::Text(text) => text.is_empty(),
+        ToolResultContent::Blocks(blocks) => blocks.is_empty(),
+    }
+}
+
 /// Build an `ephemeral` cache breakpoint for the given TTL. Anthropic defaults
 /// an omitted TTL to five minutes, so the 5m case leaves `ttl` absent to
 /// preserve the legacy wire shape; one hour must be explicit. Shared by the
@@ -3053,14 +3063,25 @@ fn apply_conversation_cache_breakpoint(
             }
         }
         MessageContent::Blocks(blocks) => {
+            // Land on the last *non-empty* cacheable block, skipping trailing
+            // non-cacheable blocks (image / tool_use / thinking) and any empty
+            // Text / ToolResult. Empty content is harmless on lenient endpoints
+            // but a stricter provider can reject an empty cached block, and an
+            // empty tail carries no tokens worth caching anyway.
             for block in blocks.iter_mut().rev() {
                 match block {
                     ContentBlock::Text {
-                        cache_control: cc, ..
+                        text,
+                        cache_control: cc,
+                    } if !text.is_empty() => {
+                        *cc = Some(cache_control);
+                        break;
                     }
-                    | ContentBlock::ToolResult {
-                        cache_control: cc, ..
-                    } => {
+                    ContentBlock::ToolResult {
+                        content,
+                        cache_control: cc,
+                        ..
+                    } if !tool_result_content_is_empty(content) => {
                         *cc = Some(cache_control);
                         break;
                     }
@@ -5413,6 +5434,57 @@ mod tests {
                 }
             ),
             "the breakpoint must land on the last cacheable block (ToolResult)"
+        );
+    }
+
+    #[test]
+    fn conversation_breakpoint_skips_empty_trailing_tool_result() {
+        // Reachable agentic case: a tool returns empty output as the final
+        // block. The breakpoint must skip the empty ToolResult and land on the
+        // preceding non-empty Text, never marking an empty block.
+        use crate::messages::{
+            ContentBlock, Message, MessageContent, MessageRole, ToolResultContent,
+        };
+        let mut messages = vec![Message {
+            role: MessageRole::User,
+            content: MessageContent::Blocks(vec![
+                ContentBlock::Text {
+                    text: "context".to_string(),
+                    cache_control: None,
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "tool-1".to_string(),
+                    content: ToolResultContent::Text(String::new()),
+                    cache_control: None,
+                },
+            ]),
+        }];
+        apply_conversation_cache_breakpoint(
+            &mut messages,
+            ephemeral_cache_control(crate::PromptCacheTtl::OneHour),
+        );
+        let MessageContent::Blocks(blocks) = &messages[0].content else {
+            panic!("expected blocks");
+        };
+        assert!(
+            matches!(
+                &blocks[0],
+                ContentBlock::Text {
+                    cache_control: Some(_),
+                    ..
+                }
+            ),
+            "breakpoint must fall back to the non-empty Text block"
+        );
+        assert!(
+            matches!(
+                &blocks[1],
+                ContentBlock::ToolResult {
+                    cache_control: None,
+                    ..
+                }
+            ),
+            "the empty ToolResult must not carry a breakpoint"
         );
     }
 
