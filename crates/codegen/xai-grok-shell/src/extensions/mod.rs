@@ -30,6 +30,7 @@ pub mod search;
 pub mod session_admin;
 pub mod session_notify;
 pub mod session_search;
+pub mod session_state;
 pub mod session_updates;
 pub mod share;
 pub mod skills;

@@ -1054,28 +1054,15 @@ impl AgentView {
         }
         let queue_height = self.queue.desired_height();
         let drain_blocked = self.drain_blocked();
-        let watchers = turn_status::Watchers {
-            monitors: self
-                .session
-                .bg_tasks
-                .values()
-                .filter(|t| t.is_monitor && t.status == crate::app::agent::BgTaskStatus::Running)
-                .count(),
-            loops: self.session.scheduled_tasks.len(),
-            subagents: self
-                .subagent_sessions
-                .values()
-                .filter(|s| s.is_running())
-                .count(),
-        };
+        let watchers = self.watchers();
         let parked = self.renders_parked();
-        let turn_status_height = if !parked
-            && turn_status::should_show(
-                &self.session.state,
-                drain_blocked,
-                self.mcp_init_progress.as_ref(),
-                watchers,
-            ) {
+        let turn_status_height = if turn_status::should_show(
+            &self.session.state,
+            drain_blocked,
+            self.mcp_init_progress.as_ref(),
+            watchers,
+            parked,
+        ) {
             1
         } else {
             0
@@ -1523,26 +1510,47 @@ impl AgentView {
                     );
                 }
                 let query = search.query();
-                crate::views::picker::render_search_bar(
-                    buf,
-                    layout.scrollback.x,
-                    bar_y,
-                    layout.scrollback.width,
-                    &theme,
-                    query,
-                    search.is_composing(),
-                    !search.is_composing(),
-                    query.len(),
-                    None,
-                );
                 let counter = match search.current_index() {
                     Some(i) => Some(format!("{}/{}", i + 1, search.match_count())),
                     None if search.has_error() => Some("bad pattern".to_string()),
                     None if !query.is_empty() => Some("no matches".to_string()),
                     None => None,
                 };
-                if let Some(counter) = counter {
-                    let w = counter.len() as u16;
+                let counter_width = counter
+                    .as_deref()
+                    .map_or(0, |text| UnicodeWidthStr::width(text) as u16);
+                let search_layout =
+                    crate::views::picker::search_bar_layout(layout.scrollback.width, counter_width);
+                let leading_query;
+                let (rendered_query, viewport) = if search.is_composing() {
+                    (
+                        query,
+                        Some(search.query_viewport(search_layout.input_width())),
+                    )
+                } else {
+                    leading_query =
+                        crate::render::line_utils::truncate_str(query, search_layout.input_width());
+                    (leading_query.as_str(), None)
+                };
+                crate::views::picker::render_search_bar_with_viewport(
+                    buf,
+                    layout.scrollback.x,
+                    bar_y,
+                    search_layout,
+                    &theme,
+                    rendered_query,
+                    search.is_composing(),
+                    !search.is_composing(),
+                    None,
+                    viewport.unwrap_or(xai_ratatui_textarea::SingleLineViewport {
+                        visible_byte_range: 0..rendered_query.len(),
+                        cursor_display_column: 0,
+                    }),
+                );
+                if let Some(counter) = counter
+                    && search_layout.trailing_width() > 0
+                {
+                    let w = UnicodeWidthStr::width(counter.as_str()) as u16;
                     if layout.scrollback.width > w {
                         buf.set_string(
                             layout.scrollback.x + layout.scrollback.width - w,
@@ -1724,25 +1732,26 @@ impl AgentView {
         }
         if let Some(msg) = self.active_toast_message() {
             let sb = layout.scrollback;
-            let toast_text = format!(" {msg} ");
-            let w = toast_text.chars().count() as u16;
-            if sb.height > 0 && sb.width > w + 2 {
-                let x = sb.right().saturating_sub(w + 1);
-                let y = sb.bottom().saturating_sub(1);
-                for (i, ch) in toast_text.chars().enumerate() {
-                    if let Some(cell) = buf.cell_mut((x + i as u16, y)) {
-                        cell.set_char(ch);
-                        cell.fg = theme.accent_user;
-                        cell.bg = theme.bg_base;
-                        cell.modifier = ratatui::prelude::Modifier::BOLD;
+            if let Some(toast_text) = fit_toast_text(msg, sb.width) {
+                let w = toast_text.chars().count() as u16;
+                if sb.height > 0 {
+                    let x = sb.right().saturating_sub(w + 1);
+                    let y = sb.bottom().saturating_sub(1);
+                    for (i, ch) in toast_text.chars().enumerate() {
+                        if let Some(cell) = buf.cell_mut((x + i as u16, y)) {
+                            cell.set_char(ch);
+                            cell.fg = theme.accent_user;
+                            cell.bg = theme.bg_base;
+                            cell.modifier = ratatui::prelude::Modifier::BOLD;
+                        }
                     }
+                    self.frame_occluder_rects.push(Rect {
+                        x,
+                        y,
+                        width: w,
+                        height: 1,
+                    });
                 }
-                self.frame_occluder_rects.push(Rect {
-                    x,
-                    y,
-                    width: w,
-                    height: 1,
-                });
             }
         }
         if tasks_height > 0 {
@@ -1982,6 +1991,7 @@ impl AgentView {
                     is_pending_user_input,
                     goal_verifying,
                     watchers,
+                    parked,
                     false,
                     held_queue,
                     held_queue_top_sendable,
@@ -3766,19 +3776,19 @@ impl AgentView {
                     buf.set_string(content_x, status_y, &status, status_style);
                 }
             }
-            if let Some(ref msg) = block_viewer_toast {
-                let toast_text = format!(" {msg} ");
-                let w = toast_text.len() as u16;
-                if popup_area.height > 2 && popup_area.width > w + 2 {
-                    let tx = popup_area.right().saturating_sub(w + 2);
-                    let ty = popup_area.bottom().saturating_sub(2);
-                    for (i, ch) in toast_text.chars().enumerate() {
-                        if let Some(cell) = buf.cell_mut((tx + i as u16, ty)) {
-                            cell.set_char(ch);
-                            cell.fg = theme.accent_user;
-                            cell.bg = theme.bg_base;
-                            cell.modifier = ratatui::prelude::Modifier::BOLD;
-                        }
+            if let Some(ref msg) = block_viewer_toast
+                && popup_area.height > 2
+                && let Some(toast_text) = fit_toast_text(msg, popup_area.width.saturating_sub(1))
+            {
+                let w = toast_text.chars().count() as u16;
+                let tx = popup_area.right().saturating_sub(w + 2);
+                let ty = popup_area.bottom().saturating_sub(2);
+                for (i, ch) in toast_text.chars().enumerate() {
+                    if let Some(cell) = buf.cell_mut((tx + i as u16, ty)) {
+                        cell.set_char(ch);
+                        cell.fg = theme.accent_user;
+                        cell.bg = theme.bg_base;
+                        cell.modifier = ratatui::prelude::Modifier::BOLD;
                     }
                 }
             }
@@ -4201,6 +4211,43 @@ impl AgentView {
             prompt_cursor_pos
         };
         (cursor, prompt_post_flush)
+    }
+}
+/// Pad `msg` for the toast slot, truncating with a trailing ellipsis when it
+/// cannot fit in `avail_width` columns (long clipboard toasts embed backup
+/// file paths — dropping the whole toast would hide the copy feedback
+/// entirely). Returns `None` only when the slot is too narrow for any text.
+fn fit_toast_text(msg: &str, avail_width: u16) -> Option<String> {
+    let max_msg_chars = (avail_width as usize).saturating_sub(4);
+    if max_msg_chars == 0 {
+        return None;
+    }
+    let msg_chars = msg.chars().count();
+    if msg_chars <= max_msg_chars {
+        return Some(format!(" {msg} "));
+    }
+    let truncated: String = msg.chars().take(max_msg_chars.saturating_sub(1)).collect();
+    Some(format!(" {}… ", truncated.trim_end()))
+}
+#[cfg(test)]
+mod toast_fit_tests {
+    use super::fit_toast_text;
+    #[test]
+    fn short_message_is_padded_untouched() {
+        assert_eq!(fit_toast_text("Copied!", 40).as_deref(), Some(" Copied! "));
+    }
+    #[test]
+    fn long_message_truncates_with_ellipsis_instead_of_vanishing() {
+        let msg = "Copied via OSC 52 — also saved to /tmp/grok-0/last-copy.txt. If paste fails, hold Shift (or Fn) and drag to select & copy natively.";
+        let fitted = fit_toast_text(msg, 60).expect("must render truncated");
+        assert!(fitted.chars().count() <= 58);
+        assert!(fitted.ends_with("… "));
+        assert!(fitted.contains("also saved to"));
+    }
+    #[test]
+    fn zero_width_slot_yields_none() {
+        assert_eq!(fit_toast_text("Copied!", 4), None);
+        assert_eq!(fit_toast_text("Copied!", 0), None);
     }
 }
 #[cfg(test)]

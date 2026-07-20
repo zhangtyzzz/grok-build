@@ -25,6 +25,24 @@ use xai_grok_tools::implementations::grok_build::task::types::*;
 use xai_grok_workspace::file_system::AsyncFileSystem;
 use xai_hunk_tracker::HunkTrackerHandle;
 use super::*;
+/// Remove the task tool (and orphaned background-task actions) from a child
+/// toolset at or beyond `MAX_SUBAGENT_DEPTH`. Returns whether the task tool
+/// was removed.
+pub(super) fn strip_task_tools_at_max_depth(
+    tool_config: &mut xai_grok_tools::registry::types::ToolServerConfig,
+    child_depth: u32,
+) -> bool {
+    use xai_grok_tools::implementations::grok_build::task::MAX_SUBAGENT_DEPTH;
+    use xai_grok_tools::types::tool::ToolKind;
+    if child_depth < MAX_SUBAGENT_DEPTH {
+        return false;
+    }
+    let before = tool_config.tools.len();
+    tool_config.tools.retain(|tc| tc.kind != Some(ToolKind::Task));
+    let stripped = tool_config.tools.len() < before;
+    prune_orphaned_background_task_tools(tool_config);
+    stripped
+}
 pub(super) fn task_model_override_error(
     requested: Option<&str>,
     provenance: ModelOverrideProvenance,
@@ -401,21 +419,15 @@ pub(crate) async fn handle_subagent_request(
             "Applied capability mode filter to agent tool config"
         );
     }
-    {
-        use xai_grok_tools::implementations::grok_build::task::MAX_SUBAGENT_DEPTH;
-        use xai_grok_tools::types::tool::ToolKind;
-        let child_depth = ctx.parent_depth + 1;
-        if child_depth >= MAX_SUBAGENT_DEPTH {
-            let before = definition.tool_config.tools.len();
-            definition.tool_config.tools.retain(|tc| tc.kind != Some(ToolKind::Task));
-            if definition.tool_config.tools.len() < before {
-                tracing::info!(
-                    subagent_id = % request.id, child_depth, max_depth =
-                    MAX_SUBAGENT_DEPTH, "Stripped task tool from child at max depth"
-                );
-            }
-            prune_orphaned_background_task_tools(&mut definition.tool_config);
-        }
+    let child_depth = request
+        .runtime_overrides
+        .spawn_depth
+        .unwrap_or(ctx.parent_depth + 1);
+    if strip_task_tools_at_max_depth(&mut definition.tool_config, child_depth) {
+        tracing::info!(
+            subagent_id = % request.id, child_depth,
+            "Stripped task tool from child at max depth"
+        );
     }
     if request.fork_context {
         effective_runtime.model = Some(ctx.model_id.0.to_string());
@@ -624,7 +636,7 @@ pub(crate) async fn handle_subagent_request(
             .capability_mode
             .as_ref()
             .map(|m| format!("{m:?}")),
-        depth: ctx.parent_depth + 1,
+        depth: child_depth,
     };
     emit_subagent_notification(
         gateway,
@@ -748,7 +760,7 @@ pub(crate) async fn handle_subagent_request(
         .with_hunk_tracking_enabled(ctx.hunk_tracking_enabled);
     tool_ctx.subagent_event_tx = Some(ctx.subagent_event_tx.clone());
     tool_ctx.monitor_event_buffer = Some(MonitorEventBuffer::default());
-    tool_ctx.subagent_depth = ctx.parent_depth + 1;
+    tool_ctx.subagent_depth = child_depth;
     tool_ctx.lsp = ctx.lsp.clone();
     let parent_traceparent = xai_file_utils::trace_context::current_traceparent();
     let tracker_child_cwd = child_session_info.cwd.clone();
@@ -1082,6 +1094,7 @@ pub(crate) async fn handle_subagent_request(
             xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_string(),
             xai_chat_state::CompactionMode::Summary,
             ctx.resolve_compaction_verbatim_input(),
+            ctx.resolve_compaction_tool_choice(),
             false,
             None,
             None,
@@ -1157,7 +1170,7 @@ pub(crate) async fn handle_subagent_request(
             ctx.client_hooks.clone(),
             None,
             std::collections::HashMap::new(),
-            ctx.persona_io_summaries.clone(),
+            Vec::new(),
             xai_grok_agent::prompt::context::PromptAudience::Subagent,
             effective_runtime.role_prompt.clone(),
             None,
@@ -1247,6 +1260,7 @@ pub(crate) async fn handle_subagent_request(
             effective_model_id: tracker_model_id,
             run_in_background,
             surface_completion: request.surface_completion,
+            completion_output_cap: request.runtime_overrides.completion_output_cap,
             color: tracker_color,
             block_waited: false,
             explicitly_killed: false,
@@ -1305,6 +1319,7 @@ pub(crate) async fn handle_subagent_request(
             traceparent: xai_file_utils::trace_context::current_traceparent(),
             json_schema: None,
             send_now: false,
+            admission: None,
             respond_to: prompt_tx,
             persist_ack: None,
             parsed_prompt_tx: None,
@@ -1766,7 +1781,8 @@ pub(crate) async fn handle_subagent_request(
             }
         }
     }
-    update_subagent_meta_completed(&subagent_meta_dir, &result, &gcs_upload_ctx);
+    let persisted_output_dir = persist_subagent_output(&subagent_meta_dir, &result);
+    persist_subagent_completion(&subagent_meta_dir, &result, &gcs_upload_ctx);
     let final_status = result.status().to_string();
     let snapshot_dispose_enabled = ctx.resolve_subagent_worktree_snapshot_enabled();
     let telemetry_tokens = if result.tool_calls > 0 || result.success {
@@ -1995,6 +2011,7 @@ pub(crate) async fn handle_subagent_request(
             request.description.clone(),
             request.subagent_type.clone(),
             result.clone(),
+            persisted_output_dir,
         );
     if let Some(snapshot_ref) = disposed_snapshot_ref {
         coordinator.borrow_mut().set_completed_snapshot_ref(&request.id, snapshot_ref);
@@ -2004,7 +2021,7 @@ pub(crate) async fn handle_subagent_request(
             &request.id,
             &result,
             &request,
-            &ctx.auto_wake_delivered,
+            &ctx.task_completion_reservations,
             ctx.parent_cmd_tx.as_ref(),
             &ctx.task_output_tool_name,
             &ctx.synthetic_trace_tx,

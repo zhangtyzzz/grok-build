@@ -10,7 +10,7 @@
 //!
 use super::commands::{
     ExternalNotifyAck, ParsedPromptInfo, PromptCompletionKind, PromptTurnOk, PromptTurnResult,
-    SessionCommand, ok_end_turn,
+    SessionCommand, TaskWakeAdmission, TaskWakeFallback, ok_end_turn,
 };
 use super::handle::SessionHandle;
 use super::notifications::NotificationSender;
@@ -161,6 +161,9 @@ pub(crate) use goal_support::*;
 #[path = "acp_session_impl/hook_dispatch.rs"]
 mod hook_dispatch;
 use hook_dispatch::*;
+#[path = "acp_session_impl/stop_gate.rs"]
+mod stop_gate;
+pub use stop_gate::MAX_STOP_HOOK_CONTINUATIONS_PER_TURN;
 #[path = "acp_session_impl/recap.rs"]
 mod recap;
 #[path = "acp_session_impl/rewind.rs"]
@@ -196,6 +199,9 @@ pub(crate) struct InputItem {
     pub(crate) json_schema: Option<serde_json::Value>,
     /// Who originated this prompt — user or auto-wake system.
     pub(crate) origin: super::PromptOrigin,
+    /// Typed deferred completion retained while an admitted task wake is queued.
+    /// Consumed by Ctrl+C if it removes the wake before the turn starts.
+    pub(crate) task_wake_fallback: Option<TaskWakeFallback>,
     pub(crate) respond_to: oneshot::Sender<PromptTurnResult>,
     /// Fired after the user message is in chat history and a persistence flush
     /// barrier has completed (see `SessionCommand::Prompt::persist_ack`).
@@ -271,8 +277,8 @@ pub(crate) struct State {
     pub(crate) running_task: Option<AgentTask>,
     pub(crate) pending_inputs: VecDeque<InputItem>,
     pub(crate) pending_notifications: Vec<PendingNotification>,
-    /// When true, notifications are buffered but not drained until the next
-    /// user-initiated prompt arrives. Set on cancel, cleared on user Prompt.
+    /// When true, notifications are buffered but not drained until genuine
+    /// user re-engagement. Set by interactive Ctrl+C, cleared by a user prompt.
     pub(crate) notifications_suppressed: bool,
     /// Active prompt is still rewindable until the first outbound prompt-scoped
     /// event is emitted.
@@ -300,13 +306,13 @@ impl State {
     }
     /// Sweep `pending_inputs`, removing entries matching `drop_if` EXCEPT the
     /// running turn's own slot, and return the removed items (callers harvest
-    /// them for telemetry counts / `auto_wake_delivered` un-marks).
+    /// them for telemetry counts / reservation releases).
     ///
     /// Returned items still carry live `respond_to` senders that this helper
     /// does NOT resolve — dropping them unfulfilled is correct only for
     /// synthetic items (no client RPC awaits them, the current callers); a
     /// caller whose predicate can match user-originated items must resolve
-    /// each returned item (see `respond_removed_queued_prompt`) or the
+    /// each returned item (see `respond_removed_prompt`) or the
     /// client's `session/prompt` hangs and fails spuriously.
     ///
     /// The guard is the safety invariant every sweep must inherit: the
@@ -343,7 +349,8 @@ impl State {
 /// so they share one definition of idleness, with no drift between them.
 ///
 /// Returns `true` exactly when: no turn is running, no user prompt is
-/// queued, and notifications haven't been suppressed by a cancel.
+/// queued, and interactive Ctrl+C has not suppressed notifications pending
+/// genuine user re-engagement.
 pub(crate) fn is_session_idle_for_injection(state: &State) -> bool {
     state.running_task.is_none()
         && state.pending_inputs.is_empty()
@@ -553,13 +560,6 @@ impl PreparedToolCall {
 #[cfg(test)]
 pub(crate) use crate::session::streaming_capture::STREAMING_CAPTURE_MAX_BYTES;
 pub(crate) use crate::session::streaming_capture::StreamingTurnCapture;
-/// Spawn-time metadata for a subagent, kept by `subagent_id` so the `SubagentStop` event
-/// (whose notification carries neither) can report the subagent's type and description.
-#[derive(Clone)]
-pub(crate) struct SubagentSpawnInfo {
-    pub description: String,
-    pub subagent_type: String,
-}
 /// Phase 3: Post-flight handling after dispatch (inline in execute_tool_calls for now).
 pub(crate) struct SessionActor {
     pub(crate) session_info: SessionInfo,
@@ -1030,9 +1030,6 @@ pub(crate) struct SessionActor {
     pub(crate) image_description_model: String,
     /// Cache auxiliary image outputs by content and prompt fingerprint.
     pub(crate) image_describe_cache: Arc<crate::session::image_describe::ImageDescribeCache>,
-    /// [`SubagentSpawnInfo`] by `subagent_id`: inserted on `SubagentSpawned`, removed on
-    /// `SubagentFinished`.
-    pub(crate) subagent_spawn_info: parking_lot::Mutex<HashMap<String, SubagentSpawnInfo>>,
     /// Per-subagent token state keyed by `subagent_id`; sums into
     /// goal totals via [`Self::goal_tokens`].
     pub(crate) subagent_token_records: parking_lot::Mutex<HashMap<String, SubagentTokenRecord>>,

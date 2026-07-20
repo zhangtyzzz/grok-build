@@ -672,6 +672,19 @@ impl Default for RespectGitignore {
 /// Default `false`. Hosts may enable this via remote config or local settings.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PathNotFoundHints(pub bool);
+/// Whether scheduled task fires execute in background loop subagents.
+///
+/// `false` forces every fire onto the legacy main-conversation path.
+/// Configured via `[scheduler] background_loops` in `config.toml`, the
+/// `GROK_SCHEDULER_BACKGROUND_LOOPS` env var, or the
+/// `scheduler_background_loops` remote setting.
+#[derive(Debug, Clone, Copy)]
+pub struct SchedulerBackgroundLoops(pub bool);
+impl Default for SchedulerBackgroundLoops {
+    fn default() -> Self {
+        Self(true)
+    }
+}
 /// Map of canonical tool names → model-facing tool names.
 #[derive(Debug, Clone, Default)]
 pub struct ToolNameMapping(pub HashMap<String, String>);
@@ -1436,6 +1449,17 @@ mod tests {
             result,
             std::path::PathBuf::from("/worktree/abc/src/main.rs")
         );
+    }
+    #[test]
+    fn resolve_model_path_sensitive_edit_spellings() {
+        let cwd = std::path::Path::new("/worktree/abc");
+        for input in ["  /etc/hosts  ", "\"/etc/hosts\\n\"", "'/etc/hosts\\r\\t'"] {
+            assert_eq!(
+                super::resolve_model_path(cwd, None, input),
+                std::path::PathBuf::from("/etc/hosts"),
+                "{input:?}"
+            );
+        }
     }
     /// An *unquoted* path keeps its backslashes: `\n` there may be a real
     /// path component (e.g. a Windows-style separator + dir named `n`).
