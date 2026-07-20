@@ -307,9 +307,11 @@ pub enum Action {
     ShowDebugStatus,
     /// Copy selected block's content to clipboard.
     CopyBlockContent,
-    /// Copy the Nth most recent assistant message to clipboard (1 = latest).
+    /// Copy the Nth most recent assistant message (1 = latest).
+    /// `None` => clipboard (with file fallback on failure); `Some(p)` => write UTF-8 file.
     CopyAssistantMessage {
         n: usize,
+        file_path: Option<std::path::PathBuf>,
     },
     /// Export the active (sub)agent's conversation transcript as Markdown.
     /// `None` => copy to clipboard (with route-aware toast + stats); `Some(p)` => write UTF-8 file
@@ -343,6 +345,10 @@ pub enum Action {
     /// Trigger OAuth for an MCP server from the modal.
     McpAuthTrigger {
         server_name: String,
+    },
+    McpSetupSubmit {
+        server_name: String,
+        values: std::collections::HashMap<String, String>,
     },
     /// Reload skills list from the modal.
     ReloadSkills,
@@ -511,6 +517,8 @@ pub enum Action {
     SetTimestamps(bool),
     /// Set timeline sidebar visibility (per-turn tick rail).
     SetTimeline(bool),
+    /// Set `[ui].page_flip_on_send` (default ON). Persists via `Effect::PersistSetting`.
+    SetPageFlipOnSend(bool),
     /// Set simple mode (ASCII / minimal glyphs). Persists via `Effect::PersistSetting`.
     SetSimpleMode(bool),
     /// Set the per-tip contextual-hint user config (`[ui.contextual_hints]`).
@@ -522,6 +530,7 @@ pub enum Action {
     SetContextualHintSendNow(bool),
     SetContextualHintSmallScreen(bool),
     SetContextualHintWordSelect(bool),
+    SetContextualHintSshWrap(bool),
     /// Commit the active theme (canonical name, e.g. `"groknight"`, `"auto"`).
     SetTheme(String),
     /// Commit the theme used when the OS is in dark mode. Only updates
@@ -773,8 +782,6 @@ pub enum Action {
     DashboardCommitRename,
     /// Cancel an in-progress rename without committing.
     DashboardCancelRename,
-    /// Apply a single keystroke to the in-progress rename draft.
-    DashboardRenameInput(String),
     /// Stop / kill the selected row (top-level: cancel turn → close;
     /// subagent: kill). Double-press protected for top-level rows.
     DashboardStop,
@@ -1672,6 +1679,12 @@ pub enum Effect {
         session_id: acp::SessionId,
         server_name: String,
     },
+    McpSetupSubmit {
+        agent_id: AgentId,
+        session_id: acp::SessionId,
+        server_name: String,
+        values: std::collections::HashMap<String, String>,
+    },
     /// Fetch hooks list from the shell (x.ai/hooks/list).
     FetchHooksList {
         agent_id: AgentId,
@@ -1852,6 +1865,8 @@ pub enum Effect {
         agent_id: AgentId,
         session_id: acp::SessionId,
         question: String,
+        /// Correlates minimal responses; fullscreen leaves this unset.
+        minimal_request_id: Option<uuid::Uuid>,
     },
     /// Request a session recap via the x.ai/recap ext method. Fire-and-forget:
     /// the recap arrives later as a `SessionRecap` notification.
@@ -1873,6 +1888,11 @@ pub enum Effect {
     },
     /// Log out via `x.ai/auth/logout` (shell clears auth.json + in-memory state).
     Logout,
+    /// Cancel an in-flight interactive auth on the shell (`x.ai/auth/cancel`).
+    /// Used when the user abandons mid-session `/login` so the device-code
+    /// poll stops instead of running until the code expires. `request_seq`
+    /// scopes the cancel so a delayed RPC cannot tear down a successor login.
+    CancelAuth { request_seq: u64 },
     /// Re-check subscription status via `x.ai/auth/check_subscription`.
     /// `verify` scopes the result to a deferred-gate verification (see
     /// [`crate::app::subscription`]); `None` for generic checks.
@@ -1892,8 +1912,8 @@ pub enum Effect {
         method_id: acp::AuthMethodId,
         use_oauth: bool,
     },
-    /// Clear the "copied!" feedback after a delay.
-    ScheduleClearAuthCopied,
+    /// Clear the auth copy feedback after a delay if its generation is still current.
+    ScheduleClearAuthCopyFeedback { generation: u64 },
     /// Register the current session in the active-sessions crash-recovery
     /// registry (`~/.grok/active_sessions.json`).
     RegisterActiveSession {
@@ -2041,6 +2061,11 @@ pub enum SubagentKillOutcome {
     /// The cancel RPC failed; the subagent may still be running, so leave the
     /// row alone rather than show a false terminal state.
     RpcFailed,
+}
+#[derive(Debug)]
+pub enum McpAuthTriggerOutcome {
+    Authenticated,
+    SetupRequired(crate::views::mcps_modal::McpSetupConfig),
 }
 /// Result from a completed async [`Effect`].
 ///
@@ -2321,6 +2346,11 @@ pub enum TaskResult {
     McpAuthTriggerDone {
         agent_id: AgentId,
         server_name: String,
+        result: Result<McpAuthTriggerOutcome, String>,
+    },
+    McpSetupSubmitDone {
+        agent_id: AgentId,
+        server_name: String,
         result: Result<(), String>,
     },
     /// Hooks list fetched from shell.
@@ -2516,6 +2546,8 @@ pub enum TaskResult {
     BtwResponse {
         agent_id: AgentId,
         result: Result<String, String>,
+        /// Correlates minimal responses; fullscreen leaves this unset.
+        minimal_request_id: Option<uuid::Uuid>,
     },
     /// `x.ai/recap` request acknowledged (fire-and-forget). The recap itself
     /// arrives separately as a `SessionRecap` notification; this only carries
@@ -2550,6 +2582,8 @@ pub enum TaskResult {
     },
     /// Shell acknowledged logout (auth cleared).
     LogoutComplete,
+    /// Best-effort `x.ai/auth/cancel` finished (no UI update; state already left Authenticating).
+    AuthCancelComplete,
     /// Shell responded to `x.ai/auth/check_subscription`. `verify` echoes
     /// the generation from `Effect::CheckSubscription` for deferred-gate
     /// verifications.
@@ -2569,8 +2603,10 @@ pub enum TaskResult {
     GateVerifyTimeout {
         generation: u64,
     },
-    /// The 2-second "copied!" display timer expired.
-    AuthCopiedTimeout,
+    /// The 2-second auth copy feedback timer expired.
+    AuthCopyFeedbackTimeout {
+        generation: u64,
+    },
     DeepSearchResults {
         results: Vec<xai_grok_shell::extensions::session_search::SearchSessionHit>,
         seq: u64,

@@ -968,7 +968,6 @@ impl SessionActor {
                     tool_use_id: call.id.clone(),
                     tool_input: hook_tool_input,
                     tool_input_truncated: hook_tool_input_truncated,
-                    permission_mode: Some(self.permission_mode_label().to_string()),
                     subagent_type: self.subagent_type_label(),
                 },
             );
@@ -1106,6 +1105,15 @@ impl SessionActor {
                     self.permissions.set_classifier_transcript(turns);
                 }
             }
+            let edit_path_context = matches!(&access_kind, AccessKind::Edit(_)).then(|| {
+                xai_grok_workspace::permission::types::EditPathContext {
+                    real_cwd: std::path::PathBuf::from(self.session_info.cwd.as_str()),
+                    display_cwd: self
+                        .display_cwd
+                        .get()
+                        .map(|cwd| std::path::PathBuf::from(cwd.as_str())),
+                }
+            });
             let decision = {
                 let _pending_guard =
                     crate::session::pending_interaction::PendingInteractionGuard::new(
@@ -1116,9 +1124,10 @@ impl SessionActor {
                         crate::session::pending_interaction::PendingKind::Permission,
                     );
                 self.permissions
-                    .request(
+                    .request_with_edit_path_context(
                         access_kind.clone(),
                         tool_call_update,
+                        edit_path_context,
                         Some(self.session_info.id.0.to_string()),
                         None,
                         None,
@@ -1189,7 +1198,11 @@ impl SessionActor {
             match decision {
                 Decision::PolicyDeny(ref reason) | Decision::Reject(ref reason) => {
                     let is_policy_deny = matches!(&decision, Decision::PolicyDeny(_));
-                    let message = format!("{reason} for tool `{}`", call.function.name);
+                    let message = if is_policy_deny {
+                        format!("Tool `{}` was not executed: {reason}", call.function.name)
+                    } else {
+                        format!("{reason} for tool `{}`", call.function.name)
+                    };
                     self.handle_tool_not_executed(&call.id, &tool_call_id, message)
                         .await?;
                     let (tool_input_value, tool_input_truncated) =
@@ -1592,6 +1605,7 @@ impl SessionActor {
             false,
             None,
             false,
+            None,
             respond_to,
             None,
             None,
@@ -1871,12 +1885,19 @@ impl SessionActor {
                 vec![],
                 vec![],
             ),
-            ToolInput::SchedulerCreate(ref sc) => (
-                format!("Create scheduled task (every {})", sc.interval),
-                acp::ToolKind::Other,
-                vec![],
-                vec![],
-            ),
+            ToolInput::SchedulerCreate(ref sc) => {
+                let title = match (&sc.task_id, &sc.interval) {
+                    (Some(id), Some(interval)) => {
+                        format!("Update scheduled task {id} (every {interval})")
+                    }
+                    (Some(id), None) => format!("Update scheduled task {id}"),
+                    (None, Some(interval)) => {
+                        format!("Create scheduled task (every {interval})")
+                    }
+                    (None, None) => "Create scheduled task".to_string(),
+                };
+                (title, acp::ToolKind::Other, vec![], vec![])
+            }
             ToolInput::SchedulerDelete(ref sd) => (
                 format!("Delete scheduled task: {}", sd.id),
                 acp::ToolKind::Other,
@@ -1959,9 +1980,8 @@ impl SessionActor {
     /// which is the same predicate used by `TaskCompletionReminder` —
     /// they cannot drift because they share the function.
     ///
-    /// `AutoWakeDeliveredIds` is **deliberately not unmarked** here
-    /// (unlike `queue_input`'s preempt path). The tool result that
-    /// triggered this sweep IS the canonical consumption surface, and
+    /// Reservations are deliberately not released here because the tool result
+    /// that triggered this sweep is the canonical consumption surface, and
     /// `TaskCompletionReminder` already suppresses the per-tool-call
     /// reminder for these IDs via its own suppress list (also derived
     /// from `consumed_completion_ids`). Un-marking here would risk a
@@ -1977,18 +1997,26 @@ impl SessionActor {
             return;
         }
         let mut state = self.state.lock().await;
-        let dropped_inputs = state
-            .sweep_pending_inputs(|i| {
-                i.origin
-                    .completion_id()
-                    .is_some_and(|id| consumed_ids.contains(&id))
-            })
-            .len();
+        let dropped = state.sweep_pending_inputs(|i| {
+            i.origin
+                .completion_id()
+                .is_some_and(|id| consumed_ids.contains(&id))
+        });
+        let dropped_inputs = dropped.len();
         let before_notifications = state.pending_notifications.len();
         state
             .pending_notifications
             .retain(|n| !consumed_ids.contains(&n.source.task_id()));
         let dropped_notifications = before_notifications - state.pending_notifications.len();
+        drop(state);
+        if let Some(reservations) = &self.tool_context.task_completion_reservations {
+            for task_id in dropped
+                .iter()
+                .filter_map(|input| input.origin.completion_id())
+            {
+                reservations.release(task_id);
+            }
+        }
         if dropped_inputs > 0 || dropped_notifications > 0 {
             tracing::info!(
                 dropped_inputs, dropped_notifications, consumed_ids = ? consumed_ids,
@@ -2009,8 +2037,26 @@ impl SessionActor {
     /// returns. Real user inputs are preserved.
     pub(super) async fn drop_pending_synthetic_items(&self) {
         let mut state = self.state.lock().await;
-        state.pending_inputs.retain(|i| !i.origin.is_synthetic());
+        let mut kept = VecDeque::with_capacity(state.pending_inputs.len());
+        let mut dropped = Vec::new();
+        for input in std::mem::take(&mut state.pending_inputs) {
+            if input.origin.is_synthetic() {
+                dropped.push(input);
+            } else {
+                kept.push_back(input);
+            }
+        }
+        state.pending_inputs = kept;
         state.pending_notifications.clear();
+        drop(state);
+        if let Some(reservations) = &self.tool_context.task_completion_reservations {
+            for task_id in dropped
+                .iter()
+                .filter_map(|input| input.origin.completion_id())
+            {
+                reservations.release(task_id);
+            }
+        }
     }
     /// Record git/PR ops from a successful tool result into session signals
     /// (`turn_result.json`) and telemetry. Detection runs here at the shell's

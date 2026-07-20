@@ -346,6 +346,8 @@ fn resumable_source_returns_info_for_completed_subagent() {
                 effective_model_id: "grok-3".into(),
                 block_waited: false,
                 explicitly_killed: false,
+                completion_output_cap: None,
+                persisted_output_dir: None,
             },
         );
     let info = coordinator
@@ -373,6 +375,7 @@ fn resumable_source_survives_move_to_completed_with_metadata() {
                 child_session_id: "sub-moved".into(),
                 ..Default::default()
             },
+            None,
         );
     let info = coordinator
         .resumable_source_for("sub-moved", "", Path::new("/tmp"))
@@ -593,7 +596,7 @@ fn snapshot_ref_write_promotes_nonterminal_status_to_terminal() {
     assert_eq!("completed", reread.status);
 }
 /// The coordinator setter stamps the snapshot ref onto the in-memory
-/// completed entry so `resume_from` can rehydrate before TTL eviction.
+/// completed entry so `resume_from` can rehydrate before cap eviction.
 #[tokio::test]
 async fn set_completed_snapshot_ref_updates_in_memory_entry() {
     let mut coordinator = SubagentCoordinator::new();
@@ -609,6 +612,7 @@ async fn set_completed_snapshot_ref_updates_in_memory_entry() {
                 child_session_id: "sa-mem".into(),
                 ..Default::default()
             },
+            None,
         );
     let before = coordinator
         .resumable_source_for("sa-mem", "session-A", Path::new("/tmp"))
@@ -621,7 +625,7 @@ async fn set_completed_snapshot_ref_updates_in_memory_entry() {
         .unwrap();
     assert_eq!(after.snapshot_ref.as_deref(), Some("refs/grok/subagents/sa-mem"));
 }
-/// Unknown id is a no-op (entry already TTL-evicted; meta.json still holds it).
+/// Unknown id is a no-op (entry already cap-evicted; meta.json still holds it).
 #[test]
 fn set_completed_snapshot_ref_unknown_id_is_noop() {
     let mut coordinator = SubagentCoordinator::new();
@@ -704,6 +708,7 @@ fn coordinator_with_completed(id: &str) -> SubagentCoordinator {
                 child_session_id: id.into(),
                 ..Default::default()
             },
+            None,
         );
     coordinator
 }
@@ -775,7 +780,8 @@ async fn gate_on_completion_clears_model_facing_worktree_path_but_resume_retains
     if worktree_removed {
         result.worktree_path = None;
     }
-    coordinator.move_to_completed("disp-1", "task".into(), "explore".into(), result);
+    coordinator
+        .move_to_completed("disp-1", "task".into(), "explore".into(), result, None);
     coordinator
         .set_completed_snapshot_ref("disp-1", "refs/grok/subagents/disp-1".into());
     let listed = coordinator.completed.get("disp-1").expect("completed entry");
@@ -805,7 +811,8 @@ async fn gate_on_completion_retains_worktree_path_when_not_removed() {
     if worktree_removed {
         result.worktree_path = None;
     }
-    coordinator.move_to_completed("keep-1", "task".into(), "explore".into(), result);
+    coordinator
+        .move_to_completed("keep-1", "task".into(), "explore".into(), result, None);
     let entry = coordinator.completed.get("keep-1").expect("completed entry");
     assert_eq!(Some(wt.to_string_lossy().into_owned()), entry.result.worktree_path);
 }
@@ -856,6 +863,7 @@ async fn disposal_completes_before_subagent_is_observable() {
                 child_session_id: "order-1".into(),
                 ..Default::default()
             },
+            None,
         );
     if let Some(r) = disposed_snapshot_ref {
         coordinator.set_completed_snapshot_ref("order-1", r);
@@ -1351,6 +1359,8 @@ fn resumable_source_rejects_cross_session_lookup() {
                 effective_model_id: String::new(),
                 block_waited: false,
                 explicitly_killed: false,
+                completion_output_cap: None,
+                persisted_output_dir: None,
             },
         );
     assert!(
@@ -1803,6 +1813,7 @@ async fn reconcile_reemits_rewound_finish_even_when_id_still_in_completed_regist
                 success: true,
                 ..Default::default()
             },
+            None,
         );
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
     let unfinished = vec![(id.to_string(), format!("child-{id}"))];
@@ -1845,6 +1856,7 @@ async fn reconcile_reemits_real_outcome_for_completed_with_running_meta() {
                 success: true,
                 ..Default::default()
             },
+            None,
         );
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
     let unfinished = vec![(id.to_string(), format!("child-{id}"))];
@@ -2166,6 +2178,8 @@ fn completed_subagent_propagates_resumed_from() {
                 effective_model_id: "grok-3".into(),
                 block_waited: false,
                 explicitly_killed: false,
+                completion_output_cap: None,
+                persisted_output_dir: None,
             },
         );
     let refs = coordinator.spawned_refs_for_prompt("prompt-1");
@@ -2193,6 +2207,7 @@ async fn completion_notify_fires_on_move_to_completed() {
                 duration_ms: 100,
                 ..Default::default()
             },
+            None,
         );
     tokio::time::timeout(std::time::Duration::from_millis(50), notified)
         .await
@@ -2216,6 +2231,7 @@ fn drain_pending_completions_returns_and_clears() {
                 duration_ms: 500,
                 ..Default::default()
             },
+            None,
         );
     coordinator
         .move_to_completed(
@@ -2231,6 +2247,7 @@ fn drain_pending_completions_returns_and_clears() {
                 duration_ms: 200,
                 ..Default::default()
             },
+            None,
         );
     let summaries = coordinator.drain_pending_completions();
     assert_eq!(summaries.len(), 2);
@@ -2262,6 +2279,7 @@ fn drain_pending_completions_cancelled_is_not_success() {
                 child_session_id: "sub-c1".to_string(),
                 ..Default::default()
             },
+            None,
         );
     let summaries = coordinator.drain_pending_completions();
     assert_eq!(summaries.len(), 1);
@@ -2315,6 +2333,7 @@ async fn outstanding_for_prompt_excludes_completed() {
                 child_session_id: "sub-done".to_string(),
                 ..Default::default()
             },
+            None,
         );
     let outstanding = coordinator.outstanding_for_prompt("prompt-X");
     assert!(
@@ -2369,6 +2388,7 @@ async fn subagent_usage_not_applied_sticky_after_completion_and_is_prompt_scoped
                 child_session_id: "sub-1".to_string(),
                 ..Default::default()
             },
+            None,
         );
     assert!(coordinator.outstanding_for_prompt("p-1").is_empty());
     assert!(coordinator.subagent_usage_not_applied("p-1"));
@@ -2444,6 +2464,7 @@ fn completions_buffered_while_turn_inactive_drained_later() {
                 child_session_id: "sub-idle".to_string(),
                 ..Default::default()
             },
+            None,
         );
     let drained = coordinator.drain_pending_completions();
     assert_eq!(drained.len(), 1);
@@ -3289,4 +3310,24 @@ async fn progress_publisher_delivers_ticks_to_parent_cmd_channel() {
             assert_eq!(tool_call_count, 1);
         })
         .await;
+}
+/// A harness-pinned `spawn_depth` of 0 (scheduler loop iterations) keeps
+/// the task tool in the child toolset; a natural depth-1 child loses it.
+#[test]
+fn strip_task_tools_honors_spawn_depth() {
+    use xai_grok_agent::config::AgentDefinition;
+    use xai_grok_tools::registry::types::ToolServerConfig;
+    use xai_grok_tools::types::tool::ToolKind;
+    use super::super::handle_request::strip_task_tools_at_max_depth;
+    let has_task = |cfg: &ToolServerConfig| {
+        cfg.tools.iter().any(|tc| tc.kind == Some(ToolKind::Task))
+    };
+    let base = AgentDefinition::general_purpose().tool_config;
+    assert!(has_task(& base));
+    let mut natural_child = base.clone();
+    assert!(strip_task_tools_at_max_depth(& mut natural_child, 1));
+    assert!(! has_task(& natural_child));
+    let mut loop_iteration = base.clone();
+    assert!(! strip_task_tools_at_max_depth(& mut loop_iteration, 0));
+    assert!(has_task(& loop_iteration));
 }

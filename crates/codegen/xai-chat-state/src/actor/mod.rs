@@ -398,6 +398,9 @@ impl ChatStateActor {
             ChatStateCommand::GetLastAssistantText { reply } => {
                 let _ = reply.send(self.get_last_assistant_text());
             }
+            ChatStateCommand::GetLastAssistantTextInTurn { reply } => {
+                let _ = reply.send(self.get_last_assistant_text_in_turn());
+            }
             ChatStateCommand::GetFirstUserText { reply } => {
                 let _ = reply.send(self.get_first_user_text());
             }
