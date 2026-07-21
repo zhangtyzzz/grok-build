@@ -127,6 +127,7 @@ async fn create_test_actor_with_memory(
         },
         auth_method_id: test_auth_method_id("test-auth"),
         model_auth_facts: std::cell::RefCell::new(None),
+        model_auth_memo: std::cell::RefCell::new(None),
         attribution_callback: None,
         auth_manager: None,
         state,

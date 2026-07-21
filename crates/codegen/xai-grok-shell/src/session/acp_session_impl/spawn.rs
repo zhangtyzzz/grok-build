@@ -1179,6 +1179,7 @@ pub(crate) async fn spawn_session_actor(
         session_info: session_info.clone(),
         auth_method_id,
         model_auth_facts: std::cell::RefCell::new(initial_model_auth_facts),
+        model_auth_memo: std::cell::RefCell::new(None),
         attribution_callback,
         auth_manager,
         state,

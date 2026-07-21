@@ -164,6 +164,11 @@ impl SessionActor {
                 acp::Error::internal_error()
                     .data("chat-state actor unavailable during model switch")
             })?;
+        // Invalidate the legacy provider memo before publishing the freshly
+        // resolved locator facts below. Doing this after the replace would
+        // discard the exact BYOK/auth-none boundary we just resolved and let
+        // session refresh repopulate credentials for an anonymous provider.
+        self.invalidate_model_auth_memo();
         let cache_key = format!(
             "{}\0{}\0{}",
             sampling_config.model_ref.as_deref().unwrap_or_default(),
