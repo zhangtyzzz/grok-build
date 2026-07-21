@@ -172,6 +172,7 @@ impl SessionActor {
         );
         self.model_auth_facts
             .replace(catalog_auth_facts.map(|facts| (cache_key, facts)));
+        self.invalidate_model_auth_memo();
         self.signals_handle()
             .record_model_usage(&sampling_config.model);
         if apply_prompt_override && !skip_prompt_rewrite {

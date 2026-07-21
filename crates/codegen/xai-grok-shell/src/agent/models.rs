@@ -1542,6 +1542,7 @@ fn build_prefetched_map(
             info,
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: m.api_base_url.clone().or(api_base_url_override.clone()),
             provider: None,
         };
@@ -2459,6 +2460,7 @@ candidates = ["primary-shared", "secondary-shared"]
             info: config::ModelInfo::fallback("fp-model"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
             provider: None,
         };
@@ -2472,6 +2474,7 @@ candidates = ["primary-shared", "secondary-shared"]
                 info: config::ModelInfo::fallback("plain-model"),
                 api_key: None,
                 env_key: None,
+                auth_provider: None,
                 api_base_url: None,
                 provider: None,
             },
@@ -2483,6 +2486,7 @@ candidates = ["primary-shared", "secondary-shared"]
             info: config::ModelInfo::fallback("enterprise-slug"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
             provider: None,
         };
@@ -2654,6 +2658,7 @@ candidates = ["primary-shared", "secondary-shared"]
                 info: config::ModelInfo::fallback("test-model"),
                 api_key: None,
                 env_key: None,
+                auth_provider: None,
                 api_base_url: None,
                 provider: None,
             },
@@ -2709,6 +2714,7 @@ candidates = ["primary-shared", "secondary-shared"]
             info: config::ModelInfo::fallback("reasoning-model"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
             provider: None,
         };
@@ -2732,6 +2738,7 @@ candidates = ["primary-shared", "secondary-shared"]
             info: config::ModelInfo::fallback("plain-model"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
             provider: None,
         };
@@ -2760,6 +2767,7 @@ candidates = ["primary-shared", "secondary-shared"]
             info: config::ModelInfo::fallback("grok-4.5"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
             provider: None,
         };
@@ -2779,6 +2787,7 @@ candidates = ["primary-shared", "secondary-shared"]
             info: config::ModelInfo::fallback("legacy-none"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
             provider: None,
         };
@@ -2886,6 +2895,7 @@ candidates = ["primary-shared", "secondary-shared"]
             info: config::ModelInfo::fallback("reasoning-model"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
             provider: None,
         };
@@ -2896,6 +2906,7 @@ candidates = ["primary-shared", "secondary-shared"]
             info: config::ModelInfo::fallback("plain-model"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
             provider: None,
         };
@@ -2939,6 +2950,7 @@ candidates = ["primary-shared", "secondary-shared"]
             info: config::ModelInfo::fallback(model_id),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
             provider: None,
         }
@@ -3723,6 +3735,7 @@ candidates = ["primary-shared", "secondary-shared"]
                 info: config::ModelInfo::fallback("static-one"),
                 api_key: None,
                 env_key: None,
+                auth_provider: None,
                 api_base_url: None,
                 provider: None,
             },
@@ -3751,6 +3764,7 @@ candidates = ["primary-shared", "secondary-shared"]
             info: config::ModelInfo::fallback("oauth-only"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
             provider: None,
         };
@@ -3761,6 +3775,7 @@ candidates = ["primary-shared", "secondary-shared"]
             info: config::ModelInfo::fallback("public-model"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
             provider: None,
         };

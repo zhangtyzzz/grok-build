@@ -7,3 +7,4 @@
 /release-output/
 **/*.rs.bk
 .DS_Store
+.qoder/

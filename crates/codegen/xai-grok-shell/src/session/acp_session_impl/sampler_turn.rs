@@ -150,20 +150,24 @@ impl SessionActor {
         let plan_active = self.plan_mode.lock().is_active();
         filter_cursor_tools_by_plan_mode(defs, plan_active)
     }
-    /// Memoized per-model [`ModelAuthFacts`](crate::agent::config::ModelAuthFacts),
-    /// keyed by the physical `(model_ref, model, endpoint)` locator.
-    ///
-    /// A fresh `Unknown` (config currently unparseable) falls back to the last
-    /// definite value for the same locator rather than demoting a live session
-    /// to non-refreshable api-key mode. Because a config edit can turn the
-    /// currently-selected model into a per-model BYOK model without changing
-    /// its upstream slug, keying on that slug alone is insufficient — each
-    /// model/credential chokepoint must clear this memo (`replace(None)`).
+    /// Memoized auth facts for legacy model-id lookups. Provider-aware callers
+    /// share the same memo so helper-token refresh and BYOK gating stay aligned.
     pub(super) fn model_auth_facts(&self, model_id: &str) -> crate::agent::config::ModelAuthFacts {
-        self.model_auth_facts_cached(model_id.to_owned(), || {
-            crate::agent::config::resolve_model_auth_facts(model_id)
-        })
+        self.model_auth_state(model_id).0
     }
+    pub(super) fn model_auth_provider(
+        &self,
+        model_id: &str,
+    ) -> Option<crate::auth::AuthProviderRef> {
+        self.model_auth_state(model_id).1
+    }
+    /// Drop both auth memos whenever the active model or its credentials change.
+    pub(crate) fn invalidate_model_auth_memo(&self) {
+        self.model_auth_memo.replace(None);
+        self.model_auth_facts.replace(None);
+    }
+    /// Memoized per-model auth facts keyed by the exact physical
+    /// `(model_ref, model, endpoint)` locator.
     fn model_auth_facts_for_locator(
         &self,
         model_ref: Option<&str>,
@@ -200,6 +204,119 @@ impl SessionActor {
         }
         *self.model_auth_facts.borrow_mut() = Some((cache_key, fresh));
         fresh
+    }
+    /// Reads and populates the auth-provider memo; a fresh `Unknown` falls
+    /// back to the last definite entry for the same model id.
+    fn model_auth_state(
+        &self,
+        model_id: &str,
+    ) -> (
+        crate::agent::config::ModelAuthFacts,
+        Option<crate::auth::AuthProviderRef>,
+    ) {
+        use crate::agent::auth_method::ModelByok;
+        use crate::session::acp_session::ModelAuthMemo;
+        if let Some(memo) = self.model_auth_memo.borrow().as_ref()
+            && memo.model_id == model_id
+            && memo.facts.byok != ModelByok::Unknown
+        {
+            return (memo.facts, memo.provider.clone());
+        }
+        let (fresh, provider) =
+            crate::agent::config::resolve_model_auth_facts_and_provider(model_id);
+        if fresh.byok == ModelByok::Unknown {
+            if let Some(memo) = self.model_auth_memo.borrow().as_ref()
+                && memo.model_id == model_id
+            {
+                return (memo.facts, memo.provider.clone());
+            }
+            return (fresh, provider);
+        }
+        *self.model_auth_memo.borrow_mut() = Some(ModelAuthMemo {
+            model_id: model_id.to_string(),
+            facts: fresh,
+            provider: provider.clone(),
+        });
+        (fresh, provider)
+    }
+    /// The single writer of a provider mint/rotation into chat-state credentials.
+    async fn set_chat_api_key(&self, new_key: String) {
+        let mut creds = self.chat_state_handle.get_credentials().await;
+        creds.api_key = Some(new_key);
+        self.chat_state_handle.update_credentials(creds);
+    }
+    /// Pre-turn arm for a provider-backed model: mint on a cold cache,
+    /// re-mint near expiry, and adopt a rotation chat-state missed.
+    async fn refresh_provider_token_pre_turn(
+        &self,
+        provider: &crate::auth::AuthProviderRef,
+        current_key: Option<&str>,
+        model_id: &str,
+    ) {
+        match provider.ensure_fresh_token(current_key).await {
+            crate::auth::ProviderRefreshOutcome::Rotated(new_key) => {
+                tracing::info!(
+                    model = %model_id,
+                    provider = %provider.name,
+                    cold = current_key.is_none(),
+                    "auth provider token rotated pre-turn"
+                );
+                self.set_chat_api_key(new_key).await;
+            }
+            crate::auth::ProviderRefreshOutcome::Unchanged => {}
+            crate::auth::ProviderRefreshOutcome::MintFailed => {
+                tracing::warn!(
+                    session_id = %self.session_info.id.0,
+                    provider = %provider.name,
+                    model = %model_id,
+                    "auth provider pre-turn refresh failed"
+                );
+                xai_grok_telemetry::unified_log::warn(
+                    "auth provider pre-turn refresh failed",
+                    Some(self.session_info.id.0.as_ref()),
+                    Some(serde_json::json!({
+                        "provider": provider.name,
+                        "model": model_id,
+                        "cold": current_key.is_none(),
+                    })),
+                );
+            }
+            crate::auth::ProviderRefreshOutcome::Unusable => {}
+        }
+    }
+    /// 401 arm for a provider-backed model: re-run the helper once and
+    /// resubmit. Returns `false` when the helper declined or failed.
+    async fn try_provider_401_recovery(&self, provider: &crate::auth::AuthProviderRef) -> bool {
+        let rejected_key = self.chat_state_handle.get_credentials().await.api_key;
+        let recovered = match rejected_key {
+            Some(ref rejected_key) => provider.recover_rejected_token(rejected_key).await,
+            None => provider.ensure_fresh_token(None).await.rotated(),
+        };
+        let Some(new_key) = recovered else {
+            tracing::warn!(
+                session_id = %self.session_info.id.0,
+                provider = %provider.name,
+                "auth recovery: sampler 401, provider re-mint declined or failed"
+            );
+            xai_grok_telemetry::unified_log::warn(
+                "auth recovery: sampler 401, provider re-mint declined or failed",
+                Some(self.session_info.id.0.as_ref()),
+                Some(serde_json::json!({ "provider": provider.name })),
+            );
+            return false;
+        };
+        tracing::info!(
+            session_id = %self.session_info.id.0,
+            provider = %provider.name,
+            "auth recovery: sampler 401, auth provider re-mint, retrying"
+        );
+        xai_grok_telemetry::unified_log::info(
+            "auth recovery: sampler 401, auth provider re-mint, retrying",
+            Some(self.session_info.id.0.as_ref()),
+            None,
+        );
+        self.set_chat_api_key(new_key).await;
+        true
     }
     /// Gate inputs for one physical model routed to `base_url`. See
     /// [`crate::agent::auth_method::session_token_auth_gate`] for the rationale
@@ -813,37 +930,55 @@ impl SessionActor {
             .data(detailed_message);
             return Err(acp_err);
         }
-        let auth_recovery_eligible = matches!(error.kind, SamplingErrorKind::Auth) && {
-            let (model_ref, model_id, base_url) = self
-                .chat_state_handle
-                .get_sampling_config()
-                .await
-                .map(|c| (c.model_ref, c.model, c.base_url))
-                .unwrap_or_default();
-            let gate = self.auth_gate(model_ref.as_deref(), &model_id, &base_url);
-            let eligible = gate.active();
-            self.log_auth_gate_unknown("handle_sampling_failure", gate, &base_url);
-            if !eligible {
-                tracing::warn!(
-                    session_id = % self.session_info.id.0, is_session_based = gate
-                    .is_session_based, model_byok = gate.model_byok.as_str(),
-                    endpoint_is_first_party = gate.endpoint_is_first_party,
-                    "auth recovery: sampler 401 not refreshable (api-key auth) — surfacing 401",
+        let (failed_model_ref, failed_model_id, failed_base_url) = self
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .map(|c| (c.model_ref, c.model, c.base_url))
+            .unwrap_or_default();
+        let auth_provider =
+            if matches!(error.kind, SamplingErrorKind::Auth) || error.status_code == Some(401) {
+                self.model_auth_provider(&failed_model_id)
+            } else {
+                None
+            };
+        let auth_recovery_eligible =
+            auth_provider.is_none() && matches!(error.kind, SamplingErrorKind::Auth) && {
+                let gate = self.auth_gate(
+                    failed_model_ref.as_deref(),
+                    &failed_model_id,
+                    &failed_base_url,
                 );
-                xai_grok_telemetry::unified_log::warn(
-                    "auth recovery: sampler 401 not eligible (api-key auth)",
-                    Some(self.session_info.id.0.as_ref()),
-                    Some(serde_json::json!(
-                        { "kind" : error.kind.as_str(), "status_code" : error
-                        .status_code, "is_session_based" : gate.is_session_based,
-                        "model_byok" : gate.model_byok.as_str(),
-                        "endpoint_is_first_party" : gate.endpoint_is_first_party, }
-                    )),
-                );
-            }
-            eligible
-        };
-        if !matches!(error.kind, SamplingErrorKind::Auth) && error.status_code == Some(401) {
+                let eligible = gate.active();
+                self.log_auth_gate_unknown("handle_sampling_failure", gate, &failed_base_url);
+                if !eligible {
+                    tracing::warn!(
+                        session_id = % self.session_info.id.0, is_session_based = gate
+                        .is_session_based, model_byok = gate.model_byok.as_str(),
+                        endpoint_is_first_party = gate.endpoint_is_first_party,
+                        "auth recovery: sampler 401 not refreshable (api-key auth) — surfacing 401",
+                    );
+                    xai_grok_telemetry::unified_log::warn(
+                        "auth recovery: sampler 401 not eligible (api-key auth)",
+                        Some(self.session_info.id.0.as_ref()),
+                        Some(serde_json::json!(
+                            { "kind" : error.kind.as_str(), "status_code" : error
+                            .status_code, "is_session_based" : gate.is_session_based,
+                            "model_byok" : gate.model_byok.as_str(),
+                            "endpoint_is_first_party" : gate.endpoint_is_first_party, }
+                        )),
+                    );
+                }
+                eligible
+            };
+        debug_assert!(
+            !(auth_recovery_eligible && auth_provider.is_some()),
+            "a provider-backed model must not be session-recovery-eligible"
+        );
+        if !matches!(error.kind, SamplingErrorKind::Auth)
+            && error.status_code == Some(401)
+            && auth_provider.is_none()
+        {
             xai_grok_telemetry::unified_log::warn(
                 "auth recovery: sampler 401 not eligible (non-auth error kind)",
                 Some(self.session_info.id.0.as_ref()),
@@ -905,6 +1040,12 @@ impl SessionActor {
                 Some(self.session_info.id.0.as_ref()),
                 None,
             );
+        }
+        if let Some(ref provider) = auth_provider
+            && self.try_provider_401_recovery(provider).await
+        {
+            self.prepare_sampler_for_turn().await?;
+            return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit);
         }
         if matches!(error.kind, SamplingErrorKind::IdleTimeout) {
             self.signals_handle().record_idle_timeout();
@@ -978,6 +1119,14 @@ impl SessionActor {
             let mut msg = format!("{detailed_message}\n");
             msg.push_str(&format!("\n  Model:     {current_model}"));
             msg.push_str(&format!("\n  Auth:      {auth_mode_str}"));
+            if let Some(ref provider) = auth_provider {
+                msg.push_str(
+                    &format!(
+                        "\n  Provider:  [auth_provider.{}] (check the provider command and the debug log)",
+                        provider.name
+                    ),
+                );
+            }
             msg.push_str(&format!("\n  Version:   {client_version}"));
             if available.is_empty() {
                 msg.push_str("\n  Available: (none)");
@@ -1092,14 +1241,23 @@ impl SessionActor {
     /// Soft failures with a still-usable access token still return here
     /// (grace / optimistic send); 401 recovery remains the safety net.
     pub(super) async fn refresh_token_if_expired(&self) {
+        let Some((sampling_config, creds)) = self
+            .chat_state_handle
+            .get_sampling_config_and_credentials()
+            .await
+        else {
+            return;
+        };
+        if let Some(provider) = self.model_auth_provider(&sampling_config.model) {
+            self.refresh_provider_token_pre_turn(
+                &provider,
+                creds.api_key.as_deref(),
+                &sampling_config.model,
+            )
+            .await;
+            return;
+        }
         if let Some(ref am) = self.auth_manager {
-            let Some((sampling_config, creds)) = self
-                .chat_state_handle
-                .get_sampling_config_and_credentials()
-                .await
-            else {
-                return;
-            };
             if self
                 .auth_gate(
                     sampling_config.model_ref.as_deref(),
@@ -1150,13 +1308,7 @@ impl SessionActor {
         }
         use crate::auth::{is_jwt_expired_or_near, parse_jwt_expiration};
         const REFRESH_THRESHOLD: chrono::Duration = chrono::Duration::minutes(5);
-        let Some((sampling_config, mut creds)) = self
-            .chat_state_handle
-            .get_sampling_config_and_credentials()
-            .await
-        else {
-            return;
-        };
+        let mut creds = creds;
         let current_key = creds.api_key.clone();
         let current_model_ref = sampling_config.model_ref.as_deref();
         let current_model_id = sampling_config.model.as_str();
