@@ -634,10 +634,6 @@ pub(crate) mod test_support {
         )));
         SinkGuard(prev)
     }
-
-    pub(crate) fn record_sample_for_tests() {
-        with_sink(|s| s.record("sample", None));
-    }
 }
 
 #[cfg(test)]
@@ -691,17 +687,16 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(MEMTRACE_SINK)]
     fn sample_events_are_valid_jsonl_and_rotate() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.jsonl");
-        let _guard = test_support::install_test_sink(path.clone(), 256);
+        let sink = Sink::new(path.clone(), 256, u64::MAX >> 1);
 
         // Enough samples to exceed the 256-byte cap at least twice; the
         // post-rotation file is created lazily by the NEXT write, so the
         // final sample guarantees both files exist.
         for _ in 0..16 {
-            test_support::record_sample_for_tests();
+            sink.record("sample", None);
         }
         // Rotation happened at the tiny cap: a `.1` exists and both files
         // hold only valid JSON lines with the expected shape.
