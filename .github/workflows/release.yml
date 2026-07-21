@@ -20,9 +20,6 @@ permissions: {}
 
 env:
   CARGO_INCREMENTAL: "0"
-  SCCACHE_GHA_ENABLED: "true"
-  SCCACHE_GHA_RW_MODE: READ_WRITE
-  SCCACHE_GHA_VERSION: grok-build-v1
   SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
 
 concurrency:
@@ -163,13 +160,23 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Restore exact release build
+        id: release-build-cache
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/release-build-cache/${{ matrix.target }}
+          key: release-build-v1-${{ matrix.target }}-rust-1.92.0-${{ hashFiles('Cargo.lock') }}-${{ needs.metadata.outputs.commit }}
+
       - name: Install pinned Rust toolchain
+        if: steps.release-build-cache.outputs.cache-hit != 'true'
         run: |
           rustup toolchain install 1.92.0 --profile minimal
           rustup default 1.92.0
           rustup target add "${{ matrix.target }}"
 
       - name: Restore Cargo source cache
+        if: steps.release-build-cache.outputs.cache-hit != 'true'
         id: cargo-cache
         continue-on-error: true
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -181,20 +188,6 @@ jobs:
           key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-1.92.0-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             cargo-v1-${{ runner.os }}-${{ runner.arch }}-1.92.0-
-
-      - name: Set up compiler cache
-        id: sccache
-        continue-on-error: true
-        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-
-      - name: Enable compiler cache
-        if: steps.sccache.outcome == 'success'
-        shell: bash
-        run: |
-          wrapper="$RUNNER_TEMP/grok-sccache-fallback${{ runner.os == 'Windows' && '.exe' || '' }}"
-          rustc scripts/ci/sccache-fallback.rs -o "$wrapper"
-          echo "GROK_SCCACHE_BIN=$SCCACHE_PATH" >>"$GITHUB_ENV"
-          echo "RUSTC_WRAPPER=$wrapper" >>"$GITHUB_ENV"
 
       - name: Install Windows archive tool
         if: runner.os == 'Windows'
@@ -215,15 +208,24 @@ jobs:
             --github-env "$GITHUB_ENV"
 
       - name: Fetch locked dependencies
+        if: steps.release-build-cache.outputs.cache-hit != 'true'
         run: cargo fetch --locked --target "${{ matrix.target }}"
 
       - name: Build, package, and verify
         id: package
         run: |
           set -euo pipefail
-          binary="$(scripts/dist.sh build \
-            --target "${{ matrix.target }}" \
-            --version "${{ needs.metadata.outputs.version }}")"
+          if [[ "${{ steps.release-build-cache.outputs.cache-hit }}" == true ]]; then
+            executable="$(node scripts/dist/target.mjs "${{ matrix.target }}" cargoExecutable)"
+            binary="$PWD/target/release-build-cache/${{ matrix.target }}/$executable"
+            test -f "$binary"
+            test -f "$binary.build-attestation.json"
+            echo "using exact release build cache for ${{ needs.metadata.outputs.commit }}"
+          else
+            binary="$(scripts/dist.sh build \
+              --target "${{ matrix.target }}" \
+              --version "${{ needs.metadata.outputs.version }}")"
+          fi
           mkdir -p release-output
           archive="$(scripts/dist.sh package \
             --target "${{ matrix.target }}" \
@@ -285,7 +287,7 @@ jobs:
           }
 
       - name: Save Cargo source cache
-        if: success() && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: success() && steps.release-build-cache.outputs.cache-hit != 'true' && steps.cargo-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
