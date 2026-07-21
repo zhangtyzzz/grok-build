@@ -117,6 +117,8 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/ci.yml
+    with:
+      compiler_cache_read_only: true
 
   build:
     name: Build ${{ matrix.target }}
@@ -127,18 +129,24 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             runner: macos-15
+            timeout_minutes: 180
           - target: x86_64-apple-darwin
             runner: macos-15-intel
+            timeout_minutes: 120
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-22.04-arm
+            timeout_minutes: 120
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-22.04
+            timeout_minutes: 120
           - target: aarch64-pc-windows-msvc
             runner: windows-11-arm
+            timeout_minutes: 120
           - target: x86_64-pc-windows-msvc
             runner: windows-2025
+            timeout_minutes: 120
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
+    timeout-minutes: ${{ matrix.timeout_minutes }}
     permissions:
       contents: read
       id-token: write
@@ -182,7 +190,11 @@ jobs:
       - name: Enable compiler cache
         if: steps.sccache.outcome == 'success'
         shell: bash
-        run: echo "RUSTC_WRAPPER=$SCCACHE_PATH" >>"$GITHUB_ENV"
+        run: |
+          wrapper="$RUNNER_TEMP/grok-sccache-fallback${{ runner.os == 'Windows' && '.exe' || '' }}"
+          rustc scripts/ci/sccache-fallback.rs -o "$wrapper"
+          echo "GROK_SCCACHE_BIN=$SCCACHE_PATH" >>"$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=$wrapper" >>"$GITHUB_ENV"
 
       - name: Install Windows archive tool
         if: runner.os == 'Windows'

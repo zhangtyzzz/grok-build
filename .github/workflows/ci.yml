@@ -2,6 +2,12 @@ name: CI
 
 on:
   workflow_call:
+    inputs:
+      compiler_cache_read_only:
+        description: Prevent a reusable caller from writing compiler cache entries
+        required: false
+        default: false
+        type: boolean
   pull_request:
   push:
     branches:
@@ -14,7 +20,7 @@ permissions:
 env:
   CARGO_INCREMENTAL: "0"
   SCCACHE_GHA_ENABLED: "true"
-  SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'pull_request' && 'READ_ONLY' || 'READ_WRITE' }}
+  SCCACHE_GHA_RW_MODE: ${{ (github.event_name == 'pull_request' || inputs.compiler_cache_read_only) && 'READ_ONLY' || 'READ_WRITE' }}
   SCCACHE_GHA_VERSION: grok-build-v1
   SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
 
@@ -59,7 +65,11 @@ jobs:
       - name: Enable compiler cache
         if: steps.sccache.outcome == 'success'
         shell: bash
-        run: echo "RUSTC_WRAPPER=$SCCACHE_PATH" >>"$GITHUB_ENV"
+        run: |
+          wrapper="$RUNNER_TEMP/grok-sccache-fallback${{ runner.os == 'Windows' && '.exe' || '' }}"
+          rustc scripts/ci/sccache-fallback.rs -o "$wrapper"
+          echo "GROK_SCCACHE_BIN=$SCCACHE_PATH" >>"$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=$wrapper" >>"$GITHUB_ENV"
 
       - name: Prepare pinned protobuf compiler
         run: |
@@ -167,7 +177,11 @@ jobs:
       - name: Enable compiler cache
         if: steps.sccache.outcome == 'success'
         shell: bash
-        run: echo "RUSTC_WRAPPER=$SCCACHE_PATH" >>"$GITHUB_ENV"
+        run: |
+          wrapper="$RUNNER_TEMP/grok-sccache-fallback${{ runner.os == 'Windows' && '.exe' || '' }}"
+          rustc scripts/ci/sccache-fallback.rs -o "$wrapper"
+          echo "GROK_SCCACHE_BIN=$SCCACHE_PATH" >>"$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=$wrapper" >>"$GITHUB_ENV"
 
       - name: Prepare pinned protobuf and search tools
         run: |
@@ -246,7 +260,11 @@ jobs:
       - name: Enable compiler cache
         if: steps.sccache.outcome == 'success'
         shell: bash
-        run: echo "RUSTC_WRAPPER=$SCCACHE_PATH" >>"$GITHUB_ENV"
+        run: |
+          wrapper="$RUNNER_TEMP/grok-sccache-fallback${{ runner.os == 'Windows' && '.exe' || '' }}"
+          rustc scripts/ci/sccache-fallback.rs -o "$wrapper"
+          echo "GROK_SCCACHE_BIN=$SCCACHE_PATH" >>"$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=$wrapper" >>"$GITHUB_ENV"
 
       - name: Prepare pinned Windows protobuf compiler
         run: |

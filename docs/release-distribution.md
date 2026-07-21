@@ -194,17 +194,27 @@ CI and release jobs restore Cargo registry and Git source caches keyed by the
 runner OS and architecture, Rust toolchain, and `Cargo.lock`. A lockfile miss
 may restore the most recent compatible source cache prefix. Rust compilation
 uses sccache's GitHub Actions backend, whose object keys include the compiler,
-target, flags, and source inputs; the workflow never archives the workspace's
-potentially very large `target/` directory. CI also disables incremental
-compilation so rustc invocations are cacheable and the runner filesystem stays
-bounded.
+target, flags, and source inputs. A small cross-platform wrapper retries an
+individual rustc invocation directly if the background sccache server cannot
+start, disconnects, or returns a failure. This keeps compiler caching enabled
+on every release platform without allowing cache infrastructure to fail a
+valid build. The workflow never archives the workspace's potentially very
+large `target/` directory. CI also disables incremental compilation so rustc
+invocations are cacheable and the runner filesystem stays bounded.
 
 Pull requests may read the default branch Cargo and compiler caches but cannot
 write either cache, so unreviewed code cannot seed entries later consumed by a
-tag build. Trusted main, tag, and manual runs use read-write compiler caching
-and save a Cargo source cache only on an exact-key miss. Cache misses, quota
-limits, and cache service failures affect performance only, never the release
-gates or artifact contents.
+tag build. Release quality gates also use the compiler cache read-only while
+the native Unix release builds populate target-specific entries. Trusted main
+and manual CI runs use read-write compiler caching, and trusted jobs save a
+Cargo source cache only on an exact-key miss. Cache misses, quota limits, and
+cache service failures affect performance only, never the release gates or
+artifact contents.
+
+The ARM64 macOS release build has a three-hour timeout because a cold native
+build can legitimately exceed the two-hour limit used by the other targets.
+All six targets still run in parallel, so this larger safety margin affects
+elapsed release time only when that build is actually the critical path.
 
 Each matrix job packages, verifies, extracts, and smoke-tests its real binary,
 then creates GitHub artifact provenance. A fan-in job requires the exact six
