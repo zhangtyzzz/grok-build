@@ -18,6 +18,13 @@ on:
 
 permissions: {}
 
+env:
+  CARGO_INCREMENTAL: "0"
+  SCCACHE_GHA_ENABLED: "true"
+  SCCACHE_GHA_RW_MODE: READ_WRITE
+  SCCACHE_GHA_VERSION: grok-build-v1
+  SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -113,9 +120,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.target }}
-    needs:
-      - metadata
-      - quality
+    needs: metadata
     strategy:
       fail-fast: false
       matrix:
@@ -155,6 +160,29 @@ jobs:
           rustup toolchain install 1.92.0 --profile minimal
           rustup default 1.92.0
           rustup target add "${{ matrix.target }}"
+
+      - name: Restore Cargo source cache
+        id: cargo-cache
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-1.92.0-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-v1-${{ runner.os }}-${{ runner.arch }}-1.92.0-
+
+      - name: Set up compiler cache
+        id: sccache
+        continue-on-error: true
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+
+      - name: Enable compiler cache
+        if: steps.sccache.outcome == 'success'
+        shell: bash
+        run: echo "RUSTC_WRAPPER=$SCCACHE_PATH" >>"$GITHUB_ENV"
 
       - name: Install Windows archive tool
         if: runner.os == 'Windows'
@@ -244,6 +272,17 @@ jobs:
             exit 1
           }
 
+      - name: Save Cargo source cache
+        if: success() && steps.cargo-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
       - name: Attest release archive provenance
         id: provenance
         uses: actions/attest@c32b4b8b198b65d0bd9d63490e847ff7b53989d4 # v4.0.0
@@ -279,6 +318,7 @@ jobs:
     name: Verify complete release candidate
     needs:
       - metadata
+      - quality
       - build
     runs-on: ubuntu-22.04
     timeout-minutes: 20
