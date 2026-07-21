@@ -178,14 +178,33 @@ pager, shell, and version crates. A manual run with `publish=false` is a
 packaging dry run. A publishing run is accepted only when the workflow itself
 is running on the matching existing tag and commit.
 
-The release workflow first calls the same CI workflow used by pull requests.
-It then builds on six native hosted runners: macOS, Linux, and Windows on both
-ARM64 and x86-64. `scripts/dist/prepare-release-tools.sh` downloads a
+The release workflow calls the same CI workflow used by pull requests while
+building on six native hosted runners in parallel: macOS, Linux, and Windows
+on both ARM64 and x86-64. The fan-in job depends on both the quality workflow
+and every native build, so parallel execution shortens the critical path
+without allowing an unverified build to reach publication.
+`scripts/dist/prepare-release-tools.sh` downloads a
 checksum-pinned protoc and ripgrep for every target and builds the pinned bfs
 and ugrep sources on Unix. Windows ARM64 runs protobuf's official win64 protoc
 under Windows 11 emulation because protobuf does not publish a Windows ARM64
 compiler archive; protoc is a build-host tool and is not shipped in the
 product archive.
+
+CI and release jobs restore Cargo registry and Git source caches keyed by the
+runner OS and architecture, Rust toolchain, and `Cargo.lock`. A lockfile miss
+may restore the most recent compatible source cache prefix. Rust compilation
+uses sccache's GitHub Actions backend, whose object keys include the compiler,
+target, flags, and source inputs; the workflow never archives the workspace's
+potentially very large `target/` directory. CI also disables incremental
+compilation so rustc invocations are cacheable and the runner filesystem stays
+bounded.
+
+Pull requests may read the default branch Cargo and compiler caches but cannot
+write either cache, so unreviewed code cannot seed entries later consumed by a
+tag build. Trusted main, tag, and manual runs use read-write compiler caching
+and save a Cargo source cache only on an exact-key miss. Cache misses, quota
+limits, and cache service failures affect performance only, never the release
+gates or artifact contents.
 
 Each matrix job packages, verifies, extracts, and smoke-tests its real binary,
 then creates GitHub artifact provenance. A fan-in job requires the exact six
