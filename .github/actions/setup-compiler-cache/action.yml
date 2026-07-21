@@ -17,7 +17,7 @@ inputs:
   cache-size:
     description: Maximum size of the runner-local sccache directory
     required: false
-    default: 1G
+    default: 512M
 
 outputs:
   cache-hit:
