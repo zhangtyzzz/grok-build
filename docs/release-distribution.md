@@ -192,29 +192,38 @@ product archive.
 
 CI and release jobs restore Cargo registry and Git source caches keyed by the
 runner OS and architecture, Rust toolchain, and `Cargo.lock`. A lockfile miss
-may restore the most recent compatible source cache prefix. Rust compilation
-uses sccache's GitHub Actions backend, whose object keys include the compiler,
-target, flags, and source inputs. A small cross-platform wrapper retries an
-individual rustc invocation directly if the background sccache server cannot
-start, disconnects, or returns a failure. This keeps compiler caching enabled
-on every release platform without allowing cache infrastructure to fail a
-valid build. The workflow never archives the workspace's potentially very
-large `target/` directory. CI also disables incremental compilation so rustc
-invocations are cacheable and the runner filesystem stays bounded.
+may restore the most recent compatible source cache prefix. CI compilation uses
+bounded runner-local sccache directories restored and saved as one cache archive
+per workload. Rust, terminal, and Windows protobuf validation are isolated so
+one workload cannot evict another's most useful objects. The cross-platform
+wrapper retries an individual rustc invocation directly if the background
+sccache server cannot start, disconnects, or returns a failure. Incremental
+compilation stays disabled so rustc invocations are cacheable.
 
-Pull requests may read the default branch Cargo and compiler caches but cannot
-write either cache, so unreviewed code cannot seed entries later consumed by a
-tag build. Release quality gates also use the compiler cache read-only while
-the native Unix release builds populate target-specific entries. Trusted main
-and manual CI runs use read-write compiler caching, and trusted jobs save a
-Cargo source cache only on an exact-key miss. Cache misses, quota limits, and
-cache service failures affect performance only, never the release gates or
-artifact contents.
+Before tagging a release, dispatch `Warm release build cache` from `main`. Its
+six native jobs build the exact commit and save only each final executable and
+its build attestation under a key containing the target, Rust version,
+`Cargo.lock` hash, and full commit SHA. The tag workflow restores that exact
+entry from the default branch and skips Rust compilation on a hit. Packaging
+still recreates the checksum-pinned bundled tools and verifies their identities,
+the binary hash, source commit, target, and build attestation before smoke tests
+and provenance generation. A miss or cache-service failure falls back to the
+normal native build. Neither workflow archives the workspace's potentially very
+large `target/` directory; only the small staged executable and attestation are
+saved for release reuse.
 
-The ARM64 macOS release build has a three-hour timeout because a cold native
-build can legitimately exceed the two-hour limit used by the other targets.
-All six targets still run in parallel, so this larger safety margin affects
-elapsed release time only when that build is actually the critical path.
+Pull requests may restore default-branch Cargo and compiler caches but never
+save compiler entries that trusted runs consume. Trusted main and manual CI
+runs save a new immutable bounded compiler cache after successful validation.
+The release warmup runs only from `main`; tag builds consume only an exact
+commit-keyed release build. Cache misses, quota limits, and cache service
+failures affect performance only, never the release gates or artifact contents.
+
+The ARM64 macOS release build and cache warmup have a four-hour timeout because
+a cold native build can exceed three hours; the other targets keep their
+two-hour limit. All six targets still run in parallel, so this larger safety
+margin affects elapsed time only when that cold build is actually the critical
+path.
 
 Each matrix job packages, verifies, extracts, and smoke-tests its real binary,
 then creates GitHub artifact provenance. A fan-in job requires the exact six

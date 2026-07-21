@@ -19,9 +19,6 @@ permissions:
 
 env:
   CARGO_INCREMENTAL: "0"
-  SCCACHE_GHA_ENABLED: "true"
-  SCCACHE_GHA_RW_MODE: ${{ (github.event_name == 'pull_request' || inputs.compiler_cache_read_only) && 'READ_ONLY' || 'READ_WRITE' }}
-  SCCACHE_GHA_VERSION: grok-build-v1
   SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
 
 concurrency:
@@ -58,18 +55,13 @@ jobs:
             cargo-v1-${{ runner.os }}-${{ runner.arch }}-1.92.0-
 
       - name: Set up compiler cache
-        id: sccache
-        continue-on-error: true
-        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-
-      - name: Enable compiler cache
-        if: steps.sccache.outcome == 'success'
-        shell: bash
-        run: |
-          wrapper="$RUNNER_TEMP/grok-sccache-fallback${{ runner.os == 'Windows' && '.exe' || '' }}"
-          rustc scripts/ci/sccache-fallback.rs -o "$wrapper"
-          echo "GROK_SCCACHE_BIN=$SCCACHE_PATH" >>"$GITHUB_ENV"
-          echo "RUSTC_WRAPPER=$wrapper" >>"$GITHUB_ENV"
+        id: compiler-cache
+        uses: ./.github/actions/setup-compiler-cache
+        with:
+          namespace: ci-rust
+          toolchain: 1.92.0
+          lock-hash: ${{ hashFiles('Cargo.lock') }}
+          revision: ${{ github.sha }}
 
       - name: Prepare pinned protobuf compiler
         run: |
@@ -122,6 +114,14 @@ jobs:
             ~/.cargo/git/db
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
+      - name: Finalize compiler cache
+        if: always() && steps.compiler-cache.outputs.enabled == 'true'
+        uses: ./.github/actions/finalize-compiler-cache
+        with:
+          enabled: ${{ steps.compiler-cache.outputs.enabled }}
+          save: ${{ job.status == 'success' && github.event_name != 'pull_request' && !inputs.compiler_cache_read_only && steps.compiler-cache.outputs.cache-hit != 'true' }}
+          cache-primary-key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
+
   integration:
     name: Distribution E2E
     runs-on: ubuntu-22.04
@@ -170,18 +170,13 @@ jobs:
             cargo-v1-${{ runner.os }}-${{ runner.arch }}-1.92.0-
 
       - name: Set up compiler cache
-        id: sccache
-        continue-on-error: true
-        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-
-      - name: Enable compiler cache
-        if: steps.sccache.outcome == 'success'
-        shell: bash
-        run: |
-          wrapper="$RUNNER_TEMP/grok-sccache-fallback${{ runner.os == 'Windows' && '.exe' || '' }}"
-          rustc scripts/ci/sccache-fallback.rs -o "$wrapper"
-          echo "GROK_SCCACHE_BIN=$SCCACHE_PATH" >>"$GITHUB_ENV"
-          echo "RUSTC_WRAPPER=$wrapper" >>"$GITHUB_ENV"
+        id: compiler-cache
+        uses: ./.github/actions/setup-compiler-cache
+        with:
+          namespace: ci-terminal
+          toolchain: 1.92.0
+          lock-hash: ${{ hashFiles('Cargo.lock') }}
+          revision: ${{ github.sha }}
 
       - name: Prepare pinned protobuf and search tools
         run: |
@@ -221,6 +216,14 @@ jobs:
             ~/.cargo/git/db
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
+      - name: Finalize compiler cache
+        if: always() && steps.compiler-cache.outputs.enabled == 'true'
+        uses: ./.github/actions/finalize-compiler-cache
+        with:
+          enabled: ${{ steps.compiler-cache.outputs.enabled }}
+          save: ${{ job.status == 'success' && github.event_name != 'pull_request' && !inputs.compiler_cache_read_only && steps.compiler-cache.outputs.cache-hit != 'true' }}
+          cache-primary-key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
+
   windows-protobuf:
     name: Windows protobuf build
     runs-on: windows-2025
@@ -253,18 +256,13 @@ jobs:
             cargo-v1-${{ runner.os }}-${{ runner.arch }}-1.92.0-
 
       - name: Set up compiler cache
-        id: sccache
-        continue-on-error: true
-        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-
-      - name: Enable compiler cache
-        if: steps.sccache.outcome == 'success'
-        shell: bash
-        run: |
-          wrapper="$RUNNER_TEMP/grok-sccache-fallback${{ runner.os == 'Windows' && '.exe' || '' }}"
-          rustc scripts/ci/sccache-fallback.rs -o "$wrapper"
-          echo "GROK_SCCACHE_BIN=$SCCACHE_PATH" >>"$GITHUB_ENV"
-          echo "RUSTC_WRAPPER=$wrapper" >>"$GITHUB_ENV"
+        id: compiler-cache
+        uses: ./.github/actions/setup-compiler-cache
+        with:
+          namespace: ci-windows-protobuf
+          toolchain: 1.92.0
+          lock-hash: ${{ hashFiles('Cargo.lock') }}
+          revision: ${{ github.sha }}
 
       - name: Prepare pinned Windows protobuf compiler
         run: |
@@ -302,6 +300,14 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+      - name: Finalize compiler cache
+        if: always() && steps.compiler-cache.outputs.enabled == 'true'
+        uses: ./.github/actions/finalize-compiler-cache
+        with:
+          enabled: ${{ steps.compiler-cache.outputs.enabled }}
+          save: ${{ job.status == 'success' && github.event_name != 'pull_request' && !inputs.compiler_cache_read_only && steps.compiler-cache.outputs.cache-hit != 'true' }}
+          cache-primary-key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
 
   required:
     name: CI required
