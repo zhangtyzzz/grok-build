@@ -126,7 +126,7 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             runner: macos-15
-            timeout_minutes: 180
+            timeout_minutes: 240
           - target: x86_64-apple-darwin
             runner: macos-15-intel
             timeout_minutes: 120

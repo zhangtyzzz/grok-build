@@ -219,10 +219,11 @@ The release warmup runs only from `main`; tag builds consume only an exact
 commit-keyed release build. Cache misses, quota limits, and cache service
 failures affect performance only, never the release gates or artifact contents.
 
-The ARM64 macOS release build has a three-hour timeout because a cold native
-build can legitimately exceed the two-hour limit used by the other targets.
-All six targets still run in parallel, so this larger safety margin affects
-elapsed release time only when that build is actually the critical path.
+The ARM64 macOS release build and cache warmup have a four-hour timeout because
+a cold native build can exceed three hours; the other targets keep their
+two-hour limit. All six targets still run in parallel, so this larger safety
+margin affects elapsed time only when that cold build is actually the critical
+path.
 
 Each matrix job packages, verifies, extracts, and smoke-tests its real binary,
 then creates GitHub artifact provenance. A fan-in job requires the exact six
