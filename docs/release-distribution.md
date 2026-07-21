@@ -200,6 +200,14 @@ wrapper retries an individual rustc invocation directly if the background
 sccache server cannot start, disconnects, or returns a failure. Incremental
 compilation stays disabled so rustc invocations are cacheable.
 
+The cache limits follow the measured working sets: 3 GiB for the Rust gates,
+4 GiB for terminal/tools/CLI, and 512 MiB for the small Windows protobuf job.
+The two larger jobs run several distinct check, test, and clippy profiles; a
+1 GiB shared LRU archive lets each early phase evict the previous run's later
+phase and produces effectively no hits. Release warmup does not save a second
+compiler cache per target because the exact final executable cache below is
+both smaller and able to skip compilation entirely.
+
 Before tagging a release, dispatch `Warm release build cache` from `main`. Its
 six native jobs build the exact commit and save only each final executable and
 its build attestation under a key containing the target, Rust version,

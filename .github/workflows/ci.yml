@@ -62,6 +62,7 @@ jobs:
           toolchain: 1.92.0
           lock-hash: ${{ hashFiles('Cargo.lock') }}
           revision: ${{ github.sha }}
+          cache-size: 3G
 
       - name: Prepare pinned protobuf compiler
         run: |
@@ -177,6 +178,7 @@ jobs:
           toolchain: 1.92.0
           lock-hash: ${{ hashFiles('Cargo.lock') }}
           revision: ${{ github.sha }}
+          cache-size: 4G
 
       - name: Prepare pinned protobuf and search tools
         run: |
@@ -263,6 +265,7 @@ jobs:
           toolchain: 1.92.0
           lock-hash: ${{ hashFiles('Cargo.lock') }}
           revision: ${{ github.sha }}
+          cache-size: 512M
 
       - name: Prepare pinned Windows protobuf compiler
         run: |

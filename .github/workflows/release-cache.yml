@@ -118,17 +118,6 @@ jobs:
           restore-keys: |
             cargo-v1-${{ runner.os }}-${{ runner.arch }}-1.92.0-
 
-      - name: Set up compiler cache
-        if: steps.release-build-cache.outputs.cache-hit != 'true'
-        id: compiler-cache
-        uses: ./.github/actions/setup-compiler-cache
-        with:
-          namespace: release-${{ matrix.target }}
-          toolchain: 1.92.0
-          lock-hash: ${{ hashFiles('Cargo.lock') }}
-          revision: ${{ needs.metadata.outputs.commit }}
-          cache-size: 512M
-
       - name: Prepare checksum-pinned bundled tools
         if: steps.release-build-cache.outputs.cache-hit != 'true'
         run: |
@@ -164,14 +153,6 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
-
-      - name: Finalize compiler cache
-        if: always() && steps.compiler-cache.outputs.enabled == 'true'
-        uses: ./.github/actions/finalize-compiler-cache
-        with:
-          enabled: ${{ steps.compiler-cache.outputs.enabled }}
-          save: ${{ job.status == 'success' && steps.release-build-cache.outputs.cache-hit != 'true' && steps.compiler-cache.outputs.cache-hit != 'true' }}
-          cache-primary-key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
 
       - name: Save exact release build
         if: success() && steps.release-build-cache.outputs.cache-hit != 'true'
