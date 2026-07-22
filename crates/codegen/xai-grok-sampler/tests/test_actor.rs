@@ -261,6 +261,68 @@ async fn submit_and_collect_returns_response() {
     assert_eq!(a.content.as_ref(), "collected response");
 }
 
+/// Some OpenAI-compatible Chat Completions backends report an inference
+/// failure as the non-standard `finish_reason: "error_finish"`. It must enter
+/// the normal retry path instead of failing typed deserialization.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_error_finish_is_retried_as_stream_failure() {
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_handler = Arc::clone(&counter);
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move || {
+            let counter = Arc::clone(&counter_handler);
+            async move {
+                let attempt = counter.fetch_add(1, Ordering::SeqCst);
+                let events = if attempt == 0 {
+                    vec![
+                        Event::default().data(
+                            json!({
+                                "id": "chatcmpl-error",
+                                "object": "chat.completion.chunk",
+                                "created": 0,
+                                "model": "test-model",
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {},
+                                    "finish_reason": "error_finish"
+                                }]
+                            })
+                            .to_string(),
+                        ),
+                        Event::default().data("[DONE]"),
+                    ]
+                } else {
+                    sse::chat_completion_events("recovered answer", "test-model")
+                };
+                Sse::new(stream::iter(
+                    events.into_iter().map(Ok::<_, std::convert::Infallible>),
+                ))
+            }
+        }),
+    );
+    let server = MockServer::spawn(app).await;
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let cfg = test_config(server.base_url(), "test-model");
+    let handle = SamplerActor::spawn(
+        cfg,
+        RetryPolicy {
+            max_retries: 2,
+            ..RetryPolicy::default()
+        },
+        event_tx,
+    );
+
+    let result = handle
+        .submit_and_collect(RequestId::from("req-error-finish"), user_request("hi"))
+        .await;
+    server.shutdown();
+
+    let (response, _metrics) = result.expect("error_finish should be retried");
+    assert_eq!(counter.load(Ordering::SeqCst), 2, "must retry exactly once");
+    assert_eq!(response.assistant_text(), "recovered answer");
+}
+
 // ---------------------------------------------------------------------------
 // Cancellation
 // ---------------------------------------------------------------------------
@@ -915,6 +977,54 @@ fn responses_config(base_url: String, doom_loop: Option<DoomLoopRecoveryPolicy>)
     cfg.api_backend = ApiBackend::Responses;
     cfg.doom_loop_recovery = doom_loop;
     cfg
+}
+
+/// Non-standard keepalive events from OpenAI-compatible proxies are transport
+/// liveness signals, not model output. They must be absorbed before typed
+/// Responses API deserialization so the surrounding response can complete.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_keepalive_events_are_ignored() {
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_handler = Arc::clone(&counter);
+    let app = Router::new().route(
+        "/v1/responses",
+        post(move || {
+            let counter = Arc::clone(&counter_handler);
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let mut events = vec![
+                    Event::default().data(json!({ "type": "keepalive" }).to_string()),
+                    Event::default().event("keepalive").data("{}"),
+                ];
+                events.extend(sse_events_to_axum(
+                    sse::responses_api_reasoning_and_text_events(
+                        "some thought",
+                        "an answer",
+                        "test-model",
+                    ),
+                ));
+                Sse::new(stream::iter(
+                    events.into_iter().map(Ok::<_, std::convert::Infallible>),
+                ))
+            }
+        }),
+    );
+    let server = MockServer::spawn(app).await;
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let handle = SamplerActor::spawn(
+        responses_config(server.base_url(), None),
+        RetryPolicy::default(),
+        event_tx,
+    );
+
+    let result = handle
+        .submit_and_collect(RequestId::from("req-keepalive"), user_request("hi"))
+        .await;
+    server.shutdown();
+
+    let (response, _metrics) = result.expect("keepalive events must not fail the turn");
+    assert_eq!(counter.load(Ordering::SeqCst), 1, "must not retry");
+    assert_eq!(response.assistant_text(), "an answer");
 }
 
 /// Server-reported doom-loop triggers flow through the actor rung onto the

@@ -1092,7 +1092,7 @@ pub(crate) async fn spawn_session_actor(
         .to_owned();
     let allowed_subagent_types_for_handle = agent.definition().allowed_subagent_types.clone();
     let mut hook_discovery_errors: Vec<xai_grok_hooks::error::HookError> = Vec::new();
-    let built_hook_registry: Option<Arc<xai_grok_hooks::discovery::HookRegistry>> =
+    let mut built_hook_registry: Option<Arc<xai_grok_hooks::discovery::HookRegistry>> =
         if let Some(override_reg) = hook_registry_override {
             Some(override_reg)
         } else {
@@ -1112,13 +1112,18 @@ pub(crate) async fn spawn_session_actor(
                 tracing::warn!(error = ? e, "hook loading error");
             }
             hook_discovery_errors = errors;
-            if registry.is_empty() {
-                None
-            } else {
-                tracing::info!(hook_count = registry.len(), "loaded hooks");
-                Some(Arc::new(registry))
-            }
+            (!registry.is_empty()).then(|| Arc::new(registry))
         };
+    let plugin_hook_count = super::hooks_plugins::reconcile_plugin_hooks(
+        &mut built_hook_registry,
+        plugin_registry.as_deref(),
+    );
+    if plugin_hook_count > 0 {
+        tracing::info!(plugin_hook_count, "loaded active plugin hooks");
+    }
+    if let Some(ref hook_registry) = built_hook_registry {
+        tracing::info!(hook_count = hook_registry.len(), "loaded hooks");
+    }
     let hook_registry_for_handle = built_hook_registry.clone();
     let workspace_ops_for_handle = workspace_ops.clone();
     #[allow(clippy::arc_with_non_send_sync)]
