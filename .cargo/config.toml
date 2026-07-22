@@ -7,6 +7,11 @@
 # rustflags are not additive. we have differing flags per arch,
 # so we must repeat flags in each target section
 
+# smartstring 1.0.1 mis-detects the unstable allocator API on Linux/Rust 1.92.
+# Use the audited in-tree copy whose build script selects the safe fallback.
+[patch.crates-io]
+smartstring = { path = "third_party/smartstring" }
+
 [target.x86_64-apple-darwin]
 rustflags = [
     "-C",
