@@ -177,7 +177,7 @@ accounting.
 
 ## Crate map
 
-The workspace contains 79 members. The following groups are more useful for
+The workspace contains 80 members. The following groups are more useful for
 navigation than a flat crate list.
 
 ### Product composition and presentation
@@ -200,7 +200,8 @@ map.
 
 | Crate/path | Owns |
 | --- | --- |
-| `xai-grok-shell` | Application configuration, auth integration, sessions, turn loop, persistence, compaction coordination, leader/headless/stdio hosts. |
+| `xai-grok-shell` | Application configuration, auth integration, sessions, turn loop, persistence, compaction and workflow coordination, leader/headless/stdio hosts. |
+| `xai-workflow` | Deterministic Rhai workflow validation and execution, host-call journaling, pause/resume outcomes, and agent-budget enforcement; the shell supplies the session-bound host. |
 | `xai-grok-agent` | Agent definitions, discovery, prompt templates, `AGENTS.md`, skills, and tool selection. |
 | `xai-chat-state` | Actor-based conversation state and usage tracking. |
 | `xai-agent-lifecycle` | Lifecycle event types and delivery. |
