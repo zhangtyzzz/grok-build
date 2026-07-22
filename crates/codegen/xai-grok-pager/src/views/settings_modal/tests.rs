@@ -2618,7 +2618,7 @@ fn picker_renders_choices_in_order() {
 }
 
 /// The currently-focused choice renders with the filled-disc
-/// marker `●`, `accent_user` marker color, `bg_visual` row bg,
+/// marker `●`, `accent_user` marker color, list-selection row bg,
 /// AND **BOLD** display text — three independent focus cues for
 /// low-contrast theme compatibility (parity with `cancel_turn_panel`).
 #[test]
@@ -2657,13 +2657,13 @@ fn picker_highlights_current_choice() {
     };
     assert_eq!(
         bg_at(4),
-        Some(theme.bg_visual),
-        "focused row must have bg_visual background"
+        Some(settings_list_row_bg(&theme, true, false)),
+        "focused row must have the list selection background"
     );
     assert_eq!(
         bg_at(3),
-        Some(theme.bg_base),
-        "unfocused row must have bg_base background"
+        Some(settings_list_row_bg(&theme, false, false)),
+        "unfocused row must have the list base background"
     );
 
     // Display text on focused row carries BOLD modifier

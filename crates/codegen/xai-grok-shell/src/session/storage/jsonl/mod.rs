@@ -698,8 +698,8 @@ impl JsonlStorageAdapter {
             .take(MAX_RESTORED_WORKFLOW_RUNS.saturating_add(1))
             .collect();
         let entries_truncated = entries.len() > MAX_RESTORED_WORKFLOW_RUNS;
-        entries.truncate(MAX_RESTORED_WORKFLOW_RUNS);
         entries.sort_by_key(|entry| entry.file_name());
+        entries.truncate(MAX_RESTORED_WORKFLOW_RUNS);
         if entries_truncated {
             tracing::warn!(
                 path = % workflows_dir.display(), limit = MAX_RESTORED_WORKFLOW_RUNS,
