@@ -1,13 +1,7 @@
-name: Automatic release
+name: Publish release (warm, tag, Release)
 
 on:
-  workflow_run:
-    workflows:
-      - CI
-    types:
-      - completed
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions: {}
 
@@ -18,10 +12,6 @@ concurrency:
 jobs:
   metadata:
     name: Detect unreleased main version
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -33,7 +23,7 @@ jobs:
       - name: Check out the validated main commit
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
           fetch-depth: 0
 
@@ -41,26 +31,26 @@ jobs:
         id: release
         shell: bash
         env:
-          VALIDATED_COMMIT: ${{ github.event.workflow_run.head_sha }}
+          REQUESTED_COMMIT: ${{ github.sha }}
+          REQUESTED_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
+          test "$REQUESTED_REF" = refs/heads/main || {
+            echo "release publication must be dispatched from main" >&2
+            exit 1
+          }
           checkout_commit="$(git rev-parse HEAD)"
-          test "$checkout_commit" = "$VALIDATED_COMMIT" || {
-            echo "checkout $checkout_commit does not match validated commit $VALIDATED_COMMIT" >&2
+          test "$checkout_commit" = "$REQUESTED_COMMIT" || {
+            echo "checkout $checkout_commit does not match requested commit $REQUESTED_COMMIT" >&2
             exit 1
           }
 
           current_main="$(git ls-remote origin refs/heads/main | awk '{ print $1 }')"
           test -n "$current_main"
-          if [[ "$current_main" != "$VALIDATED_COMMIT" ]]; then
-            echo "main advanced to $current_main; a newer CI run will handle release detection"
-            {
-              echo "commit=$VALIDATED_COMMIT"
-              echo "tag="
-              echo "should_release=false"
-            } >>"$GITHUB_OUTPUT"
-            exit 0
-          fi
+          test "$current_main" = "$REQUESTED_COMMIT" || {
+            echo "main advanced to $current_main; dispatch the release workflow again" >&2
+            exit 1
+          }
 
           version=""
           for manifest in \
@@ -92,7 +82,7 @@ jobs:
             should_release=false
           fi
           {
-            echo "commit=$VALIDATED_COMMIT"
+            echo "commit=$REQUESTED_COMMIT"
             echo "tag=$tag"
             echo "should_release=$should_release"
           } >>"$GITHUB_OUTPUT"

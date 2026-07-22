@@ -208,10 +208,12 @@ phase and produces effectively no hits. Release warmup does not save a second
 compiler cache per target because the exact final executable cache below is
 both smaller and able to skip compilation entirely.
 
-After a push to `main` passes the `CI` workflow, `Automatic release` checks the
-four lockstepped package versions and whether their version tag already exists.
-For a new version, it calls `Warm release build cache` with the exact validated
-main commit. The six native jobs build that commit and save each final
+To publish a version, manually dispatch `Publish release (warm, tag, Release)`
+from `main` after its required CI checks pass. Ordinary pushes and pull-request
+merges never create a tag. The publication workflow checks the four lockstepped
+package versions and whether their version tag already exists. For a new
+version, it calls `Warm release build cache` with the exact requested main
+commit. The six native jobs build that commit and save each final
 executable, its build attestation, and the exact checksum-pinned bundled-tool
 inputs under a key containing the target, Rust version, `Cargo.lock` hash, and
 full commit SHA. Once every warmup succeeds, the
@@ -219,9 +221,8 @@ workflow rechecks that `main` still points to the warmed commit, creates an
 annotated version tag, and dispatches the normal `Release` workflow on that
 tag. The explicit dispatch is required because GitHub suppresses recursive
 workflow triggers for refs created with `GITHUB_TOKEN`. If main advances while
-an older run is warming, the older run does not tag; the newer main CI run
-performs release detection instead. Commits whose version tag already exists
-are successful no-ops.
+the run is warming, it does not tag; dispatch publication again from the newer
+main commit. Versions whose tag already exists are successful no-ops.
 
 `Warm release build cache` remains manually dispatchable from `main` for
 recovery and diagnostics. The tag workflow restores the exact cache entry from
