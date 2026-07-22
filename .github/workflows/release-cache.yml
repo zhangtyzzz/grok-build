@@ -2,6 +2,13 @@ name: Warm release build cache
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      commit:
+        description: Exact main commit to warm; defaults to the dispatched ref
+        required: false
+        default: ""
+        type: string
 
 permissions: {}
 
@@ -10,7 +17,7 @@ env:
   SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
 
 concurrency:
-  group: release-cache-${{ github.ref }}
+  group: release-cache-${{ inputs.commit || github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -26,6 +33,7 @@ jobs:
       - name: Check out exact main commit
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ inputs.commit || github.sha }}
           persist-credentials: false
           fetch-depth: 0
 
@@ -33,12 +41,17 @@ jobs:
         id: meta
         shell: bash
         env:
-          CHECKOUT_SHA: ${{ github.sha }}
+          REQUESTED_COMMIT: ${{ inputs.commit }}
           REF_NAME: ${{ github.ref }}
         run: |
           set -euo pipefail
-          test "$REF_NAME" = refs/heads/main || {
+          checkout_sha="$(git rev-parse HEAD)"
+          test -n "$REQUESTED_COMMIT" || test "$REF_NAME" = refs/heads/main || {
             echo "release cache warmup must be dispatched from main" >&2
+            exit 1
+          }
+          test -z "$REQUESTED_COMMIT" || test "$checkout_sha" = "$REQUESTED_COMMIT" || {
+            echo "warmup checkout $checkout_sha does not match requested commit $REQUESTED_COMMIT" >&2
             exit 1
           }
           version="$(awk -F '"' '/^version = / { print $2; exit }' crates/codegen/xai-grok-pager-bin/Cargo.toml)"
@@ -46,7 +59,7 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=normal)"
           {
             echo "version=$version"
-            echo "commit=$CHECKOUT_SHA"
+            echo "commit=$checkout_sha"
           } >>"$GITHUB_OUTPUT"
 
   build:

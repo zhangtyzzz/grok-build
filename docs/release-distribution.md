@@ -208,17 +208,29 @@ phase and produces effectively no hits. Release warmup does not save a second
 compiler cache per target because the exact final executable cache below is
 both smaller and able to skip compilation entirely.
 
-Before tagging a release, dispatch `Warm release build cache` from `main`. Its
-six native jobs build the exact commit and save only each final executable and
-its build attestation under a key containing the target, Rust version,
-`Cargo.lock` hash, and full commit SHA. The tag workflow restores that exact
-entry from the default branch and skips Rust compilation on a hit. Packaging
-still recreates the checksum-pinned bundled tools and verifies their identities,
-the binary hash, source commit, target, and build attestation before smoke tests
-and provenance generation. A miss or cache-service failure falls back to the
-normal native build. Neither workflow archives the workspace's potentially very
-large `target/` directory; only the small staged executable and attestation are
-saved for release reuse.
+After a push to `main` passes the `CI` workflow, `Automatic release` checks the
+four lockstepped package versions and whether their version tag already exists.
+For a new version, it calls `Warm release build cache` with the exact validated
+main commit. The six native jobs build that commit and save only each final
+executable and its build attestation under a key containing the target, Rust
+version, `Cargo.lock` hash, and full commit SHA. Once every warmup succeeds, the
+workflow rechecks that `main` still points to the warmed commit, creates an
+annotated version tag, and dispatches the normal `Release` workflow on that
+tag. The explicit dispatch is required because GitHub suppresses recursive
+workflow triggers for refs created with `GITHUB_TOKEN`. If main advances while
+an older run is warming, the older run does not tag; the newer main CI run
+performs release detection instead. Commits whose version tag already exists
+are successful no-ops.
+
+`Warm release build cache` remains manually dispatchable from `main` for
+recovery and diagnostics. The tag workflow restores the exact cache entry from
+the default branch and skips Rust compilation on a hit. Packaging still
+recreates the checksum-pinned bundled tools and verifies their identities, the
+binary hash, source commit, target, and build attestation before smoke tests and
+provenance generation. A miss or cache-service failure falls back to the normal
+native build. Neither workflow archives the workspace's potentially very large
+`target/` directory; only the small staged executable and attestation are saved
+for release reuse.
 
 Pull requests may restore default-branch Cargo and compiler caches but never
 save compiler entries that trusted runs consume. Trusted main and manual CI
