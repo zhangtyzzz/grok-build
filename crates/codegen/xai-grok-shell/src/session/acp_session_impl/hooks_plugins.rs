@@ -1,5 +1,87 @@
 use super::*;
 
+/// Parse every hook contributed by active plugins, injecting the plugin-owned
+/// environment values required by their command adapters.
+///
+/// Session startup and the hooks/plugins reload paths must use this shared
+/// loader so a newly created session has the same plugin hooks as one that was
+/// reloaded from the Extensions modal.
+pub(super) fn plugin_hook_specs(
+    plugin_registry: &xai_grok_agent::plugins::PluginRegistry,
+) -> Vec<xai_grok_hooks::config::HookSpec> {
+    let mut specs = Vec::new();
+    for plugin in plugin_registry.active_plugins() {
+        if let Some(ref hooks_path) = plugin.hooks_path {
+            let (parsed, warnings) = xai_grok_agent::plugins::hooks_adapter::parse_plugin_hooks(
+                hooks_path,
+                &plugin.name,
+                &plugin.root_str(),
+                &plugin.data_dir_str(),
+            );
+            for warning in warnings {
+                tracing::warn!(plugin = %plugin.name, "{warning}");
+            }
+            specs.extend(parsed);
+        }
+        if let Some(ref inline_value) = plugin.inline_hooks {
+            let (parsed, warnings) =
+                xai_grok_agent::plugins::hooks_adapter::parse_plugin_hooks_from_value(
+                    inline_value,
+                    &plugin.name,
+                    &plugin.root_str(),
+                    &plugin.data_dir_str(),
+                );
+            for warning in warnings {
+                tracing::warn!(plugin = %plugin.name, "{warning}");
+            }
+            specs.extend(parsed);
+        }
+    }
+    specs
+}
+
+/// Merge active plugin hooks into a freshly discovered hook registry.
+pub(super) fn append_plugin_hooks(
+    hook_registry: &mut xai_grok_hooks::discovery::HookRegistry,
+    plugin_registry: &xai_grok_agent::plugins::PluginRegistry,
+) -> usize {
+    let specs = plugin_hook_specs(plugin_registry);
+    let count = specs.len();
+    hook_registry.append_specs(specs);
+    count
+}
+
+/// Replace the plugin-owned portion of a live or inherited hook registry.
+///
+/// Subagents inherit their parent's hooks, so startup must replace the
+/// `plugin/` namespace rather than append it a second time. The same operation
+/// also removes stale plugin hooks when a rebuilt registry has none.
+pub(super) fn reconcile_plugin_hooks(
+    hook_registry: &mut Option<Arc<xai_grok_hooks::discovery::HookRegistry>>,
+    plugin_registry: Option<&xai_grok_agent::plugins::PluginRegistry>,
+) -> usize {
+    let specs = plugin_registry.map(plugin_hook_specs).unwrap_or_default();
+    let count = specs.len();
+
+    if let Some(registry) = hook_registry.as_mut() {
+        let registry = Arc::make_mut(registry);
+        registry.remove_by_prefix("plugin/");
+        registry.append_specs(specs);
+    } else if !specs.is_empty() {
+        let mut registry = xai_grok_hooks::discovery::HookRegistry::default();
+        registry.append_specs(specs);
+        *hook_registry = Some(Arc::new(registry));
+    }
+
+    if hook_registry
+        .as_ref()
+        .is_some_and(|registry| registry.is_empty())
+    {
+        *hook_registry = None;
+    }
+    count
+}
+
 impl SessionActor {
     // ── Shared hook/plugin operation functions ────────────────────────
 
@@ -649,35 +731,8 @@ impl SessionActor {
         // Re-append plugin hooks from current plugin registry.
         // Clone the Arc out of the RefCell so the borrow is dropped immediately.
         let plugin_registry_snapshot = self.plugin_registry.borrow().clone();
-        if let Some(ref pr) = plugin_registry_snapshot {
-            for plugin in pr.active_plugins() {
-                if let Some(ref hooks_path) = plugin.hooks_path {
-                    let (specs, warnings) =
-                        xai_grok_agent::plugins::hooks_adapter::parse_plugin_hooks(
-                            hooks_path,
-                            &plugin.name,
-                            &plugin.root_str(),
-                            &plugin.data_dir_str(),
-                        );
-                    for w in &warnings {
-                        tracing::warn!("{w}");
-                    }
-                    registry.append_specs(specs);
-                }
-                if let Some(ref inline_value) = plugin.inline_hooks {
-                    let (specs, warnings) =
-                        xai_grok_agent::plugins::hooks_adapter::parse_plugin_hooks_from_value(
-                            inline_value,
-                            &plugin.name,
-                            &plugin.root_str(),
-                            &plugin.data_dir_str(),
-                        );
-                    for w in &warnings {
-                        tracing::warn!("{w}");
-                    }
-                    registry.append_specs(specs);
-                }
-            }
+        if let Some(ref plugin_registry) = plugin_registry_snapshot {
+            append_plugin_hooks(&mut registry, plugin_registry);
         }
         let hook_count = registry.len();
         {
@@ -846,54 +901,10 @@ impl SessionActor {
 
         // Reload hooks in the current session
         let t_hooks = std::time::Instant::now();
-        let mut hooks_reloaded = 0usize;
-        if let Some(ref new_registry) = new_registry_snapshot {
-            let mut new_specs = Vec::new();
-            for plugin in new_registry.active_plugins() {
-                // File-based hooks
-                if let Some(ref hooks_path) = plugin.hooks_path {
-                    let (specs, warnings) =
-                        xai_grok_agent::plugins::hooks_adapter::parse_plugin_hooks(
-                            hooks_path,
-                            &plugin.name,
-                            &plugin.root_str(),
-                            &plugin.data_dir_str(),
-                        );
-                    for w in &warnings {
-                        tracing::warn!("{w}");
-                    }
-                    new_specs.extend(specs);
-                }
-                // Inline hooks
-                if let Some(ref inline_value) = plugin.inline_hooks {
-                    let (specs, warnings) =
-                        xai_grok_agent::plugins::hooks_adapter::parse_plugin_hooks_from_value(
-                            inline_value,
-                            &plugin.name,
-                            &plugin.root_str(),
-                            &plugin.data_dir_str(),
-                        );
-                    for w in &warnings {
-                        tracing::warn!("{w}");
-                    }
-                    new_specs.extend(specs);
-                }
-            }
-            hooks_reloaded = new_specs.len();
-            {
-                let mut reg = self.hook_registry.borrow_mut();
-                if let Some(ref mut arc_reg) = *reg {
-                    let hook_reg = Arc::make_mut(arc_reg);
-                    hook_reg.remove_by_prefix("plugin/");
-                    hook_reg.append_specs(new_specs);
-                } else if !new_specs.is_empty() {
-                    let (mut new_reg, _) =
-                        xai_grok_hooks::discovery::load_hooks_from_sources(&[], &[]);
-                    new_reg.append_specs(new_specs);
-                    *reg = Some(Arc::new(new_reg));
-                }
-            }
-        }
+        let hooks_reloaded = {
+            let mut hook_registry = self.hook_registry.borrow_mut();
+            reconcile_plugin_hooks(&mut hook_registry, new_registry_snapshot.as_deref())
+        };
 
         xai_grok_telemetry::unified_log::info(
             "reload_plugins_impl: hooks done",
@@ -1046,5 +1057,93 @@ impl SessionActor {
         );
 
         (hooks_reloaded, mcp_changed, skill_count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reconcile_plugin_hooks;
+    use xai_grok_agent::plugins::discovery::{DiscoveredPlugin, PluginId};
+    use xai_grok_agent::plugins::manifest::PluginManifest;
+    use xai_grok_agent::plugins::{PluginOrigin, PluginRegistry, PluginScope};
+    use xai_grok_hooks::event::HookEventName;
+
+    #[test]
+    fn active_plugin_hooks_are_merged_into_initial_hook_registry() {
+        let temp_dir = tempfile::tempdir().expect("create temporary plugin directory");
+        let plugin_root = temp_dir.path().join("commit-reviewer");
+        let hooks_path = plugin_root.join("hooks/hooks.json");
+        std::fs::create_dir_all(
+            hooks_path
+                .parent()
+                .expect("hooks path has a parent directory"),
+        )
+        .expect("create hooks directory");
+        std::fs::write(
+            &hooks_path,
+            r#"{
+                "hooks": {
+                    "PostToolUse": [{
+                        "matcher": "run_terminal_command",
+                        "hooks": [{"type": "command", "command": "echo review"}]
+                    }]
+                }
+            }"#,
+        )
+        .expect("write plugin hook configuration");
+
+        let manifest = PluginManifest {
+            name: "commit-reviewer".to_string(),
+            version: None,
+            description: None,
+            author: None,
+            homepage: None,
+            repository: None,
+            license: None,
+            keywords: vec![],
+            skills: None,
+            commands: None,
+            agents: None,
+            hooks: None,
+            mcp_servers: None,
+            lsp_servers: None,
+        };
+        let plugin = DiscoveredPlugin {
+            id: PluginId::new(PluginScope::User, &plugin_root, "commit-reviewer"),
+            manifest,
+            root: plugin_root.clone(),
+            canonical_root: plugin_root.clone(),
+            scope: PluginScope::User,
+            origin: PluginOrigin::UserGrok,
+            trusted: true,
+            skill_dirs: vec![],
+            command_dirs: vec![],
+            agent_dirs: vec![],
+            hooks_path: Some(hooks_path),
+            mcp_config_path: None,
+            lsp_config_path: None,
+            conflict: None,
+        };
+        let plugin_registry =
+            PluginRegistry::from_discovered(vec![plugin], &[], &["commit-reviewer".to_string()]);
+        let mut hook_registry = None;
+        assert_eq!(
+            reconcile_plugin_hooks(&mut hook_registry, Some(&plugin_registry)),
+            1,
+            "the active plugin hook must be injected at session startup"
+        );
+        assert_eq!(
+            reconcile_plugin_hooks(&mut hook_registry, Some(&plugin_registry)),
+            1,
+            "an inherited plugin hook must be replaced instead of duplicated"
+        );
+        let hook_registry = hook_registry.expect("plugin-only hooks must create a registry");
+        let hooks = hook_registry.all_hooks();
+        assert_eq!(hooks.len(), 1);
+        let hook = hooks[0];
+        assert_eq!(hook.event, HookEventName::PostToolUse);
+        assert!(hook.name.starts_with("plugin/commit-reviewer/"));
+        let plugin_root = plugin_root.to_string_lossy().into_owned();
+        assert_eq!(hook.extra_env.get("GROK_PLUGIN_ROOT"), Some(&plugin_root));
     }
 }
