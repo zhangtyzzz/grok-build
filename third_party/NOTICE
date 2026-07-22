@@ -49,6 +49,17 @@ Version:    0.0.3
 crates.io:  https://crates.io/crates/ordered_hashmap/0.0.3
 
 --------------------------------------------------------------------------------
+smartstring
+--------------------------------------------------------------------------------
+Path:       third_party/smartstring/
+License:    Mozilla Public License 2.0 or later (MPL-2.0+)
+License file: third_party/smartstring/LICENCE.md
+Upstream:   https://github.com/bodil/smartstring
+Version:    1.0.1
+crates.io:  https://crates.io/crates/smartstring/1.0.1
+Local patch: disable the unstable allocator_api fast path on stable Rust 1.92
+
+--------------------------------------------------------------------------------
 End of notices for vendored third_party/ crates.
 
 Full product notices (all crates.io / git dependencies shipped with the Grok

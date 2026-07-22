@@ -753,8 +753,9 @@ fn dispatch_fork_inherits_appearance_sharing_and_plugin_visibility() {
             .slash_controller
             .registry()
             .get("usage")
-            .is_none()
+            .is_some()
     );
+    assert!(!new_agent.billing_surface_visible);
     assert_eq!(
         new_agent
             .credit_balance

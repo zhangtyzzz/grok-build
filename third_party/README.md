@@ -5,11 +5,12 @@ This directory holds **upstream source** vendored into the repository. It is
 
 ## Why vendor
 
-These crates sit on the path that renders **untrusted model output** (diagram
-source → SVG). Vendoring gives a full audit surface, pins exact source, and
-avoids crates.io yanks. Local patches and upgrade checklists live in each
-crate’s `Cargo.toml` header comments — treat those as the source of truth when
-re-vendoring.
+Most of these crates sit on the path that renders **untrusted model output**
+(diagram source → SVG). `smartstring` is vendored separately to keep Rhai
+workflows buildable on the pinned stable Linux toolchain. Vendoring gives a
+full audit surface, pins exact source, and avoids crates.io yanks. Local patches
+and upgrade checklists live in each crate’s `Cargo.toml` header comments — treat
+those as the source of truth when re-vendoring.
 
 ## Mermaid layout stack
 
@@ -32,6 +33,17 @@ xai-grok-mermaid
               └── ordered_hashmap
 ```
 
+## Workflow compatibility dependency
+
+| Crate | Version | License | Upstream | Full license text |
+|-------|---------|---------|----------|-------------------|
+| [`smartstring`](./smartstring/) | 1.0.1 | MPL-2.0+ | [bodil/smartstring](https://github.com/bodil/smartstring) | [`LICENCE.md`](./smartstring/LICENCE.md) |
+
+Rhai depends transitively on `smartstring`. The in-tree copy disables an
+upstream build-script probe that mistakes the presence of Rust's unstable
+`Allocator` trait for a usable stable API on Linux/Rust 1.92. String conversion
+therefore takes upstream's safe copying fallback instead of the zero-copy path.
+
 ## Notices and ancestry
 
 - **[`NOTICE`](./NOTICE)** — short index of the crates above (names, licenses,
@@ -44,9 +56,9 @@ vendored); grepping only for `LICENSE` will miss them.
 
 ## crates.io dependencies
 
-Normal Cargo dependencies (tokio, serde, …) are **not** under `third_party/`.
-They resolve via `Cargo.lock` / crates.io. Full attribution and license texts
-for the Grok CLI dependency closure are maintained in
+Other normal Cargo dependencies (tokio, serde, …) are **not** under
+`third_party/`. They resolve via `Cargo.lock` / crates.io. Full attribution and
+license texts for the Grok CLI dependency closure are maintained in
 [`THIRD-PARTY-NOTICES`](../THIRD-PARTY-NOTICES).
 
 This directory is only for **in-tree vendored** sources.

@@ -217,6 +217,7 @@ pub(super) fn plan_mode_edit_gate(
         | ToolInput::Monitor(_)
         | ToolInput::SchedulerCreate(_)
         | ToolInput::SchedulerDelete(_)
+        | ToolInput::Workflow(_)
         | ToolInput::UpdateGoal(_)
         | ToolInput::Dynamic(_) => PlanEditGate::RejectSideEffect,
     }
@@ -1867,6 +1868,33 @@ impl SessionActor {
                     .old_text(Some(String::new())),
                 )],
             ),
+            ToolInput::Workflow(ref w) => {
+                let script_name = |script: &str| -> Option<String> {
+                    let head = script.get(..600).unwrap_or(script);
+                    let rest = &head[head.find("name:")? + 5..];
+                    let rest = &rest[rest.find('"')? + 1..];
+                    Some(rest[..rest.find('"')?].to_string())
+                };
+                let inline_name = w.script.as_deref().and_then(script_name);
+                let title = if w.validate_only {
+                    match inline_name.or_else(|| w.name.clone()) {
+                        Some(n) => format!("Validating workflow '{n}'"),
+                        None => "Validating workflow script".to_string(),
+                    }
+                } else if w.script.is_some() {
+                    match inline_name {
+                        Some(n) => format!("Creating workflow '{n}'"),
+                        None => "Creating workflow".to_string(),
+                    }
+                } else if let Some(ref name) = w.name {
+                    format!("Workflow: {name}")
+                } else if w.resume_from_run_id.is_some() {
+                    "Workflow: resume run".to_string()
+                } else {
+                    "Workflow: launch script".to_string()
+                };
+                (title, acp::ToolKind::Other, vec![], vec![])
+            }
             ToolInput::UpdateGoal(ref ug) => {
                 let title = if ug.completed == Some(true) {
                     "Goal: marking complete".to_string()
@@ -2660,6 +2688,7 @@ impl SessionActor {
                 }
             }
             SamplingEvent::BackendToolCallStarted { call_id, name, .. } => {
+                self.signals_handle().record_tool_call(&name);
                 let (title, kind, raw_input) = backend_tool_display(&name);
                 self.send_update(
                     acp::SessionUpdate::ToolCall(
@@ -2684,6 +2713,7 @@ impl SessionActor {
                 result,
                 ..
             } => {
+                self.signals_handle().record_tool_success(&name);
                 let (title, _kind, _raw_input) = backend_tool_display(&name);
                 self.send_update(
                     acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
@@ -2954,6 +2984,7 @@ mod plan_mode_edit_gate_tests {
     #[test]
     fn commands_are_rejected_but_reads_remain_available() {
         use xai_grok_tools::implementations::BashToolInput;
+        use xai_grok_tools::implementations::grok_build::workflow::WorkflowToolInput;
         let t = active_tracker();
         assert_eq!(
             gate(
@@ -2967,6 +2998,22 @@ mod plan_mode_edit_gate_tests {
             ),
             PlanEditGate::RejectSideEffect,
             "bash is fail-closed because shell redirection can mutate files"
+        );
+        assert_eq!(
+            gate(
+                &t,
+                &ToolInput::Workflow(WorkflowToolInput {
+                    agent_budget: None,
+                    name: Some("review".into()),
+                    script: None,
+                    script_path: None,
+                    args: None,
+                    resume_from_run_id: None,
+                    validate_only: false,
+                })
+            ),
+            PlanEditGate::RejectSideEffect,
+            "workflow launches can spawn agents and must stay disabled in Plan Mode"
         );
         assert_eq!(
             gate(
@@ -3153,34 +3200,50 @@ mod wait_interrupt_tests {
     #[test]
     fn blocking_wait_guard_counts_and_restores_on_drop() {
         use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let depth = Arc::new(AtomicUsize::new(0));
+        let depth = Arc::new(crate::tools::tool_context::BlockingWaitState::new());
         {
             let _g1 = BlockingWaitGuard::enter(depth.clone());
-            assert_eq!(depth.load(Ordering::SeqCst), 1);
+            assert_eq!(depth.depth(), 1);
             {
                 let _g2 = BlockingWaitGuard::enter(depth.clone());
-                assert_eq!(depth.load(Ordering::SeqCst), 2);
+                assert_eq!(depth.depth(), 2);
             }
-            assert_eq!(depth.load(Ordering::SeqCst), 1);
+            assert_eq!(depth.depth(), 1);
         }
-        assert_eq!(depth.load(Ordering::SeqCst), 0, "drop must restore");
+        assert_eq!(depth.depth(), 0, "drop must restore");
     }
     /// An aborted wait future must not leak the depth count.
     #[tokio::test(start_paused = true)]
     async fn blocking_wait_guard_decrements_when_future_aborted() {
         use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let depth = Arc::new(AtomicUsize::new(0));
+        let depth = Arc::new(crate::tools::tool_context::BlockingWaitState::new());
         let inner = depth.clone();
         let task = tokio::spawn(async move {
             let _g = BlockingWaitGuard::enter(inner);
             tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
         });
         tokio::task::yield_now().await;
-        assert_eq!(depth.load(Ordering::SeqCst), 1);
+        assert_eq!(depth.depth(), 1);
         task.abort();
         let _ = task.await;
-        assert_eq!(depth.load(Ordering::SeqCst), 0, "abort must not leak");
+        assert_eq!(depth.depth(), 0, "abort must not leak");
+    }
+    #[test]
+    fn blocking_wait_guard_reset_is_generation_scoped() {
+        use std::sync::Arc;
+        let depth = Arc::new(crate::tools::tool_context::BlockingWaitState::new());
+        let old = BlockingWaitGuard::enter(depth.clone());
+        assert_eq!(depth.depth(), 1);
+        depth.reset();
+        let new = BlockingWaitGuard::enter(depth.clone());
+        assert_eq!(depth.depth(), 1);
+        drop(old);
+        assert_eq!(
+            depth.depth(),
+            1,
+            "old-generation drop must not consume the new wait"
+        );
+        drop(new);
+        assert_eq!(depth.depth(), 0);
     }
 }
