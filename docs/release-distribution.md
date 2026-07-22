@@ -211,9 +211,10 @@ both smaller and able to skip compilation entirely.
 After a push to `main` passes the `CI` workflow, `Automatic release` checks the
 four lockstepped package versions and whether their version tag already exists.
 For a new version, it calls `Warm release build cache` with the exact validated
-main commit. The six native jobs build that commit and save only each final
-executable and its build attestation under a key containing the target, Rust
-version, `Cargo.lock` hash, and full commit SHA. Once every warmup succeeds, the
+main commit. The six native jobs build that commit and save each final
+executable, its build attestation, and the exact checksum-pinned bundled-tool
+inputs under a key containing the target, Rust version, `Cargo.lock` hash, and
+full commit SHA. Once every warmup succeeds, the
 workflow rechecks that `main` still points to the warmed commit, creates an
 annotated version tag, and dispatches the normal `Release` workflow on that
 tag. The explicit dispatch is required because GitHub suppresses recursive
@@ -224,13 +225,14 @@ are successful no-ops.
 
 `Warm release build cache` remains manually dispatchable from `main` for
 recovery and diagnostics. The tag workflow restores the exact cache entry from
-the default branch and skips Rust compilation on a hit. Packaging still
-recreates the checksum-pinned bundled tools and verifies their identities, the
-binary hash, source commit, target, and build attestation before smoke tests and
-provenance generation. A miss or cache-service failure falls back to the normal
-native build. Neither workflow archives the workspace's potentially very large
-`target/` directory; only the small staged executable and attestation are saved
-for release reuse.
+the default branch and skips Rust compilation and bundled-tool preparation on
+a hit. It revalidates the cached tools' formats and versions, then packaging
+verifies their hashes against the build attestation together with the binary
+hash, source commit, and target before smoke tests and provenance generation. A
+miss or cache-service failure falls back to the normal native build. Neither
+workflow archives the workspace's potentially very large general-purpose
+`target/` directory; only the staged release executable, attestation, and its
+exact tool inputs are saved for release reuse.
 
 Pull requests may restore default-branch Cargo and compiler caches but never
 save compiler entries that trusted runs consume. Trusted main and manual CI

@@ -68,6 +68,13 @@ if MACOSX_DEPLOYMENT_TARGET=not-a-version \
     echo "invalid macOS deployment target unexpectedly passed" >&2
     exit 1
 fi
+if bash "$HERE/prepare-release-tools.sh" \
+    --target aarch64-apple-darwin \
+    --output-dir "$TEST_ROOT/incomplete-cached-tools" \
+    --reuse-existing >/dev/null 2>&1; then
+    echo "incomplete cached release tools unexpectedly passed" >&2
+    exit 1
+fi
 
 FAKE_BINARY="$TEST_ROOT/fake-grok"
 printf '#!/usr/bin/env sh\nexit 0\n' >"$FAKE_BINARY"
