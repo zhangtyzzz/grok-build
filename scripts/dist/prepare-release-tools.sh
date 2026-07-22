@@ -11,7 +11,7 @@ Prepare checksum-pinned protoc and target-native search tools for a release buil
 
 Usage:
   prepare-release-tools.sh --target TARGET --output-dir DIR [--github-env FILE]
-                           [--protoc-only]
+                           [--protoc-only] [--reuse-existing]
 EOF
 }
 
@@ -85,6 +85,7 @@ TARGET=""
 OUTPUT_DIR=""
 GITHUB_ENV_FILE=""
 PROTOC_ONLY=false
+REUSE_EXISTING=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --target)
@@ -104,6 +105,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --protoc-only)
             PROTOC_ONLY=true
+            shift
+            ;;
+        --reuse-existing)
+            REUSE_EXISTING=true
             shift
             ;;
         -h|--help)
@@ -132,6 +137,77 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
+
+if [[ "$REUSE_EXISTING" == true ]]; then
+    PROTOC_VERSION="$(json_field protoc.version)"
+    PROTOC_NAME="protoc"
+    RG_NAME="rg"
+    if [[ "$TARGET" == *-windows-msvc ]]; then
+        PROTOC_NAME="protoc.exe"
+        RG_NAME="rg.exe"
+    fi
+    PROTOC_OUTPUT="$OUTPUT_DIR/protoc/bin/$PROTOC_NAME"
+    [[ -x "$PROTOC_OUTPUT" ]] || die "cached $PROTOC_NAME is missing or not executable"
+    [[ -d "$OUTPUT_DIR/protoc/include" ]] || die "cached protobuf includes are missing"
+    PROTOC_ACTUAL_VERSION="$("$PROTOC_OUTPUT" --version)"
+    PROTOC_ACTUAL_VERSION="${PROTOC_ACTUAL_VERSION%$'\r'}"
+    [[ "$PROTOC_ACTUAL_VERSION" == "libprotoc $PROTOC_VERSION" ]] ||
+        die "unexpected cached protoc version: $PROTOC_ACTUAL_VERSION"
+    append_path_env PROTOC "$PROTOC_OUTPUT"
+
+    if [[ "$PROTOC_ONLY" == true ]]; then
+        printf '%s\n' "$PROTOC_ACTUAL_VERSION"
+        exit 0
+    fi
+
+    RG_VERSION="$(json_field ripgrep.version)"
+    RG_OUTPUT="$OUTPUT_DIR/$RG_NAME"
+    [[ -x "$RG_OUTPUT" ]] || die "cached $RG_NAME is missing or not executable"
+    node "$HERE/artifact-format.mjs" "$TARGET" "$RG_OUTPUT"
+    append_path_env GROK_TOOLS_BUNDLE_RG_PATH "$RG_OUTPUT"
+    append_env GROK_TOOLS_BUNDLE_RG_VERSION "$RG_VERSION"
+
+    RG_ACTUAL_VERSION="$("$RG_OUTPUT" --version)"
+    RG_VERSION_LINE="${RG_ACTUAL_VERSION%%$'\n'*}"
+    RG_VERSION_LINE="${RG_VERSION_LINE%$'\r'}"
+    [[ "$RG_VERSION_LINE" == "ripgrep $RG_VERSION"* ]] ||
+        die "unexpected cached ripgrep version: $RG_VERSION_LINE"
+
+    printf '%s\n' "$PROTOC_ACTUAL_VERSION"
+    printf '%s\n' "$RG_ACTUAL_VERSION"
+    if [[ "$TARGET" != *-windows-msvc ]]; then
+        BFS_VERSION="$(json_field bfs.version)"
+        BFS_OUTPUT="$OUTPUT_DIR/bfs"
+        [[ -x "$BFS_OUTPUT" ]] || die "cached bfs is missing or not executable"
+        node "$HERE/artifact-format.mjs" "$TARGET" "$BFS_OUTPUT"
+        append_path_env GROK_TOOLS_BUNDLE_BFS_PATH "$BFS_OUTPUT"
+        append_env GROK_TOOLS_BUNDLE_BFS_VERSION "$BFS_VERSION"
+
+        UGREP_VERSION="$(json_field ugrep.version)"
+        UGREP_OUTPUT="$OUTPUT_DIR/ugrep"
+        [[ -x "$UGREP_OUTPUT" ]] || die "cached ugrep is missing or not executable"
+        node "$HERE/artifact-format.mjs" "$TARGET" "$UGREP_OUTPUT"
+        append_path_env GROK_TOOLS_BUNDLE_UGREP_PATH "$UGREP_OUTPUT"
+        append_env GROK_TOOLS_BUNDLE_UGREP_VERSION "$UGREP_VERSION"
+
+        BFS_ACTUAL_VERSION="$("$BFS_OUTPUT" --version)"
+        BFS_VERSION_LINE="${BFS_ACTUAL_VERSION%%$'\n'*}"
+        BFS_VERSION_LINE="${BFS_VERSION_LINE%$'\r'}"
+        [[ "$BFS_VERSION_LINE" == "bfs $BFS_VERSION" ]] ||
+            die "unexpected cached bfs version: $BFS_VERSION_LINE"
+
+        UGREP_ACTUAL_VERSION="$("$UGREP_OUTPUT" --version)"
+        UGREP_VERSION_LINE="${UGREP_ACTUAL_VERSION%%$'\n'*}"
+        UGREP_VERSION_LINE="${UGREP_VERSION_LINE%$'\r'}"
+        [[ "$UGREP_VERSION_LINE" == "ugrep $UGREP_VERSION "* ]] ||
+            die "unexpected cached ugrep version: $UGREP_VERSION_LINE"
+
+        printf '%s\n' "$BFS_ACTUAL_VERSION"
+        printf '%s\n' "$UGREP_ACTUAL_VERSION"
+    fi
+    exit 0
+fi
+
 TEMP_ROOT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 if command -v cygpath >/dev/null 2>&1 && [[ "$TEMP_ROOT" =~ ^[A-Za-z]:[\\/].* ]]; then
     TEMP_ROOT="$(cygpath -u "$TEMP_ROOT")"

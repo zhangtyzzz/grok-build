@@ -1,0 +1,156 @@
+name: Publish release (warm, tag, Release)
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: automatic-release
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    name: Detect unreleased main version
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.release.outputs.commit }}
+      tag: ${{ steps.release.outputs.tag }}
+      should_release: ${{ steps.release.outputs.should_release }}
+    steps:
+      - name: Check out the validated main commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Detect a missing version tag
+        id: release
+        shell: bash
+        env:
+          REQUESTED_COMMIT: ${{ github.sha }}
+          REQUESTED_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          test "$REQUESTED_REF" = refs/heads/main || {
+            echo "release publication must be dispatched from main" >&2
+            exit 1
+          }
+          checkout_commit="$(git rev-parse HEAD)"
+          test "$checkout_commit" = "$REQUESTED_COMMIT" || {
+            echo "checkout $checkout_commit does not match requested commit $REQUESTED_COMMIT" >&2
+            exit 1
+          }
+
+          current_main="$(git ls-remote origin refs/heads/main | awk '{ print $1 }')"
+          test -n "$current_main"
+          test "$current_main" = "$REQUESTED_COMMIT" || {
+            echo "main advanced to $current_main; dispatch the release workflow again" >&2
+            exit 1
+          }
+
+          version=""
+          for manifest in \
+            crates/codegen/xai-grok-pager-bin/Cargo.toml \
+            crates/codegen/xai-grok-pager/Cargo.toml \
+            crates/codegen/xai-grok-shell/Cargo.toml \
+            crates/codegen/xai-grok-version/Cargo.toml; do
+            package_version="$(awk -F '"' '/^version = / { print $2; exit }' "$manifest")"
+            test -n "$package_version"
+            if [[ -z "$version" ]]; then
+              version="$package_version"
+            else
+              test "$version" = "$package_version" || {
+                echo "release versions are not lockstepped: $manifest has $package_version, expected $version" >&2
+                exit 1
+              }
+            fi
+          done
+          tag="v$version"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || \
+             "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)\.[0-9]+$ ]] || {
+            echo "unsupported release tag: $tag" >&2
+            exit 1
+          }
+
+          should_release=true
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "$tag already exists; this main commit does not need a release"
+            should_release=false
+          fi
+          {
+            echo "commit=$REQUESTED_COMMIT"
+            echo "tag=$tag"
+            echo "should_release=$should_release"
+          } >>"$GITHUB_OUTPUT"
+
+  warm:
+    name: Warm exact release binaries
+    needs: metadata
+    if: needs.metadata.outputs.should_release == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-cache.yml
+    with:
+      commit: ${{ needs.metadata.outputs.commit }}
+
+  tag:
+    name: Create release tag and start publication
+    needs:
+      - metadata
+      - warm
+    if: needs.metadata.outputs.should_release == 'true'
+    runs-on: ubuntu-22.04
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - name: Create annotated tag for the warmed commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          current_main="$(gh api "repos/$GH_REPO/commits/main" --jq .sha)"
+          if [[ "$current_main" != "$RELEASE_COMMIT" ]]; then
+            echo "main advanced to $current_main; a newer successful CI run will release it"
+            exit 0
+          fi
+          if gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "$RELEASE_TAG already exists"
+            exit 0
+          fi
+
+          tag_object="$(
+            gh api --method POST "repos/$GH_REPO/git/tags" \
+              --raw-field tag="$RELEASE_TAG" \
+              --raw-field message="Release $RELEASE_TAG" \
+              --raw-field object="$RELEASE_COMMIT" \
+              --raw-field type=commit \
+              --jq .sha
+          )"
+          current_main="$(gh api "repos/$GH_REPO/commits/main" --jq .sha)"
+          if [[ "$current_main" != "$RELEASE_COMMIT" ]]; then
+            echo "main advanced while preparing $RELEASE_TAG; leaving the unattached tag object unused"
+            exit 0
+          fi
+          if gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "$RELEASE_TAG was created by another run"
+            exit 0
+          fi
+          gh api --method POST "repos/$GH_REPO/git/refs" \
+            --raw-field ref="refs/tags/$RELEASE_TAG" \
+            --raw-field sha="$tag_object" >/dev/null
+          echo "created $RELEASE_TAG for $RELEASE_COMMIT"
+          gh workflow run release.yml \
+            --repo "$GH_REPO" \
+            --ref "$RELEASE_TAG" \
+            --field version="${RELEASE_TAG#v}" \
+            --field publish=true
+          echo "dispatched Release for $RELEASE_TAG"

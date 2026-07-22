@@ -27,6 +27,15 @@ rules.
 - Do not commit, push, publish, or update generated notices unless explicitly
   requested.
 
+## Releases
+
+- Do not create or push a release tag directly. When publication is explicitly
+  requested and `main` is ready, manually dispatch
+  `Publish release (warm, tag, Release)` from `main`; it warms the exact release
+  inputs before creating the version tag and starting `Release`.
+- Ordinary pushes and pull-request merges must not publish a release. See
+  `docs/release-distribution.md` for recovery and verification details.
+
 ## Architecture boundaries
 
 - `xai-grok-pager-bin` is the composition root and executable entry point.
