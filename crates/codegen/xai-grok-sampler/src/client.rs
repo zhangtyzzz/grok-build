@@ -73,6 +73,55 @@ impl GrokRequestHeaders<'_> {
     }
 }
 
+/// Return true for liveness-only Responses API SSE events that are not part of
+/// the standard `ResponseStreamEvent` schema.
+///
+/// Some OpenAI-compatible proxies send `data: {"type":"keepalive"}` while a
+/// model is idle; others use the SSE `event: keepalive` field. Absorb both
+/// forms before typed deserialization so they keep the HTTP connection alive
+/// without failing the model turn. The substring guard avoids parsing every
+/// normal Responses event twice.
+fn is_responses_keepalive_event(event_name: &str, data: &str) -> bool {
+    if event_name.trim() == "keepalive" {
+        return true;
+    }
+    if !data.contains("keepalive") {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(data)
+        .ok()
+        .is_some_and(|value| {
+            value.get("type").and_then(serde_json::Value::as_str) == Some("keepalive")
+        })
+}
+
+/// Return true when a Chat Completions SSE chunk carries the non-standard
+/// `error_finish` finish reason used by some OpenAI-compatible proxies.
+///
+/// Treat this as a server-side stream failure before typed deserialization;
+/// otherwise the closed `FinishReason` enum turns it into a non-retryable
+/// serialization error. The substring guard avoids parsing normal chunks
+/// twice, while the structural check avoids matching model text.
+fn is_chat_completion_error_finish(data: &str) -> bool {
+    if !data.contains("error_finish") {
+        return false;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
+        return false;
+    };
+    value
+        .get("choices")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|choices| {
+            choices.iter().any(|choice| {
+                choice
+                    .get("finish_reason")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("error_finish")
+            })
+        })
+}
+
 /// Parse the `Retry-After` response header as delta-seconds.
 /// Our inference backends only emit integer seconds (never HTTP-date),
 /// so we only handle that form. HTTP-dates silently return `None` and
@@ -969,6 +1018,11 @@ impl SamplingClient {
 
                         if let Some(stream_error) = try_parse_stream_error(data) {
                             Some(Err(stream_error))
+                        } else if is_chat_completion_error_finish(data) {
+                            Some(Err(SamplingError::StreamError {
+                                error_type: "error_finish".to_string(),
+                                message: "Chat completion ended with error_finish".to_string(),
+                            }))
                         } else {
                             Some(
                                 serde_json::from_str::<ChatCompletionChunk>(data).map_err(|e| {
@@ -1303,8 +1357,8 @@ impl SamplingClient {
 
         let doom_loop_for_stream = doom_loop.clone();
 
-        // The scan item is an `Option`: `Some(None)` skips an absorbed
-        // doom-loop event without terminating the stream (`filter_map`
+        // The scan item is an `Option`: `Some(None)` skips a liveness-only or
+        // absorbed control event without terminating the stream (`filter_map`
         // below), while an outer `None` still ends it.
         let events = event_stream
             .scan(false, move |had_transport_error, event_res| {
@@ -1318,29 +1372,33 @@ impl SamplingClient {
                             return std::future::ready(None);
                         }
 
-                        tracing::info!(
-                            target: crate::sampling_log::TARGET,
-                            event = "sse_chunk",
-                            backend = "responses",
-                            data = %data,
-                        );
-
-                        // Intercept the non-standard doom-loop event before
-                        // typed deserialization; async-openai's event enum
-                        // does not know it and would fail to parse it. With
-                        // the check disabled, the shared name-or-payload-type
-                        // predicate guards against a server emitting it
-                        // despite no opt-in (rollout skew), named or not.
-                        let swallow = match &doom_loop_for_stream {
-                            Some(collector) => collector.absorb(&event.event, data),
-                            None => is_check_event(&event.event, data),
-                        };
-                        if swallow {
+                        if is_responses_keepalive_event(&event.event, data) {
                             Some(None)
-                        } else if let Some(stream_error) = try_parse_stream_error(data) {
-                            Some(Some(Err(stream_error)))
                         } else {
-                            Some(Some(deserialize_response_event(data)))
+                            tracing::info!(
+                                target: crate::sampling_log::TARGET,
+                                event = "sse_chunk",
+                                backend = "responses",
+                                data = %data,
+                            );
+
+                            // Intercept the non-standard doom-loop event before
+                            // typed deserialization; async-openai's event enum
+                            // does not know it and would fail to parse it. With
+                            // the check disabled, the shared name-or-payload-type
+                            // predicate guards against a server emitting it
+                            // despite no opt-in (rollout skew), named or not.
+                            let swallow = match &doom_loop_for_stream {
+                                Some(collector) => collector.absorb(&event.event, data),
+                                None => is_check_event(&event.event, data),
+                            };
+                            if swallow {
+                                Some(None)
+                            } else if let Some(stream_error) = try_parse_stream_error(data) {
+                                Some(Some(Err(stream_error)))
+                            } else {
+                                Some(Some(deserialize_response_event(data)))
+                            }
                         }
                     }
                     Err(e) => {
@@ -1943,6 +2001,49 @@ mod tests {
             doom_loop_recovery: None,
             header_injector: None,
         }
+    }
+
+    #[test]
+    fn responses_keepalive_detection_accepts_sse_name_and_payload_type() {
+        assert!(is_responses_keepalive_event("keepalive", "{}"));
+        assert!(is_responses_keepalive_event(
+            "message",
+            r#"{"type":"keepalive"}"#
+        ));
+    }
+
+    #[test]
+    fn responses_keepalive_detection_preserves_standard_and_unknown_events() {
+        assert!(!is_responses_keepalive_event(
+            "message",
+            r#"{"type":"response.output_text.delta","delta":"keepalive"}"#
+        ));
+        assert!(!is_responses_keepalive_event(
+            "message",
+            r#"{"type":"future.event"}"#
+        ));
+        assert!(!is_responses_keepalive_event("message", "not json"));
+    }
+
+    #[test]
+    fn chat_completion_error_finish_detection_accepts_finish_reason() {
+        assert!(is_chat_completion_error_finish(
+            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"error_finish"}]}"#
+        ));
+        assert!(is_chat_completion_error_finish(
+            r#"{"choices":[{"finish_reason":null},{"finish_reason":"error_finish"}]}"#
+        ));
+    }
+
+    #[test]
+    fn chat_completion_error_finish_detection_preserves_content_and_other_reasons() {
+        assert!(!is_chat_completion_error_finish(
+            r#"{"choices":[{"delta":{"content":"error_finish"},"finish_reason":null}]}"#
+        ));
+        assert!(!is_chat_completion_error_finish(
+            r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#
+        ));
+        assert!(!is_chat_completion_error_finish("not json"));
     }
 
     /// Verify the serialized shape of StreamingChatRequest matches the
