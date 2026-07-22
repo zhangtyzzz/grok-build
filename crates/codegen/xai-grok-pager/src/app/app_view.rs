@@ -5761,7 +5761,8 @@ pub(crate) mod tests {
         );
         let mut delivered = false;
         for _ in 0..1000 {
-            if app.tick() && app.agents[&id].prompt.history_search.result_count() == 2 {
+            app.tick();
+            if app.agents[&id].prompt.history_search.result_count() == 2 {
                 delivered = true;
                 break;
             }
