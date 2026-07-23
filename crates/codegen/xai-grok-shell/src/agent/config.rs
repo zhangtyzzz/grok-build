@@ -1002,10 +1002,20 @@ pub struct CliConfig {
     pub worktree_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_registry: Option<bool>,
-    /// User-layer value; use [`crate::util::config::resolve_minimum_version`]
-    /// for enforcement (semver-max across layers; managed floors can't be lowered).
+    /// Env `GROK_MINIMUM_VERSION`. See [`crate::util::config::VersionPolicy`] for
+    /// the version-policy knobs. (Unrelated to
+    /// `version_overrides[].maximum_version`, which gates config patches.)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub minimum_version: Option<String>,
+    /// Env `GROK_MAXIMUM_VERSION`. See [`crate::util::config::VersionPolicy`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maximum_version: Option<String>,
+    /// Env `GROK_REQUIRED_MINIMUM_VERSION`. See [`crate::util::config::VersionPolicy`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_minimum_version: Option<String>,
+    /// Env `GROK_REQUIRED_MAXIMUM_VERSION`. See [`crate::util::config::VersionPolicy`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_maximum_version: Option<String>,
     /// Group sessions by repo in the picker and CLI listings.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_picker_grouped: Option<bool>,
@@ -1416,6 +1426,19 @@ pub struct PermissionKnownKeys {
     /// Verbose `[[permission.rules]]` form.
     pub rules: Option<toml::Value>,
 }
+/// `[shell_environment_policy]` known keys, for the unrecognized-key scan only;
+/// the value is parsed at spawn by [`crate::util::config::resolve_shell_env_policy`].
+/// `Option<toml::Value>` (no `deny_unknown_fields`) keeps a typo a warning, not a
+/// load failure, like [`PermissionKnownKeys`].
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct ShellEnvironmentPolicyKnownKeys {
+    pub inherit: Option<toml::Value>,
+    pub ignore_default_excludes: Option<toml::Value>,
+    pub exclude: Option<toml::Value>,
+    pub set: Option<toml::Value>,
+    pub include_only: Option<toml::Value>,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
     pub features: Features,
@@ -1474,6 +1497,9 @@ pub struct Config {
     pub ui: UiConfig,
     #[serde(default)]
     pub toolset: ShellToolsetConfig,
+    /// Validation only; the value is parsed at spawn by `resolve_shell_env_policy`.
+    #[serde(default, skip_serializing)]
+    pub shell_environment_policy: ShellEnvironmentPolicyKnownKeys,
     #[serde(default)]
     pub endpoints: EndpointsConfig,
     #[serde(default)]
@@ -1901,6 +1927,7 @@ impl Default for Config {
             hints: None,
             ui: UiConfig::default(),
             toolset: ShellToolsetConfig::default(),
+            shell_environment_policy: ShellEnvironmentPolicyKnownKeys::default(),
             endpoints,
             telemetry: TelemetryConfig::default(),
             session: SessionConfig::default(),
@@ -2846,6 +2873,17 @@ impl Config {
             self.remote_settings
                 .as_ref()
                 .and_then(|s| s.image_gen_model_override.as_deref()),
+        )
+        .map(|r| r.value)
+    }
+    pub(crate) fn resolve_image_edit_model_override(&self) -> Option<String> {
+        resolve_string_flag(
+            None,
+            "GROK_IMAGE_EDIT_MODEL_OVERRIDE",
+            self.features.image_edit_model_override.as_deref(),
+            self.remote_settings
+                .as_ref()
+                .and_then(|s| s.image_edit_model_override.as_deref()),
         )
         .map(|r| r.value)
     }
@@ -4315,6 +4353,10 @@ pub struct ConfigModelOverride {
     pub prompt_cache: Option<PromptCachePolicy>,
     #[serde(default)]
     pub extra_headers: IndexMap<String, String>,
+    #[serde(default)]
+    pub query_params: IndexMap<String, String>,
+    #[serde(default)]
+    pub env_http_headers: IndexMap<String, String>,
     pub context_window: Option<u64>,
     /// Per-model auto-compact threshold override (0-100) from `[model.<id>]`.
     /// Read directly by `resolve_auto_compact_threshold_percent`; intentionally
@@ -4397,6 +4439,12 @@ impl ConfigModelOverride {
             } else {
                 entry.info.extra_headers = self.extra_headers.clone();
             }
+        }
+        if !self.query_params.is_empty() {
+            entry.info.query_params = self.query_params.clone();
+        }
+        if !self.env_http_headers.is_empty() {
+            entry.info.env_http_headers = self.env_http_headers.clone();
         }
         if let Some(cw) = self.context_window.and_then(NonZeroU64::new) {
             entry.info.context_window = cw;
@@ -4498,6 +4546,10 @@ pub struct ModelInfo {
     pub prompt_cache: PromptCachePolicy,
     pub auth_scheme: AuthScheme,
     pub extra_headers: IndexMap<String, String>,
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub query_params: IndexMap<String, String>,
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub env_http_headers: IndexMap<String, String>,
     pub context_window: NonZeroU64,
     /// Per-model auto-compact threshold (0-100). `None` defers to the
     /// global / default tiers in `resolve_auto_compact_threshold_percent`.
@@ -4565,6 +4617,8 @@ impl ModelInfo {
             prompt_cache: PromptCachePolicy::default(),
             auth_scheme: Default::default(),
             extra_headers: IndexMap::new(),
+            query_params: IndexMap::new(),
+            env_http_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
@@ -4602,6 +4656,8 @@ impl ModelInfo {
             prompt_cache: entry.prompt_cache,
             auth_scheme: entry.auth_scheme.unwrap_or_default(),
             extra_headers: entry.extra_headers.clone(),
+            query_params: IndexMap::new(),
+            env_http_headers: IndexMap::new(),
             context_window: entry.context_window,
             auto_compact_threshold_percent: entry.auto_compact_threshold_percent,
             system_prompt_label: entry.system_prompt_label.clone(),
@@ -5022,6 +5078,8 @@ pub struct Features {
     /// (`image_gen_model_override`) / env / default (`grok-imagine-image-quality`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_gen_model_override: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_edit_model_override: Option<String>,
     /// Write file tool. `None` = defer to remote settings / env / default (true).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub write_file: Option<bool>,
@@ -5505,6 +5563,8 @@ pub fn resolve_aux_model_sampling_config(
                 prompt_cache: Default::default(),
                 auth_scheme: Default::default(),
                 extra_headers: IndexMap::new(),
+                query_params: IndexMap::new(),
+                env_http_headers: IndexMap::new(),
                 context_window: NonZeroU64::new(200_000).unwrap(),
                 auto_compact_threshold_percent: None,
                 system_prompt_label: None,
@@ -5655,6 +5715,8 @@ pub fn sampling_config_for_model(
         api_backend,
         auth_scheme: credentials.auth_scheme,
         extra_headers,
+        query_params: info.query_params.clone(),
+        env_http_headers: info.env_http_headers.clone(),
         context_window: info.context_window.get(),
         client_version,
         reasoning_effort: info.reasoning_effort,
@@ -5752,6 +5814,8 @@ fn resolve_hidden_default_web_search_sampling_config(
             prompt_cache: Default::default(),
             auth_scheme: Default::default(),
             extra_headers: IndexMap::new(),
+            query_params: IndexMap::new(),
+            env_http_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
@@ -6699,6 +6763,7 @@ model = "anonymous-helper"
                 args: None,
                 token_ttl_secs: Some(3600),
                 timeout_secs: None,
+                cwd: None,
             },
         );
         let mut entry = test_model_entry("m", "https://litellm.example/v1", None, None, None);
@@ -6785,6 +6850,7 @@ model = "anonymous-helper"
                 args: None,
                 token_ttl_secs: Some(3600),
                 timeout_secs: None,
+                cwd: None,
             },
         );
         let mut entry = test_model_entry("m", "https://litellm.example/v1", None, None, None);
@@ -6943,6 +7009,35 @@ model = "anonymous-helper"
         );
     }
     #[test]
+    fn shell_environment_policy_typo_does_not_fail_config() {
+        let cfg: toml::Value = toml::from_str(
+            r#"
+            [shell_environment_policy]
+            inhert = "core"
+            exclude = 123
+            "#,
+        )
+        .unwrap();
+        Config::new_from_toml_cfg(&cfg).expect("a policy typo must not fail the config");
+    }
+    #[test]
+    fn shell_environment_policy_known_keys_track_the_policy_struct() {
+        let xai_grok_tools::util::ShellEnvironmentPolicy {
+            inherit: _,
+            ignore_default_excludes: _,
+            exclude: _,
+            set: _,
+            include_only: _,
+        } = xai_grok_tools::util::ShellEnvironmentPolicy::default();
+        let ShellEnvironmentPolicyKnownKeys {
+            inherit: _,
+            ignore_default_excludes: _,
+            exclude: _,
+            set: _,
+            include_only: _,
+        } = ShellEnvironmentPolicyKnownKeys::default();
+    }
+    #[test]
     fn web_search_disable_api_key_auth_swaps_first_party_key_for_session() {
         let endpoints = EndpointsConfig::default();
         let mut models = IndexMap::new();
@@ -7017,6 +7112,7 @@ model = "anonymous-helper"
                 args: Some(vec!["--scope".into(), "corp".into()]),
                 token_ttl_secs: Some(3600),
                 timeout_secs: Some(10),
+                cwd: None,
             })
         );
         let resolved = resolve_model_list(&cfg, None);
@@ -7108,6 +7204,7 @@ model = "anonymous-helper"
                 args: None,
                 token_ttl_secs: Some(3600),
                 timeout_secs: None,
+                cwd: None,
             },
         );
         model.auth_provider = Some(provider.clone());
@@ -7134,6 +7231,7 @@ model = "anonymous-helper"
                 args: None,
                 token_ttl_secs: Some(3600),
                 timeout_secs: None,
+                cwd: None,
             },
         );
         model.auth_provider = Some(provider.clone());
@@ -7178,6 +7276,7 @@ model = "anonymous-helper"
                 args: None,
                 token_ttl_secs: None,
                 timeout_secs: None,
+                cwd: None,
             },
         );
         let resolved = resolve_model_list(&cfg, Some(prefetched));
@@ -7233,6 +7332,8 @@ model = "anonymous-helper"
                 prompt_cache: Default::default(),
                 auth_scheme: Default::default(),
                 extra_headers: IndexMap::new(),
+                query_params: IndexMap::new(),
+                env_http_headers: IndexMap::new(),
                 context_window: NonZeroU64::new(200_000).unwrap(),
                 auto_compact_threshold_percent: None,
                 system_prompt_label: None,
@@ -10290,6 +10391,40 @@ model = "anonymous-helper"
     }
     #[test]
     #[serial]
+    fn resolve_image_edit_model_override_remote_settings_or_config() {
+        unsafe { std::env::remove_var("GROK_IMAGE_EDIT_MODEL_OVERRIDE") };
+        let with = |config: Option<&str>, gb: Option<&str>| Config {
+            features: Features {
+                image_edit_model_override: config.map(String::from),
+                ..Default::default()
+            },
+            remote_settings: Some(crate::util::config::RemoteSettings {
+                image_edit_model_override: gb.map(String::from),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(Config::default().resolve_image_edit_model_override(), None);
+        assert_eq!(
+            with(None, Some("grok-imagine-image")).resolve_image_edit_model_override(),
+            Some("grok-imagine-image".to_owned())
+        );
+        assert_eq!(
+            with(Some("grok-imagine-image-pro"), Some("grok-imagine-image"))
+                .resolve_image_edit_model_override(),
+            Some("grok-imagine-image-pro".to_owned())
+        );
+        let gen_only = Config {
+            remote_settings: Some(crate::util::config::RemoteSettings {
+                image_gen_model_override: Some("grok-imagine-image".to_owned()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(gen_only.resolve_image_edit_model_override(), None);
+    }
+    #[test]
+    #[serial]
     fn imagine_tools_disabled_gates_image_edit() {
         unsafe { std::env::remove_var("GROK_IMAGE_EDIT") };
         let with_list = |tools: Vec<&str>| Config {
@@ -12613,6 +12748,8 @@ default = "grok-4.5"
                 prompt_cache: Default::default(),
                 auth_scheme: Default::default(),
                 extra_headers: IndexMap::new(),
+                query_params: IndexMap::new(),
+                env_http_headers: IndexMap::new(),
                 context_window: NonZeroU64::new(context_window).unwrap(),
                 use_concise: false,
                 agent_type: default_agent_type(),
