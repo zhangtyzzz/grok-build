@@ -230,7 +230,20 @@ fn fake_standalone_facts_compose_through_shared_view() {
     );
     let report = collect_report_with(snapshot);
 
-    assert_eq!(report.issue_count(), 1);
+    // `collect_report_with` also runs the passive voice probe. Linux CI images
+    // intentionally do not guarantee that pw-record, parec, or arecord is
+    // installed, so keep this terminal-composition assertion independent of
+    // the host's audio tooling while still validating every other issue.
+    let terminal_issues = report
+        .findings
+        .iter()
+        .filter(|finding| {
+            finding.disposition == FindingDisposition::Issue
+                && finding.id != crate::diagnostics::VOICE_NO_INPUT_DEVICE_ID
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(terminal_issues.len(), 1);
     assert!(
         report
             .findings
@@ -238,7 +251,7 @@ fn fake_standalone_facts_compose_through_shared_view() {
             .all(|finding| { finding.id != DiagnosticId::new("terminal", "control-mode") })
     );
     assert_eq!(
-        report.findings[0].id,
+        terminal_issues[0].id,
         DiagnosticId::new("terminal", "tmux-clipboard")
     );
 }
