@@ -62,7 +62,11 @@ mod cli_catchall_drop_tests {
     /// while a scoped `Bash(git *)` survives.
     #[test]
     fn pin_drops_cli_bare_and_prefix_bash_keeps_scoped() {
-        let rules = vec![allow("Bash"), allow("Bash(?*)"), allow("Bash(git *)")];
+        let rules = vec![
+            allow("Bash"),        // bare {Allow, Bash, None}
+            allow("Bash(?*)"),    // prefix-regime catch-all
+            allow("Bash(git *)"), // scoped — survives
+        ];
         let (kept, dropped) = drop_cli_catchall_allows(rules, Some(YOLO_PIN_REASON_REQUIREMENTS));
         assert_eq!(kept.len(), 1, "only the scoped Bash rule survives");
         assert_eq!(kept[0].pattern.as_deref(), Some("git *"));
@@ -230,9 +234,12 @@ pub(crate) async fn spawn_session_actor(
             WebFetchConfig::Enabled { params } => params.allowed_domains(),
             WebFetchConfig::Disabled => vec![],
         };
+        let project_trusted =
+            crate::agent::folder_trust::project_scope_allowed(tool_context.cwd.as_path());
         let mut permission_config =
             xai_grok_workspace::permission::resolution::resolve_permission_config_with_fallback(
                 tool_context.cwd.as_path(),
+                project_trusted,
             )
             .await;
         let yolo_pin = xai_grok_workspace::permission::resolution::yolo_disabled_by_policy();
@@ -692,7 +699,8 @@ pub(crate) async fn spawn_session_actor(
     > = if let Some(ref storage) = memory_storage_for_session {
         if let Err(e) = storage.ensure_initialized() {
             tracing::warn!(
-                target : xai_grok_telemetry::memory_log::TARGET, error = % e,
+                target: xai_grok_telemetry::memory_log::TARGET,
+                error = %e,
                 "MEMORY_INIT: ensure_initialized failed, continuing without template files"
             );
         }
@@ -702,13 +710,15 @@ pub(crate) async fn spawn_session_actor(
             tokio::task::spawn_blocking(move || match gc_storage.gc(gc_max_age) {
                 Ok(removed) if removed > 0 => {
                     tracing::info!(
-                        target : xai_grok_telemetry::memory_log::TARGET, removed,
+                        target: xai_grok_telemetry::memory_log::TARGET,
+                        removed,
                         "MEMORY_GC: cleaned orphaned workspace directories"
                     );
                 }
                 Err(e) => {
                     tracing::debug!(
-                        target : xai_grok_telemetry::memory_log::TARGET, error = % e,
+                        target: xai_grok_telemetry::memory_log::TARGET,
+                        error = %e,
                         "MEMORY_GC: failed"
                     );
                 }
@@ -761,9 +771,11 @@ pub(crate) async fn spawn_session_actor(
             );
         }
         tracing::info!(
-            target : xai_grok_telemetry::memory_log::TARGET, workspace = % storage
-            .workspace_dir().display(), global = % storage.global_dir().display(),
-            watcher_config_enabled = watcher_config.enabled, watcher_started,
+            target: xai_grok_telemetry::memory_log::TARGET,
+            workspace = %storage.workspace_dir().display(),
+            global = %storage.global_dir().display(),
+            watcher_config_enabled = watcher_config.enabled,
+            watcher_started,
             "MEMORY_INIT: storage + backend created"
         );
         let mc = memory_config.as_ref();
@@ -809,8 +821,9 @@ pub(crate) async fn spawn_session_actor(
         if let Some(ref pool) = parent_mcp_pool {
             state.import_shared_clients(pool);
             tracing::info!(
-                session_id = % session_info.id.0, shared_clients = state.shared_clients
-                .len(), "Imported shared MCP clients from parent pool"
+                session_id = %session_info.id.0,
+                shared_clients = state.shared_clients.len(),
+                "Imported shared MCP clients from parent pool"
             );
         }
         if !acp_mcp_servers.is_empty() {
@@ -820,7 +833,8 @@ pub(crate) async fn spawn_session_actor(
             let acp_server_count = acp_mcp_servers.len();
             state.set_acp_servers(acp_mcp_servers, invoker);
             tracing::info!(
-                session_id = % session_info.id.0, acp_mcp_servers = acp_server_count,
+                session_id = %session_info.id.0,
+                acp_mcp_servers = acp_server_count,
                 "Registered in-process SDK MCP servers (x.ai/mcp/sdk_call)"
             );
         }
@@ -903,7 +917,8 @@ pub(crate) async fn spawn_session_actor(
         .await
         .map_err(|e| {
             tracing::error!(
-                session_id = % session_info.id.0, error = % e,
+                session_id = %session_info.id.0,
+                error = %e,
                 "Agent building failed, please check your config"
             );
             e
@@ -985,6 +1000,13 @@ pub(crate) async fn spawn_session_actor(
     } else {
         save_system_prompt(&session_info, &system_prompt);
     }
+    let initial_prefix_carries_fallback_date = resumed_prefix_carries_fallback_date(
+        agent
+            .definition()
+            .user_message_template
+            .surfaces_local_date(),
+        &conversation,
+    );
     persist_chat_history_jsonl_sync(&session_info, &conversation);
     chat_state_handle.replace_conversation(conversation);
     let feedback_client = feedback_proxy_url.map(|base_url| {
@@ -999,7 +1021,8 @@ pub(crate) async fn spawn_session_actor(
     });
     let has_feedback_client = feedback_client.is_some();
     tracing::info!(
-        session_id = % session_info.id.0, has_feedback_client = has_feedback_client,
+        session_id = %session_info.id.0,
+        has_feedback_client = has_feedback_client,
         "Creating feedback manager"
     );
     let feedback_client_type = match client_type {
@@ -1422,6 +1445,9 @@ pub(crate) async fn spawn_session_actor(
             },
         )
     });
+    let resolved_tool_overrides: std::sync::Arc<
+        arc_swap::ArcSwapOption<xai_grok_sampling_types::ToolOverrides>,
+    > = std::sync::Arc::new(arc_swap::ArcSwapOption::empty());
     let session = Arc::new_cyclic(|weak: &std::sync::Weak<SessionActor>| SessionActor {
         session_info: session_info.clone(),
         auth_method_id,
@@ -1447,6 +1473,8 @@ pub(crate) async fn spawn_session_actor(
         pending_interactions: pending_interactions.clone(),
         telemetry_enabled,
         supports_backend_search: std::cell::Cell::new(sampling_config.supports_backend_search),
+        tool_overrides: std::cell::RefCell::new(None),
+        resolved_tool_overrides: resolved_tool_overrides.clone(),
         compactions_remaining: std::cell::Cell::new(sampling_config.compactions_remaining),
         compaction_at_tokens: std::cell::Cell::new(sampling_config.compaction_at_tokens),
         doom_loop_recovery,
@@ -1600,6 +1628,7 @@ pub(crate) async fn spawn_session_actor(
         deferred_prefix: TaskSlot::new(),
         extension_registry: session_extension_registry(weak.clone()),
         last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
+        prefix_carries_fallback_date: std::cell::Cell::new(initial_prefix_carries_fallback_date),
         last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
         last_api_request_at: std::sync::atomic::AtomicI64::new(0),
         hook_registry: std::cell::RefCell::new(built_hook_registry),
@@ -1645,6 +1674,7 @@ pub(crate) async fn spawn_session_actor(
             finished_marginal,
         );
     }
+    session.emit_resolved_tool_overrides();
     {
         let drainer_session = session.clone();
         let mut sampler_event_rx = sampler_event_rx;
@@ -1777,7 +1807,8 @@ pub(crate) async fn spawn_session_actor(
                     }
                 }
                 tracing::info!(
-                    target : xai_grok_telemetry::memory_log::TARGET, files = files.len(),
+                    target: xai_grok_telemetry::memory_log::TARGET,
+                    files = files.len(),
                     "MEMORY_REINDEX: background reindex complete"
                 );
                 let embedded_count = if let Some(api_key) = sampling_api_key {
@@ -1813,7 +1844,10 @@ pub(crate) async fn spawn_session_actor(
         });
     }
     if let Some(cancel) = sync_loop_cancel {
-        tracing::info!(session_id = % session_info.id.0, "Spawning feedback sync loop");
+        tracing::info!(
+            session_id = %session_info.id.0,
+            "Spawning feedback sync loop"
+        );
         let fm = feedback_manager.clone();
         tokio::spawn(async move {
             fm.run_sync_loop(cancel).await;
@@ -1879,17 +1913,31 @@ pub(crate) async fn spawn_session_actor(
                             crate::session::pending_interaction::PendingKind::Question,
                         );
                     tokio::select! {
-                        biased; () = request.result_tx.closed() => { tracing::info!(%
-                        tool_call_id,
-                        "ask_user_question tool receiver closed (timeout or cancel); abandoning ACP wait");
-                        Ok(UserQuestionResponse::Cancelled) } acp_result = gateway
-                        .ext_method(ext_request) => { match acp_result { Ok(raw) => {
-                        match serde_json::from_str::< AskUserQuestionExtResponse > (raw.0
-                        .get(),) { Ok(typed) => { Ok(typed
-                        .into_response(questions_for_response)) } Err(e) =>
-                        Err(UserQuestionError::MalformedResponse(e.to_string(),)), } }
+                        biased;
+                        () = request.result_tx.closed() => {
+                            tracing::info!(
+                                %tool_call_id,
+                                "ask_user_question tool receiver closed (timeout or cancel); abandoning ACP wait"
+                            );
+                            Ok(UserQuestionResponse::Cancelled)
+                        }
+                        acp_result = gateway.ext_method(ext_request) => {
+                            match acp_result {
+                                Ok(raw) => {
+                                    match serde_json::from_str::<AskUserQuestionExtResponse>(
+                                        raw.0.get(),
+                                    ) {
+                                        Ok(typed) => {
+                                            Ok(typed.into_response(questions_for_response))
+                                        }
+                                        Err(e) => Err(UserQuestionError::MalformedResponse(
+                                            e.to_string(),
+                                        )),
+                                    }
+                                }
                         Err(e) => Err(UserQuestionError::TransportError(e.to_string())),
-                        } }
+                            }
+                        }
                     }
                 };
                 let _ = request.result_tx.send(result);
@@ -1944,6 +1992,7 @@ pub(crate) async fn spawn_session_actor(
             pending_interactions,
             info: session_info,
             max_turns,
+            resolved_tool_overrides,
             hunk_tracker_handle,
             chat_state_handle: chat_state_handle_for_handle,
             signals_handle,
@@ -2399,6 +2448,67 @@ fn select_terminal_backend_kind(
         TerminalBackendKind::LocalPersistent
     } else {
         TerminalBackendKind::LocalNonPersistent
+    }
+}
+/// Recovers `prefix_carries_fallback_date` on resume, which skips the prefix rebuild. Fail-safe: any
+/// user item with both `<user_info>` and the date marker counts as stamped, so it may over-keep the
+/// reminder but never suppresses a dated session.
+fn resumed_prefix_carries_fallback_date(
+    template_surfaces_local_date: bool,
+    conversation: &[ConversationItem],
+) -> bool {
+    if template_surfaces_local_date {
+        return false;
+    }
+    conversation.iter().any(|item| {
+        let ConversationItem::User(u) = item else {
+            return false;
+        };
+        let contains = |needle: &str| {
+            u.content.iter().any(|part| {
+                matches!(
+                    part,
+                    xai_grok_sampling_types::conversation::ContentPart::Text { text }
+                        if text.contains(needle)
+                )
+            })
+        };
+        contains("<user_info>") && contains(crate::session::user_message::USER_INFO_DATE_MARKER)
+    })
+}
+#[cfg(test)]
+mod resumed_prefix_fallback_tests {
+    use super::resumed_prefix_carries_fallback_date;
+    use crate::session::user_message::USER_INFO_DATE_MARKER;
+    use xai_grok_sampling_types::conversation::ConversationItem;
+    #[test]
+    fn resumed_prefix_fallback_detection_is_fail_safe() {
+        let with_date = vec![ConversationItem::user(format!(
+            "<user_info>\n{USER_INFO_DATE_MARKER} 2024-01-01\n</user_info>"
+        ))];
+        let without_date = vec![ConversationItem::user(
+            "<user_info>\nWorkspace: /x\n</user_info>",
+        )];
+        let spoofed_leading_user_info = vec![
+            ConversationItem::user("<user_info>\nWorkspace: /x\n</user_info>"),
+            ConversationItem::user(format!(
+                "<user_info>\n{USER_INFO_DATE_MARKER} 2024-01-01\n</user_info>"
+            )),
+        ];
+        let leading_noise = vec![
+            ConversationItem::user("project instructions: do the thing"),
+            ConversationItem::user(format!(
+                "<user_info>\n{USER_INFO_DATE_MARKER} 2024-01-01\n</user_info>"
+            )),
+        ];
+        assert!(resumed_prefix_carries_fallback_date(false, &with_date));
+        assert!(!resumed_prefix_carries_fallback_date(false, &without_date));
+        assert!(resumed_prefix_carries_fallback_date(
+            false,
+            &spoofed_leading_user_info
+        ));
+        assert!(resumed_prefix_carries_fallback_date(false, &leading_noise));
+        assert!(!resumed_prefix_carries_fallback_date(true, &with_date));
     }
 }
 #[cfg(test)]

@@ -118,8 +118,9 @@ pub(crate) async fn handle_subagent_request(
         }
         SubagentValidateTypeOutcome::NotAllowed { allowed } => {
             let msg = format!(
-                "agent can only spawn: {}; '{}' not allowed", allowed.join(", "), request
-                .subagent_type
+                "agent can only spawn: {}; '{}' not allowed",
+                allowed.join(", "),
+                request.subagent_type
             );
             send_pre_spawn_failure(request, &msg, coordinator, &ctx, gateway);
             return;
@@ -201,7 +202,8 @@ pub(crate) async fn handle_subagent_request(
     let prompt = request.prompt.clone();
     if let Some(ref err) = effective_runtime.persona_error {
         tracing::error!(
-            subagent_id = % request.id, error = err,
+            subagent_id = %request.id,
+            error = err,
             "Persona resolution failed, aborting subagent spawn"
         );
         pending_guard.set_error(err.clone());
@@ -210,7 +212,8 @@ pub(crate) async fn handle_subagent_request(
     }
     if let Some(ref warn) = effective_runtime.role_prompt_warning {
         tracing::warn!(
-            subagent_id = % request.id, warning = warn,
+            subagent_id = %request.id,
+            warning = warn,
             "Role prompt_file degraded, continuing without role prompt"
         );
     }
@@ -310,15 +313,17 @@ pub(crate) async fn handle_subagent_request(
                         {
                             Ok(path) => {
                                 tracing::info!(
-                                    subagent_id = % request.id, worktree_path = % path
-                                    .display(), snapshot_ref = % snapshot_ref,
+                                    subagent_id = %request.id,
+                                    worktree_path = %path.display(),
+                                    snapshot_ref = %snapshot_ref,
                                     "Rehydrated subagent worktree from snapshot for resume"
                                 );
                                 Some(path)
                             }
                             Err(e) => {
                                 tracing::warn!(
-                                    subagent_id = % request.id, error = % e,
+                                    subagent_id = %request.id,
+                                    error = %e,
                                     "Failed to rehydrate subagent worktree, falling back to shared workspace"
                                 );
                                 None
@@ -327,7 +332,8 @@ pub(crate) async fn handle_subagent_request(
                     }
                     ResumeWorktreeAction::Shared => {
                         tracing::warn!(
-                            subagent_id = % request.id, worktree = % dest.display(),
+                            subagent_id = %request.id,
+                            worktree = %dest.display(),
                             "Resumed subagent worktree dir missing with no snapshot; using shared workspace"
                         );
                         None
@@ -344,7 +350,8 @@ pub(crate) async fn handle_subagent_request(
             Ok(base) => base.join(format!("subagent-{}", request.id)),
             Err(e) => {
                 tracing::warn!(
-                    subagent_id = % request.id, error = % e,
+                    subagent_id = %request.id,
+                    error = %e,
                     "Could not resolve worktree base dir, using temp dir for subagent worktree"
                 );
                 std::env::temp_dir().join("grok-subagent-worktrees").join(&request.id)
@@ -374,22 +381,25 @@ pub(crate) async fn handle_subagent_request(
         {
             Ok(Ok(report)) => {
                 tracing::info!(
-                    subagent_id = % request.id, worktree_path = % report.worktree_path
-                    .display(), commit = % report.commit,
+                    subagent_id = %request.id,
+                    worktree_path = %report.worktree_path.display(),
+                    commit = %report.commit,
                     "Created isolated worktree for subagent"
                 );
                 Some(report.worktree_path)
             }
             Ok(Err(e)) => {
                 tracing::warn!(
-                    subagent_id = % request.id, error = % e,
+                    subagent_id = %request.id,
+                    error = %e,
                     "Failed to create worktree, falling back to shared workspace"
                 );
                 None
             }
             Err(e) => {
                 tracing::warn!(
-                    subagent_id = % request.id, error = % e,
+                    subagent_id = %request.id,
+                    error = %e,
                     "Worktree creation task panicked, falling back to shared workspace"
                 );
                 None
@@ -423,8 +433,9 @@ pub(crate) async fn handle_subagent_request(
         || effective_runtime.capability_mode.is_some()
     {
         tracing::info!(
-            subagent_id = % request.id, reasoning_effort = ? effective_runtime
-            .reasoning_effort, capability_mode = ? effective_runtime.capability_mode,
+            subagent_id = %request.id,
+            reasoning_effort = ?effective_runtime.reasoning_effort,
+            capability_mode = ?effective_runtime.capability_mode,
             "Resolved runtime overrides for subagent"
         );
     }
@@ -435,8 +446,9 @@ pub(crate) async fn handle_subagent_request(
     if let Some(mode) = effective_runtime.capability_mode {
         mode.filter_tool_config(&mut definition.tool_config);
         tracing::info!(
-            subagent_id = % request.id, capability_mode = ? mode, tools_remaining =
-            definition.tool_config.tools.len(),
+            subagent_id = %request.id,
+            capability_mode = ?mode,
+            tools_remaining = definition.tool_config.tools.len(),
             "Applied capability mode filter to agent tool config"
         );
     }
@@ -446,7 +458,8 @@ pub(crate) async fn handle_subagent_request(
         .unwrap_or(ctx.parent_depth + 1);
     if strip_task_tools_at_max_depth(&mut definition.tool_config, child_depth) {
         tracing::info!(
-            subagent_id = % request.id, child_depth,
+            subagent_id = %request.id,
+            child_depth,
             "Stripped task tool from child at max depth"
         );
     }
@@ -456,8 +469,8 @@ pub(crate) async fn handle_subagent_request(
             .tools
             .retain(|tool| {
                 !matches!(
-                    tool.id.rsplit(':').next(), Some("scheduler_create" |
-                    "scheduler_list" | "scheduler_delete")
+                tool.id.rsplit(':').next(),
+                Some("scheduler_create" | "scheduler_list" | "scheduler_delete")
                 )
             });
     }
@@ -483,8 +496,9 @@ pub(crate) async fn handle_subagent_request(
         if model_unknown {
             let (parent_config, parent_mid) = read_parent_sampling_config(&ctx).await;
             tracing::warn!(
-                subagent_id = % request.id, resolved_model = % model_str, parent_model =
-                % parent_config.model,
+                subagent_id = %request.id,
+                resolved_model = %model_str,
+                parent_model = %parent_config.model,
                 "Resolved subagent model not found in available models — \
                  falling back to parent model"
             );
@@ -498,8 +512,10 @@ pub(crate) async fn handle_subagent_request(
     {
         if let Some(resolved) = resolve_model_override_to_config(source_model, &ctx) {
             tracing::info!(
-                subagent_id = % request.id, resolved_model = % effective_model_id.0,
-                source_model = source_model, "Pinning resumed child to source model"
+                subagent_id = %request.id,
+                resolved_model = %effective_model_id.0,
+                source_model = source_model,
+                "Pinning resumed child to source model"
             );
             effective_sampling_config = resolved.0;
             effective_model_id = resolved.1;
@@ -523,7 +539,8 @@ pub(crate) async fn handle_subagent_request(
             Ok(eff) => effective_sampling_config.reasoning_effort = Some(eff),
             Err(err) => {
                 tracing::warn!(
-                    value = raw, error = % err,
+                value = raw,
+                error = %err,
                     "subagent reasoning_effort: parse failed, ignoring override"
                 )
             }
@@ -574,7 +591,8 @@ pub(crate) async fn handle_subagent_request(
         BootstrapInitialContext::Ready(ctx) => ctx,
         BootstrapInitialContext::ResumeAbort(msg) => {
             tracing::error!(
-                subagent_id = % request.id, error = % msg,
+                subagent_id = %request.id,
+                error = %msg,
                 "Resume-copy failed, aborting subagent spawn"
             );
             send_failure(request, &msg);
@@ -824,19 +842,20 @@ pub(crate) async fn handle_subagent_request(
         "subagent spawn credentials",
         None,
         Some(
-            serde_json::json!(
-                { "subagent_id" : & request.id, "subagent_type" : & request
-                .subagent_type, "effective_model" : effective_model_id.0.as_ref(),
-                "effective_model_raw" : & effective_sampling_config.model, "base_url" : &
-                effective_sampling_config.base_url, "key_prefix" : key_prefix(&
-                effective_sampling_config.api_key), "auth_type" : format!("{:?}",
-                inherited_auth_type), "model_owns_auth_boundary" :
-                model_owns_auth_boundary,
-                "auth_method_id" : ctx.auth_method_id.0.as_ref(), "parent_model" : ctx
-                .model_id.0.as_ref(), "parent_key_prefix" : key_prefix(& ctx
-                .sampling_config.api_key), "context_window" : effective_sampling_config
-                .context_window, }
-            ),
+            serde_json::json!({
+                "subagent_id": &request.id,
+                "subagent_type": &request.subagent_type,
+                "effective_model": effective_model_id.0.as_ref(),
+                "effective_model_raw": &effective_sampling_config.model,
+                "base_url": &effective_sampling_config.base_url,
+                "key_prefix": key_prefix(&effective_sampling_config.api_key),
+                "auth_type": format!("{:?}", inherited_auth_type),
+                "model_owns_auth_boundary": model_owns_auth_boundary,
+                "auth_method_id": ctx.auth_method_id.0.as_ref(),
+                "parent_model": ctx.model_id.0.as_ref(),
+                "parent_key_prefix": key_prefix(&ctx.sampling_config.api_key),
+                "context_window": effective_sampling_config.context_window,
+            }),
         ),
     );
     let attribution_callback: Option<xai_grok_sampler::SharedAttributionCallback> = effective_sampling_config
@@ -855,7 +874,8 @@ pub(crate) async fn handle_subagent_request(
     if agent_permission_mode != definition.permission_mode {
         if is_plugin_agent {
             tracing::warn!(
-                agent = % definition.name, plugin = ? definition.plugin_name,
+                agent = %definition.name,
+                plugin = ?definition.plugin_name,
                 "ignoring permissionMode on plugin agent (not supported for security)"
             );
         } else {
@@ -869,8 +889,9 @@ pub(crate) async fn handle_subagent_request(
         use xai_grok_tools::implementations::grok_build;
         use xai_grok_tools::implementations::opencode;
         let memory_tools: Vec<xai_grok_tools::registry::types::ToolConfig> = vec![
-            (& grok_build::ReadFileTool).into(), (& grok_build::SearchReplaceTool)
-            .into(), (& opencode::OpenCodeWriteTool).into(),
+            (&grok_build::ReadFileTool).into(),
+            (&grok_build::SearchReplaceTool).into(),
+            (&opencode::OpenCodeWriteTool).into(),
         ];
         for tc in memory_tools {
             if !definition.tool_config.tools.iter().any(|t| t.id == tc.id) {
@@ -908,7 +929,8 @@ pub(crate) async fn handle_subagent_request(
     if let Some(ref hooks_config) = definition.hooks {
         if is_plugin_agent {
             tracing::warn!(
-                agent = % definition.name, plugin = ? definition.plugin_name,
+                agent = %definition.name,
+                plugin = ?definition.plugin_name,
                 "ignoring hooks on plugin agent (not supported for security)"
             );
         } else if !crate::agent::folder_trust::agent_inline_hooks_allowed(
@@ -927,9 +949,7 @@ pub(crate) async fn handle_subagent_request(
                 &ctx.parent_cwd,
             );
             for e in &errors {
-                tracing::warn!(
-                    agent = % definition.name, error = ? e, "agent hook parse error"
-                );
+                tracing::warn!(agent = %definition.name, error = ?e, "agent hook parse error");
             }
             if !specs.is_empty() {
                 let specs: Vec<_> = specs
@@ -954,7 +974,8 @@ pub(crate) async fn handle_subagent_request(
     let agent_mcp_servers: Vec<_> = if is_plugin_agent {
         if !definition.mcp_servers.is_empty() {
             tracing::warn!(
-                agent = % definition.name, plugin = ? definition.plugin_name,
+                agent = %definition.name,
+                plugin = ?definition.plugin_name,
                 "ignoring mcpServers on plugin agent (not supported for security)"
             );
         }
@@ -972,10 +993,7 @@ pub(crate) async fn handle_subagent_request(
                             })
                             .cloned()
                             .or_else(|| {
-                                tracing::warn!(
-                                    agent = % definition.name, server = name,
-                                    "mcpServers: named ref not found in parent"
-                                );
+                                tracing::warn!(agent = %definition.name, server = name, "mcpServers: named ref not found in parent");
                                 None
                             })
                     }
@@ -993,10 +1011,7 @@ pub(crate) async fn handle_subagent_request(
                             >(serde_json::Value::Object(flat)) {
                                 return Some(server);
                             }
-                            tracing::debug!(
-                                agent = % definition.name, server = name,
-                                "ACP wire format parse failed, trying map-keyed"
-                            );
+                            tracing::debug!(agent = %definition.name, server = name, "ACP wire format parse failed, trying map-keyed");
                         }
                         if let Some(inner_obj) = config.as_object() {
                             let mut flat = inner_obj.clone();
@@ -1010,10 +1025,7 @@ pub(crate) async fn handle_subagent_request(
                                 return Some(server);
                             }
                         }
-                        tracing::warn!(
-                            agent = % definition.name, server = name,
-                            "mcpServers: inline config could not be parsed"
-                        );
+                        tracing::warn!(agent = %definition.name, server = name, "mcpServers: inline config could not be parsed");
                         None
                     }
                 })
@@ -1041,7 +1053,8 @@ pub(crate) async fn handle_subagent_request(
         .unwrap_or(0);
     if mcp_inherited_count > 0 {
         tracing::info!(
-            subagent_id = % request.id, mcp_count = mcp_inherited_count,
+            subagent_id = %request.id,
+            mcp_count = mcp_inherited_count,
             "Subagent inherited MCP servers from parent pool"
         );
     }
@@ -1065,7 +1078,8 @@ pub(crate) async fn handle_subagent_request(
     };
     if skills_inherited_count > 0 {
         tracing::info!(
-            subagent_id = % request.id, skills_count = skills_inherited_count,
+            subagent_id = %request.id,
+            skills_count = skills_inherited_count,
             "Subagent inherited skills from parent"
         );
     }
@@ -1327,6 +1341,13 @@ pub(crate) async fn handle_subagent_request(
         .send(SessionCommand::CopyFile {
             respond_to: before_copy_tx,
         });
+    if let Some(overrides) = ctx.inherited_tool_overrides.clone() {
+        let _ = child_handle
+            .cmd_tx
+            .send(SessionCommand::SetToolOverrides {
+                overrides,
+            });
+    }
     let (prompt_tx, prompt_rx) = oneshot::channel();
     let prompt_text = task_prompt_text;
     let child_prompt_id = uuid::Uuid::now_v7().to_string();
@@ -1335,9 +1356,7 @@ pub(crate) async fn handle_subagent_request(
         .cmd_tx
         .send(SessionCommand::Prompt {
             prompt_id: child_prompt_id.clone(),
-            prompt_blocks: vec![
-                acp::ContentBlock::Text(acp::TextContent::new(prompt_text))
-            ],
+            prompt_blocks: vec![acp::ContentBlock::Text(acp::TextContent::new(prompt_text))],
             prompt_mode: crate::session::plan_mode::PromptMode::Agent,
             artifact_upload_ctx: ctx
                 .gcs_bucket_url
@@ -1366,6 +1385,7 @@ pub(crate) async fn handle_subagent_request(
             json_schema: request.runtime_overrides.output_schema.clone(),
             send_now: false,
             admission: None,
+            tool_overrides_update: None,
             respond_to: prompt_tx,
             persist_ack: None,
             parsed_prompt_tx: None,
@@ -1402,9 +1422,11 @@ pub(crate) async fn handle_subagent_request(
                     }
                 };
                 tokio::select! {
-                    biased; outcome = & mut fut => ForegroundWait::Done(outcome), _ =
-                    parent_await_dropped => ForegroundWait::ParentGone, _ = budget =>
-                    ForegroundWait::Budget,
+                    // Bias to completion: a child finishing at the budget returns its real result.
+                    biased;
+                    outcome = &mut fut => ForegroundWait::Done(outcome),
+                    _ = parent_await_dropped => ForegroundWait::ParentGone,
+                    _ = budget => ForegroundWait::Budget,
                 }
             };
             match first {
@@ -1418,8 +1440,8 @@ pub(crate) async fn handle_subagent_request(
                     parent_wait_guard.take();
                     if request.owner.is_workflow() {
                         tracing::info!(
-                            subagent_id = % request.id, workflow_run_id = ? request.owner
-                            .workflow_run_id(),
+                            subagent_id = %request.id,
+                            workflow_run_id = ?request.owner.workflow_run_id(),
                             "workflow subagent result receiver dropped; cancelling child",
                         );
                         cancel_token.cancel();
@@ -1437,8 +1459,8 @@ pub(crate) async fn handle_subagent_request(
                 }
                 ForegroundWait::Budget => {
                     tracing::info!(
-                        subagent_id = % request.id, budget_ms = subagent_await_budget()
-                        .as_millis() as u64,
+                        subagent_id = %request.id,
+                        budget_ms = subagent_await_budget().as_millis() as u64,
                         "foreground subagent exceeded await budget; auto-backgrounding (child keeps running)",
                     );
                     if let Some(tx) = result_tx.take() {
@@ -1530,8 +1552,7 @@ pub(crate) async fn handle_subagent_request(
                             std::sync::Arc::from(
                                 format!(
                                     "Subagent '{}' ({}) was cancelled. {} tool calls, {} turns.",
-                                    request.description, request.subagent_type, tool_calls,
-                                    turns
+                                request.description, request.subagent_type, tool_calls, turns
                                 ),
                             )
                         } else {
@@ -1570,8 +1591,7 @@ pub(crate) async fn handle_subagent_request(
                             std::sync::Arc::from(
                                 format!(
                                     "Subagent '{}' ({}) hit max-turns limit ({limit}). {} tool calls, {} turns.",
-                                    request.description, request.subagent_type, tool_calls,
-                                    turns
+                            request.description, request.subagent_type, tool_calls, turns
                                 ),
                             )
                         } else {
@@ -1630,8 +1650,7 @@ pub(crate) async fn handle_subagent_request(
                                     std::sync::Arc::from(
                                         format!(
                                             "Subagent '{}' ({}) completed successfully. {} tool calls, {} turns.",
-                                            request.description, request.subagent_type, tool_calls,
-                                            turns
+                                    request.description, request.subagent_type, tool_calls, turns
                                         ),
                                     )
                                 } else {
@@ -1878,13 +1897,15 @@ pub(crate) async fn handle_subagent_request(
         {
             Ok(_) => {
                 tracing::debug!(
-                    subagent_id = % request.id, child_session_id = % child_session_id.0,
+                    subagent_id = %request.id,
+                    child_session_id = %child_session_id.0,
                     "Subagent trace artifacts uploaded"
                 );
             }
             Err(e) => {
                 tracing::warn!(
-                    subagent_id = % request.id, error = % e,
+                    subagent_id = %request.id,
+                    error = %e,
                     "Subagent trace upload failed (non-fatal)"
                 );
             }
@@ -1959,7 +1980,8 @@ pub(crate) async fn handle_subagent_request(
     };
     if !fold_acked {
         tracing::warn!(
-            subagent_id = % request.id, parent_prompt_id = ? request.parent_prompt_id,
+            subagent_id = %request.id,
+            parent_prompt_id = ?request.parent_prompt_id,
             "subagent usage not applied; parent bill marked incomplete"
         );
         let sticky_prompt = request
@@ -2031,10 +2053,10 @@ pub(crate) async fn handle_subagent_request(
         }
         (Some(_), None) | (None, Some(_)) => {
             tracing::warn!(
-                child_session_id = % child_session_id.0, parent_session_id = % ctx
-                .parent_session_id, has_terminal_backend = ctx.parent_terminal_backend
-                .is_some(), has_notification_handle = ctx.parent_notification_handle
-                .is_some(),
+                child_session_id = %child_session_id.0,
+                parent_session_id = %ctx.parent_session_id,
+                has_terminal_backend = ctx.parent_terminal_backend.is_some(),
+                has_notification_handle = ctx.parent_notification_handle.is_some(),
                 "skipping reparent_notifications: parent_terminal_backend and \
                  parent_notification_handle must both be Some"
             );
@@ -2070,29 +2092,32 @@ pub(crate) async fn handle_subagent_request(
                             Ok(()) => {
                                 worktree_removed = true;
                                 tracing::info!(
-                                    subagent_id = % request.id, worktree_path = % wt_path
-                                    .display(), "snapshotted and removed subagent worktree"
+                                    subagent_id = %request.id,
+                                    worktree_path = %wt_path.display(),
+                                    "snapshotted and removed subagent worktree"
                                 );
                             }
                             Err(e) => {
                                 tracing::warn!(
-                                    subagent_id = % request.id, worktree_path = % wt_path
-                                    .display(), error = % e,
+                                subagent_id = %request.id,
+                                worktree_path = %wt_path.display(),
+                                error = %e,
                                     "snapshotted subagent worktree but removal failed; ref persisted for resume"
                                 )
                             }
                         }
                     } else {
                         tracing::warn!(
-                            subagent_id = % request.id, worktree_path = % wt_path
-                            .display(),
+                            subagent_id = %request.id,
+                            worktree_path = %wt_path.display(),
                             "snapshot_ref not persisted; preserving worktree for resume"
                         );
                     }
                 }
                 Err(e) => {
                     tracing::warn!(
-                        subagent_id = % request.id, worktree_path = % wt_path.display(),
+                        subagent_id = %request.id,
+                        worktree_path = %wt_path.display(),
                         error = % e,
                         "Failed to snapshot subagent worktree; preserving for review"
                     );
@@ -2100,7 +2125,8 @@ pub(crate) async fn handle_subagent_request(
             }
         } else {
             tracing::info!(
-                subagent_id = % request.id, worktree_path = % wt_path.display(),
+                subagent_id = %request.id,
+                worktree_path = %wt_path.display(),
                 "Worktree preserved for review"
             );
         }

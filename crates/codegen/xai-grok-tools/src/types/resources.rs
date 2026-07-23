@@ -1134,9 +1134,7 @@ mod tests {
         let mut params_map = HashMap::new();
         params_map.insert(
             "grok_build.Edit".to_string(),
-            serde_json::json!(
-                { "skip_read_before_edit" : true, "max_file_size" : 512 }
-            ),
+            serde_json::json!({"skip_read_before_edit": true, "max_file_size": 512}),
         );
         let mut data = HashMap::new();
         data.insert("state".to_string(), state_map);

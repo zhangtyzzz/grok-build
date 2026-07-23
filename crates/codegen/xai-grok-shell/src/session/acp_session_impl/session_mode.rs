@@ -572,7 +572,8 @@ impl SessionActor {
                 ));
             }
             tracing::info!(
-                session_id = % self.session_info.id.0, entered,
+                session_id = %self.session_info.id.0,
+                entered,
                 "Plan mode toggled ON (Pending)"
             );
             let turn_in_flight = self.state.lock().await.running_task.is_some();
@@ -646,8 +647,10 @@ impl SessionActor {
             *self.current_prompt_mode.lock() = prompt_mode;
             self.enqueue_current_mode_update(session_mode_id.clone());
             tracing::info!(
-                session_id = % self.session_info.id.0, new_mode = % session_mode_id.0,
-                turn_in_flight, "Plan mode toggled OFF"
+                session_id = %self.session_info.id.0,
+                new_mode = %session_mode_id.0,
+                turn_in_flight,
+                "Plan mode toggled OFF"
             );
             xai_grok_telemetry::session_ctx::log_event(
                 xai_grok_telemetry::events::PlanModeToggled {
@@ -658,8 +661,11 @@ impl SessionActor {
                 },
             );
             tracing::info_span!(
-                "session.permission_mode_changed", from_mode = "plan", to_mode = %
-                session_mode_id.0, trigger = "user", enabled = false,
+                "session.permission_mode_changed",
+                from_mode = "plan",
+                to_mode = %session_mode_id.0,
+                trigger = "user",
+                enabled = false,
             )
             .in_scope(|| {});
         } else if has_model_scope {
@@ -684,10 +690,13 @@ impl SessionActor {
         };
         if let Some(ref def) = agent_def {
             tracing::info!(
-                session_id = % self.session_info.id.0, agent_name = % def.name,
-                agent_scope = % def.scope, prompt_mode = ? def.prompt_mode,
-                has_completion_req = def.completion_requirement.is_some(), tool_configs =
-                def.tool_config.tools.len(), "Resolved AgentDefinition for session mode"
+                session_id = %self.session_info.id.0,
+                agent_name = %def.name,
+                agent_scope = %def.scope,
+                prompt_mode = ?def.prompt_mode,
+                has_completion_req = def.completion_requirement.is_some(),
+                tool_configs = def.tool_config.tools.len(),
+                "Resolved AgentDefinition for session mode"
             );
             self.agent
                 .borrow()
@@ -804,7 +813,8 @@ impl SessionActor {
                 self.plan_mode.lock().record_reminder_injected();
                 self.persist_plan_mode_state();
                 tracing::info!(
-                    session_id = % self.session_info.id.0, is_reentry,
+                    session_id = %self.session_info.id.0,
+                    is_reentry,
                     uses_template_reminders = use_cursor_reminders,
                     "Plan mode activated: injected system-reminder"
                 );
@@ -917,7 +927,9 @@ impl SessionActor {
         }
         self.persist_plan_mode_state_durable().await?;
         tracing::info!(
-            session_id = % self.session_info.id.0, is_reentry, buffered,
+            session_id = %self.session_info.id.0,
+            is_reentry,
+            buffered,
             "Plan mode activated mid-turn"
         );
         Ok(())
@@ -946,10 +958,10 @@ impl SessionActor {
         plan_path: &std::path::Path,
         plan_has_content: bool,
     ) -> Option<String> {
-        let extra = serde_json::json!(
-            { "plan_path" : plan_path.display().to_string(), "plan_has_content" :
-            plan_has_content, }
-        );
+        let extra = serde_json::json!({
+            "plan_path": plan_path.display().to_string(),
+            "plan_has_content": plan_has_content,
+        });
         self.agent
             .borrow()
             .tool_bridge()

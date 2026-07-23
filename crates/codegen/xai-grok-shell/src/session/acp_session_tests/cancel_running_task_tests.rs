@@ -149,6 +149,8 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
                 supports_backend_search: std::cell::Cell::new(false),
+                tool_overrides: std::cell::RefCell::new(None),
+                resolved_tool_overrides: std::sync::Arc::new(arc_swap::ArcSwapOption::empty()),
                 compactions_remaining: std::cell::Cell::new(None),
                 compaction_at_tokens: std::cell::Cell::new(None),
                 doom_loop_recovery: None,
@@ -269,6 +271,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 deferred_prefix: TaskSlot::new(),
                 extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
                 last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
+                prefix_carries_fallback_date: std::cell::Cell::new(false),
                 last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
                 last_api_request_at: std::sync::atomic::AtomicI64::new(0),
                 hook_registry: std::cell::RefCell::new(None),
@@ -401,7 +404,9 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
             )
             .await
             .expect("persistence actor should start");
-            let (_event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<SessionEvent>();
+            let (_event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<
+                SessionEvent,
+            >();
             let (chat_event_tx, _chat_event_rx) = tokio::sync::mpsc::unbounded_channel();
             let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
                 vec![
@@ -445,10 +450,7 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
                 )
                 .await
                 .expect("request should build");
-            assert!(
-                matches!(request.items.first(), Some(ConversationItem::System(sys)) if
-                sys.content.contains("Persist this memory reminder."))
-            );
+            assert!(matches!(request.items.first(), Some(ConversationItem::System(sys)) if sys.content.contains("Persist this memory reminder.")));
             let storage = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
                 session_dir.path().to_path_buf(),
             );
@@ -464,10 +466,7 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
                 .load_session_without_updates(&session_info)
                 .await
                 .unwrap();
-            assert!(
-                matches!(loaded.chat_history.first(), Some(ConversationItem::System(sys))
-                if sys.content.contains("Persist this memory reminder."))
-            );
+            assert!(matches!(loaded.chat_history.first(), Some(ConversationItem::System(sys)) if sys.content.contains("Persist this memory reminder.")));
         })
         .await;
 }
@@ -628,6 +627,8 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
                 supports_backend_search: std::cell::Cell::new(false),
+                tool_overrides: std::cell::RefCell::new(None),
+                resolved_tool_overrides: std::sync::Arc::new(arc_swap::ArcSwapOption::empty()),
                 compactions_remaining: std::cell::Cell::new(None),
                 compaction_at_tokens: std::cell::Cell::new(None),
                 doom_loop_recovery: None,
@@ -751,6 +752,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 deferred_prefix: TaskSlot::new(),
                 extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
                 last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
+                prefix_carries_fallback_date: std::cell::Cell::new(false),
                 last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
                 last_api_request_at: std::sync::atomic::AtomicI64::new(0),
                 hook_registry: std::cell::RefCell::new(None),
@@ -906,6 +908,10 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
                 supports_backend_search: std::cell::Cell::new(false),
+                tool_overrides: std::cell::RefCell::new(None),
+                resolved_tool_overrides: std::sync::Arc::new(
+                    arc_swap::ArcSwapOption::empty(),
+                ),
                 compactions_remaining: std::cell::Cell::new(None),
                 compaction_at_tokens: std::cell::Cell::new(None),
                 doom_loop_recovery: None,
@@ -1041,6 +1047,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 last_announced_local_date: std::cell::Cell::new(
                     chrono::Local::now().date_naive(),
                 ),
+                prefix_carries_fallback_date: std::cell::Cell::new(false),
                 last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
                 last_api_request_at: std::sync::atomic::AtomicI64::new(0),
                 hook_registry: std::cell::RefCell::new(None),
@@ -1100,6 +1107,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                         json_schema: None,
                         origin: crate::session::PromptOrigin::User,
                         task_wake_fallback: None,
+                        tool_overrides_update: None,
                         respond_to: tx,
                         persist_ack: None,
                         parsed_prompt_tx: None,
@@ -1114,13 +1122,13 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 >()
                 .await;
             assert!(
-                scoped_prompt_id.is_none() || scoped_prompt_id.as_ref().is_some_and(| p |
-                p.0.is_empty()),
+                    scoped_prompt_id.is_none()
+                        || scoped_prompt_id.as_ref().is_some_and(|p| p.0.is_empty()),
                 "CurrentPromptIdResource should be cleared on cancellation"
             );
             assert!(
-                actor.current_prompt_id.lock().expect("current_prompt_id mutex poisoned")
-                .is_none(), "current_prompt_id should be cleared on cancellation"
+                    actor.current_prompt_id.lock().expect("current_prompt_id mutex poisoned").is_none(),
+                    "current_prompt_id should be cleared on cancellation"
             );
             let state = actor.state.lock().await;
             assert!(state.running_task.is_none());
@@ -1410,10 +1418,7 @@ async fn handle_prompt_injects_interrupt_reminder_before_user_message() {
         .run_until(async {
             let actor = actor_with_persistence_drain().await;
             actor.events.set_pending_interrupt_reminder();
-            let prompt_blocks = vec![
-                acp::ContentBlock::Text(acp::TextContent::new("follow-up after interrupt"
-                .to_string()))
-            ];
+            let prompt_blocks = vec![acp::ContentBlock::Text(acp::TextContent::new("follow-up after interrupt".to_string()))];
             let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
             let actor_for_prompt = actor.clone();
             let prompt_task = tokio::task::spawn_local(async move {
@@ -1438,9 +1443,7 @@ async fn handle_prompt_injects_interrupt_reminder_before_user_message() {
             let user_idx = conv
                 .iter()
                 .position(|item| {
-                    matches!(
-                        item, ConversationItem::User(u) if u.synthetic_reason.is_none()
-                    ) && item.text_content().contains("follow-up after interrupt")
+                    matches!(item, ConversationItem::User(u) if u.synthetic_reason.is_none()) && item.text_content().contains("follow-up after interrupt")
                 })
                 .expect("the user message must be in the conversation");
             assert!(
@@ -1449,13 +1452,14 @@ async fn handle_prompt_injects_interrupt_reminder_before_user_message() {
             );
             let preceding = &conv[user_idx - 1];
             assert!(
-                matches!(preceding, ConversationItem::User(u) if u.synthetic_reason ==
-                Some(SyntheticReason::SystemReminder)),
+                matches!(preceding, ConversationItem::User(u)
+                    if u.synthetic_reason == Some(SyntheticReason::SystemReminder)),
                 "the item immediately before the user message must be a system-reminder, got: {preceding:?}"
             );
             assert!(
-                preceding.text_content().contains(crate
-                ::session::acp_session::INTERRUPT_REMINDER),
+                preceding
+                    .text_content()
+                    .contains(crate::session::acp_session::INTERRUPT_REMINDER),
                 "the preceding system-reminder must carry the interrupt notice"
             );
             assert!(! actor.events.take_pending_interrupt_reminder());
@@ -1532,6 +1536,7 @@ async fn cancel_running_task_interactive_preserves_queued_work() {
             json_schema: None,
             origin: crate::session::PromptOrigin::User,
             task_wake_fallback: None,
+            tool_overrides_update: None,
             respond_to,
             persist_ack: None,
             parsed_prompt_tx: None,
@@ -1742,13 +1747,22 @@ async fn interactive_cancel_drops_queued_task_wakes_and_promotes_user() {
             let cancel = actor.cancel_running_task(true, false, false, Some("ctrl_c".to_string()));
             tokio::pin!(cancel);
             tokio::select! {
-                _ = & mut cancel => {} _ = tokio::task::yield_now() => { assert!(actor
-                .state.try_lock().expect("state lock").notifications_suppressed,
-                "Ctrl+C must arm actor suppression before the first await");
-                assert!(actor.tool_context.task_wake_suppressed.as_ref().is_some_and(|
-                gate | gate.get()),
-                "Ctrl+C must arm the reminder gate before the first await"); cancel.
-                await; }
+                _ = &mut cancel => {}
+                _ = tokio::task::yield_now() => {
+                    assert!(
+                        actor.state.try_lock().expect("state lock").notifications_suppressed,
+                        "Ctrl+C must arm actor suppression before the first await"
+                    );
+                    assert!(
+                        actor
+                            .tool_context
+                            .task_wake_suppressed
+                            .as_ref()
+                            .is_some_and(|gate| gate.get()),
+                        "Ctrl+C must arm the reminder gate before the first await"
+                    );
+                    cancel.await;
+                }
             }
             assert!(
                 actor
@@ -1766,11 +1780,13 @@ async fn interactive_cancel_drops_queued_task_wakes_and_promotes_user() {
                     .map(|item| item.prompt_id.as_str())
                     .collect();
                 assert_eq!(remaining, vec!["user-next"]);
-                assert!(
-                    matches!(state.pending_notifications.as_slice(), [PendingNotification
-                    { source : NotificationSource::BashTaskCompleted { task_id }, .. }]
-                    if task_id == "bg-queued")
-                );
+                assert!(matches!(
+                    state.pending_notifications.as_slice(),
+                    [PendingNotification {
+                        source: NotificationSource::BashTaskCompleted { task_id },
+                        ..
+                    }] if task_id == "bg-queued"
+                ));
                 assert!(state.notifications_suppressed);
             }
             assert!(matches!(running_rx.try_recv(), Ok(Ok(_))));
@@ -1913,6 +1929,7 @@ async fn cancel_resolves_front_when_running_task_is_none() {
             json_schema: None,
             origin: crate::session::PromptOrigin::User,
             task_wake_fallback: None,
+            tool_overrides_update: None,
             respond_to,
             persist_ack: None,
             parsed_prompt_tx: None,
@@ -2002,11 +2019,14 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 .route(
                     "/v1/responses",
                     post(|| async {
-                        let chunk = serde_json::json!(
-                            { "type" : "response.output_text.delta", "sequence_number" :
-                            1, "item_id" : "item-1", "output_index" : 0, "content_index"
-                            : 0, "delta" : "hi", }
-                        );
+                        let chunk = serde_json::json!({
+                            "type": "response.output_text.delta",
+                            "sequence_number": 1,
+                            "item_id": "item-1",
+                            "output_index": 0,
+                            "content_index": 0,
+                            "delta": "hi",
+                        });
                         let first = Ok::<
                             _,
                             std::convert::Infallible,
@@ -2145,6 +2165,10 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 telemetry_enabled: false,
                 supports_backend_search: std::cell::Cell::new(false),
+                tool_overrides: std::cell::RefCell::new(None),
+                resolved_tool_overrides: std::sync::Arc::new(
+                    arc_swap::ArcSwapOption::empty(),
+                ),
                 compactions_remaining: std::cell::Cell::new(None),
                 compaction_at_tokens: std::cell::Cell::new(None),
                 doom_loop_recovery: None,
@@ -2280,6 +2304,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 last_announced_local_date: std::cell::Cell::new(
                     chrono::Local::now().date_naive(),
                 ),
+                prefix_carries_fallback_date: std::cell::Cell::new(false),
                 last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
                 last_api_request_at: std::sync::atomic::AtomicI64::new(0),
                 hook_registry: std::cell::RefCell::new(None),
@@ -2318,11 +2343,15 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
             let request_id_for_task = request_id.clone();
             let sampler_for_task = sampler_handle.clone();
             let request = ConversationRequest {
-                items: vec![
-                    ConversationItem::User(xai_grok_sampling_types::UserItem { content :
-                    vec![xai_grok_sampling_types::ContentPart::Text { text : "hi".into(),
-                    }], synthetic_reason : None, ..Default::default() },)
-                ],
+                items: vec![ConversationItem::User(
+                        xai_grok_sampling_types::UserItem {
+                            content: vec![xai_grok_sampling_types::ContentPart::Text {
+                                text: "hi".into(),
+                            }],
+                            synthetic_reason: None,
+                            ..Default::default()
+                        },
+                    )],
                 ..Default::default()
             };
             let task = tokio::task::spawn_local(async move {
@@ -2355,7 +2384,8 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             assert!(
-                ! still_active, "cancel_running_task did not propagate to the sampler"
+                    !still_active,
+                    "cancel_running_task did not propagate to the sampler"
             );
             server_task.abort();
         })
@@ -2378,12 +2408,10 @@ async fn skill_reminder_deferred_while_turn_running_flushed_when_idle() {
             .await
             .iter()
             .filter(|item| {
-                matches!(
-                                    item, ConversationItem::User(u) if u.content.iter().any(| p |
-                                    matches!(p, xai_grok_sampling_types::ContentPart::Text { text }
-                if
-                                    text.contains("pdf-tools")))
-                                )
+                matches!(item, ConversationItem::User(u) if u.content.iter().any(|p| matches!(
+                    p,
+                    xai_grok_sampling_types::ContentPart::Text { text } if text.contains("pdf-tools")
+                )))
             })
             .count()
     }
@@ -2453,6 +2481,7 @@ async fn cancel_keeps_remaining_queued_prompts_visible_to_clients() {
             json_schema: None,
             origin: crate::session::PromptOrigin::User,
             task_wake_fallback: None,
+            tool_overrides_update: None,
             respond_to,
             persist_ack: None,
             parsed_prompt_tx: None,

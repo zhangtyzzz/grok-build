@@ -70,9 +70,10 @@ impl SessionActor {
         let prev_threshold = self.compaction.threshold_percent.get();
         if prev_threshold != auto_compact_threshold_percent {
             tracing::info!(
-                session_id = % self.session_info.id.0, new_model = % sampling_config
-                .model, old_threshold = prev_threshold, new_threshold =
-                auto_compact_threshold_percent,
+                session_id = %self.session_info.id.0,
+                new_model = %sampling_config.model,
+                old_threshold = prev_threshold,
+                new_threshold = auto_compact_threshold_percent,
                 "auto_compact_threshold_percent updated for model switch"
             );
         }
@@ -88,12 +89,11 @@ impl SessionActor {
         xai_grok_telemetry::unified_log::info(
             "backend_search: model switch",
             Some(self.session_info.id.0.as_ref()),
-            Some(serde_json::json!(
-                { "new_model" : & sampling_config.model, "api_backend" :
-                format!("{:?}", sampling_config.api_backend),
+            Some(serde_json::json!({
+                "new_model": &sampling_config.model,
+                "api_backend": format!("{:?}", sampling_config.api_backend),
                 "supports_backend_search" : sampling_config.supports_backend_search,
-                }
-            )),
+            })),
         );
         let (_, existing) = self
             .chat_state_handle
@@ -197,12 +197,14 @@ impl SessionActor {
             self.chat_state_handle.replace_conversation(conversation);
         } else if !apply_prompt_override {
             tracing::info!(
-                session_id = % self.session_info.id.0, model_id = % model_id.0,
+                session_id = %self.session_info.id.0,
+                model_id = %model_id.0,
                 "handle_set_session_model: skipping prompt override (apply_prompt_override=false)"
             );
         } else {
             tracing::info!(
-                session_id = % self.session_info.id.0, model_id = % model_id.0,
+                session_id = %self.session_info.id.0,
+                model_id = %model_id.0,
                 "handle_set_session_model: skipping prompt rewrite (just rebuilt harness)"
             );
         }
@@ -275,8 +277,8 @@ impl SessionActor {
             let state = self.state.lock().await;
             if state.running_task.is_some() {
                 tracing::warn!(
-                    session_id = % self.session_info.id.0, new_agent_type = % definition
-                    .name,
+                    session_id = %self.session_info.id.0,
+                    new_agent_type = %definition.name,
                     "handle_rebuild_agent_for_definition: turn in flight, rejecting rebuild"
                 );
                 return Err(acp::Error::internal_error()
@@ -285,7 +287,8 @@ impl SessionActor {
         }
         let new_agent_name = definition.name.clone();
         tracing::info!(
-            session_id = % self.session_info.id.0, new_agent_type = % new_agent_name,
+            session_id = %self.session_info.id.0,
+            new_agent_type = %new_agent_name,
             "handle_rebuild_agent_for_definition: rebuilding harness"
         );
         let new_agent = self
@@ -294,8 +297,9 @@ impl SessionActor {
             .await
             .map_err(|e| {
                 tracing::error!(
-                    session_id = % self.session_info.id.0, new_agent_type = %
-                    new_agent_name, error = % e,
+                    session_id = %self.session_info.id.0,
+                    new_agent_type = %new_agent_name,
+                    error = %e,
                     "handle_rebuild_agent_for_definition: AgentBuilder::build failed"
                 );
                 acp::Error::internal_error().data(format!(
@@ -313,6 +317,7 @@ impl SessionActor {
         self.compaction.prefire.clear();
         *self.agent.borrow_mut() = new_agent;
         *self.active_agent_type.lock() = Some(new_agent_name.clone());
+        self.emit_resolved_tool_overrides();
         self.queue_exit_reminder_on_approved_exit.store(
             self.is_cursor_harness(),
             std::sync::atomic::Ordering::Relaxed,
@@ -324,9 +329,7 @@ impl SessionActor {
             self.agent.borrow().tool_bridge().toolset(),
             None,
         ) {
-            tracing::warn!(
-                error = % e, "failed to rebind local session toolset after agent rebuild"
-            );
+            tracing::warn!(error = %e, "failed to rebind local session toolset after agent rebuild");
         }
         {
             let bridge = self.agent.borrow().tool_bridge().clone();
@@ -390,9 +393,12 @@ impl SessionActor {
             if needs_wait {
                 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
                 tokio::select! {
-                    () = & mut notified => {} () = tokio::time::sleep(TIMEOUT) => {
-                    tracing::warn!(session_id = % self.session_info.id.0,
-                    "handle_rebuild_agent_for_definition: timed out waiting for MCP handshakes");
+                    () = &mut notified => {}
+                    () = tokio::time::sleep(TIMEOUT) => {
+                        tracing::warn!(
+                            session_id = %self.session_info.id.0,
+                            "handle_rebuild_agent_for_definition: timed out waiting for MCP handshakes"
+                        );
                     }
                 }
             }
@@ -431,7 +437,8 @@ impl SessionActor {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         self.send_available_commands_update().await;
         tracing::info!(
-            session_id = % self.session_info.id.0, new_agent_type = % new_agent_name,
+            session_id = %self.session_info.id.0,
+            new_agent_type = %new_agent_name,
             "handle_rebuild_agent_for_definition: harness rebuild complete"
         );
         Ok(())
@@ -466,7 +473,8 @@ impl SessionActor {
         save_system_prompt(&self.session_info, &system_prompt);
         if changed {
             tracing::info!(
-                session_id = % self.session_info.id.0, prompt_len = system_prompt.len(),
+                session_id = %self.session_info.id.0,
+                prompt_len = system_prompt.len(),
                 "handle_replace_system_prompt: client override applied"
             );
         } else {
