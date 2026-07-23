@@ -788,6 +788,8 @@ impl crate::types::tool_metadata::ToolMetadata for SearchReplaceTool {
     }
     fn requires_expr(&self) -> Expr<ToolRequirement> {
         Expr::And(vec![
+            // Unless `skip_read_before_edit` is set, require a Read tool in the toolset
+            // (read-before-edit is encouraged via description and RL grading, not runtime-enforced).
             Expr::Value(ToolRequirement::if_params(
                 Expr::Not(Box::new(Expr::Value(ToolParamsRequirement::new(
                     "skip_read_before_edit",
@@ -795,6 +797,12 @@ impl crate::types::tool_metadata::ToolMetadata for SearchReplaceTool {
                 )))),
                 ToolRequirement::tool_kind(ToolKind::Read),
             )),
+            // Description template references these input params via
+            // ${{ params.edit.old_string }}, ${{ params.edit.new_string }},
+            // ${{ params.edit.replace_all }}. They must remain visible.
+            // TODO: We can generate the schemas and requirement by enforcing
+            // it during the registry phase, since these are parts of the params which are
+            // tied to the tool
             Expr::Value(ToolRequirement::input_param(ToolKind::Edit, "old_string")),
             Expr::Value(ToolRequirement::input_param(ToolKind::Edit, "new_string")),
             Expr::Value(ToolRequirement::input_param(ToolKind::Edit, "replace_all")),

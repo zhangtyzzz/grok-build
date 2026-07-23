@@ -760,10 +760,10 @@ fn resolve_agent_definition_acp_profile_wins_for_explicit_grok_build_family() {
         std::env::remove_var("GROK_AGENT");
     }
     let tmp = tempfile::tempdir().unwrap();
-    let acp_profile = xai_grok_agent::AgentDefinition::from_json(&serde_json::json!(
-        { "name" : "custom-devbox-profile", "description" :
-        "Custom devbox profile", }
-    ))
+    let acp_profile = xai_grok_agent::AgentDefinition::from_json(&serde_json::json!({
+        "name": "custom-devbox-profile",
+        "description": "Custom devbox profile",
+    }))
     .expect("agent definition must parse");
     for family_variant in ["grok-build", "grok-build-plan", "grok-build-concise"] {
         let def = MvpAgent::resolve_agent_definition(
@@ -896,10 +896,15 @@ fn parse_session_plugin_dirs_filters_and_dedupes() {
     std::fs::create_dir(&dir).unwrap();
     let file = tmp.path().join("file.txt");
     std::fs::write(&file, "x").unwrap();
-    let meta = serde_json::json!(
-        { "pluginDirs" : [dir.to_string_lossy(), dir.to_string_lossy(), file
-        .to_string_lossy(), "relative/path", 42,] }
-    );
+    let meta = serde_json::json!({
+        "pluginDirs": [
+            dir.to_string_lossy(),          // kept
+            dir.to_string_lossy(),          // duplicate → deduped
+            file.to_string_lossy(),         // not a directory → skipped
+            "relative/path",                // not absolute → skipped
+            42,                             // not a string → skipped
+        ]
+    });
     assert_eq!(parse_session_plugin_dirs(meta.as_object()), vec![dir]);
     assert!(parse_session_plugin_dirs(None).is_empty());
     assert!(parse_session_plugin_dirs(serde_json::json!({}).as_object()).is_empty());
@@ -1140,6 +1145,7 @@ fn make_test_handle(
             cwd: "/tmp".to_string(),
         },
         max_turns: None,
+        resolved_tool_overrides: std::sync::Arc::new(arc_swap::ArcSwapOption::empty()),
         hunk_tracker_handle,
         chat_state_handle: xai_chat_state::ChatStateHandle::noop(),
         signals_handle: crate::session::signals::SessionSignalsHandle::new(),
@@ -2532,6 +2538,21 @@ async fn prepare_video_gen_config_disabled_when_zdr_flag_set() {
         panic!("expected Enabled");
     };
     assert!(zdr_video_output_s3.as_ref().is_some_and(|c| c.is_valid()));
+}
+#[tokio::test(flavor = "current_thread")]
+async fn prepare_video_gen_config_respects_feature_flag() {
+    use xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig;
+    let agent = build_minimal_agent_for_tests();
+    agent.sampling_config.borrow_mut().api_key = Some("test-key".to_string());
+    assert!(matches!(
+        agent.prepare_video_gen_config(),
+        VideoGenConfig::Enabled { .. }
+    ));
+    agent.cfg.borrow_mut().features.video_gen = Some(false);
+    assert!(matches!(
+        agent.prepare_video_gen_config(),
+        VideoGenConfig::Disabled
+    ));
 }
 /// The imagine tier gate fails **open**: with no resolved auth we can't confirm
 /// a restricted personal tier, so the tools stay advertised and un-flagged (the
@@ -4839,11 +4860,14 @@ mod direct_hub_cloud_removed {
     }
     #[test]
     fn cloud_server_id_with_gateway_meta_still_hard_error() {
-        let meta = serde_json::json!(
-            { "x.ai/cloud_server_id" : "srv-legacy", "envId" : "env-1",
-            "x.ai/cloud_existing_workspace" : { "server_id" : "ws-1", "cwd" :
-            "/workspace" } }
-        );
+        let meta = serde_json::json!({
+            "x.ai/cloud_server_id": "srv-legacy",
+            "envId": "env-1",
+            "x.ai/cloud_existing_workspace": {
+                "server_id": "ws-1",
+                "cwd": "/workspace"
+            }
+        });
         let err = reject_direct_hub_cloud_meta(meta.as_object()).expect_err("Direct stamp wins");
         assert_direct_hub_error(err);
     }
@@ -4852,14 +4876,22 @@ mod direct_hub_cloud_removed {
         assert!(reject_direct_hub_cloud_meta(None).is_ok());
         assert!(reject_direct_hub_cloud_meta(serde_json::json!({}).as_object()).is_ok());
         assert!(
-            reject_direct_hub_cloud_meta(serde_json::json!({ "envId" : "env-1" }).as_object())
+            reject_direct_hub_cloud_meta(
+                serde_json::json!({
+                    "envId": "env-1"
+                })
+                .as_object()
+            )
                 .is_ok()
         );
         assert!(
             reject_direct_hub_cloud_meta(
                 serde_json::json!({
-            "x.ai/cloud_existing_workspace" : { "server_id" : "ws-1", "cwd" :
-            "/workspace" } })
+                    "x.ai/cloud_existing_workspace": {
+                        "server_id": "ws-1",
+                        "cwd": "/workspace"
+                    }
+                })
                 .as_object()
             )
             .is_ok()
@@ -4890,10 +4922,11 @@ mod direct_hub_cloud_removed {
             vec!["url"],
             "HubConfig must only serialize url (no proxy-mode fields)"
         );
-        let from_legacy: HubConfig = serde_json::from_value(serde_json::json!(
-            { "url" : "wss://hub.example/ws", "workspace_mode" : "remote",
-            "send_turn_hooks" : false, }
-        ))
+        let from_legacy: HubConfig = serde_json::from_value(serde_json::json!({
+            "url": "wss://hub.example/ws",
+            "workspace_mode": "remote",
+            "send_turn_hooks": false,
+        }))
         .expect("ignore unknown fields");
         assert_eq!(from_legacy.url.as_deref(), Some("wss://hub.example/ws"));
     }

@@ -378,7 +378,8 @@ impl MvpAgent {
             .plugin_registry_handle
             .reload(Some(cwd), &disk_config, trusted, false);
         tracing::debug!(
-            plugin_count = count, "lazily populated plugin registry snapshot"
+            plugin_count = count,
+            "lazily populated plugin registry snapshot"
         );
     }
     /// Fetch managed configs, merge with client servers, return merged list + earliest expiry.
@@ -684,7 +685,10 @@ impl MvpAgent {
         ) {
             Ok(handle) => xai_grok_workspace::WorkspaceOps::local(handle),
             Err(e) => {
-                tracing::error!(error = % e, "failed to create local WorkspaceHandle");
+                tracing::error!(
+                    error = %e,
+                    "failed to create local WorkspaceHandle"
+                );
                 return Err(
                     acp::Error::internal_error().data("workspace not initialized"),
                 );
@@ -774,16 +778,14 @@ impl MvpAgent {
                 }
                 _ => auth_method::PREFERRED_OIDC_UNAVAILABLE,
             };
-            tracing::info!(
-                % msg, "cached_token unavailable; preferred_method forbids fallthrough"
-            );
+            tracing::info!(%msg, "cached_token unavailable; preferred_method forbids fallthrough");
             xai_grok_telemetry::unified_log::warn(
                 "auth cached_token fallthrough blocked by preferred_method",
                 None,
                 Some(
-                    serde_json::json!(
-                        { "preferred_method" : preferred.map(| p | format!("{p:?}")), }
-                    ),
+                    serde_json::json!({
+                    "preferred_method": preferred.map(|p| format!("{p:?}")),
+                }),
                 ),
             );
             return Err(acp::Error::auth_required().data(msg));
@@ -855,7 +857,8 @@ impl MvpAgent {
             let telemetry_mode = cfg.resolve_telemetry_mode();
             let trace_upload = cfg.resolve_trace_upload();
             tracing::info!(
-                telemetry = % telemetry_mode, trace_upload = % trace_upload,
+                telemetry = %telemetry_mode,
+                trace_upload = %trace_upload,
                 "post-auth data capture config re-resolved",
             );
             let grok_user_id = is_xai.then(|| user_id.clone());
@@ -916,9 +919,7 @@ impl MvpAgent {
             crate::util::config::sync_campaign_fields(&mut cfg);
             let raw_config = crate::config::load_effective_config()
                 .unwrap_or_else(|e| {
-                    tracing::warn!(
-                        error = % e, "config reload failed during settings refresh"
-                    );
+                    tracing::warn!(error = %e, "config reload failed during settings refresh");
                     toml::Value::Table(toml::map::Map::new())
                 });
             cfg.re_resolve_runtime_fields(&raw_config);
@@ -1002,9 +1003,7 @@ impl MvpAgent {
             return;
         };
         if stored.announcements != pre_fetch {
-            tracing::debug!(
-                "announcements poll apply skipped: settings changed mid-fetch"
-            );
+            tracing::debug!("announcements poll apply skipped: settings changed mid-fetch");
             return;
         }
         stored.announcements = fresh.announcements;
@@ -1032,9 +1031,10 @@ impl MvpAgent {
         let Some(announcements) = payload_list else {
             return;
         };
-        let payload = serde_json::json!(
-            { "gen" : self.next_announcements_gen(), "announcements" : announcements, }
-        );
+        let payload = serde_json::json!({
+            "gen": self.next_announcements_gen(),
+            "announcements": announcements,
+        });
         let Ok(params) = serde_json::value::to_raw_value(&payload) else {
             return;
         };
@@ -1048,7 +1048,8 @@ impl MvpAgent {
         }
         *self.last_emitted_announcements.borrow_mut() = announcements.clone();
         tracing::info!(
-            count = announcements.len(), mode = ? mode,
+            count = announcements.len(),
+            mode = ?mode,
             "pushing announcements update to clients"
         );
     }
@@ -1139,7 +1140,8 @@ impl MvpAgent {
         let models = self.models_manager.models();
         let Some(catalog_key) = resolve_catalog_key(&models, requested) else {
             tracing::debug!(
-                requested = % requested_str, model_count = models.len(),
+                requested = %requested_str,
+                model_count = models.len(),
                 "resolve_model_id: unknown model id (not in models() by key or .model field)"
             );
             return Err(acp::Error::invalid_params().data("unknown model id"));
@@ -1153,8 +1155,10 @@ impl MvpAgent {
             "model field scan"
         };
         tracing::debug!(
-            "resolve_model_id: matched by {}: requested={} model={}", match_kind,
-            requested_str, entry.info.model
+            "resolve_model_id: matched by {}: requested={} model={}",
+            match_kind,
+            requested_str,
+            entry.info.model
         );
         Ok(entry.clone())
     }
@@ -1232,19 +1236,20 @@ impl MvpAgent {
         }
         if !has_session_key && !model.opts_out_of_ambient_credentials() {
             tracing::warn!(
-                model = model.info().model.as_str(), is_expired = self.auth_manager
-                .is_expired(), auth_type = ? credentials.auth_type,
+                model = model.info().model.as_str(),
+                is_expired = self.auth_manager.is_expired(),
+                auth_type = ?credentials.auth_type,
                 "auth: prepare_sampling_config has no session key",
             );
             xai_grok_telemetry::unified_log::warn(
                 "auth: prepare_sampling_config has no session key",
                 None,
                 Some(
-                    serde_json::json!(
-                        { "model" : model.info().model.as_str(), "is_expired" : self
-                        .auth_manager.is_expired(), "auth_type" : format!("{:?}",
-                        credentials.auth_type), }
-                    ),
+                    serde_json::json!({
+                    "model": model.info().model.as_str(),
+                    "is_expired": self.auth_manager.is_expired(),
+                    "auth_type": format!("{:?}", credentials.auth_type),
+                }),
                 ),
             );
         }
@@ -1306,7 +1311,8 @@ impl MvpAgent {
         };
         let new_config = self.prepare_sampling_config_for_model(model, origin_client);
         tracing::info!(
-            model = % id.0, "agent profile model override applied to parent session"
+            model = %id.0,
+            "agent profile model override applied to parent session"
         );
         (id.clone(), new_config)
     }
@@ -1395,11 +1401,14 @@ impl MvpAgent {
         &self,
     ) -> xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig {
         use xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig;
+        let cfg = self.cfg.borrow();
+        if !cfg.resolve_video_gen().value {
+            return VideoGenConfig::Disabled;
+        }
         let Some(api_key) = self.sampling_config.borrow().api_key.clone() else {
             return VideoGenConfig::Disabled;
         };
         let tier_restricted = self.is_tier_restricted_capability();
-        let cfg = self.cfg.borrow();
         let zdr_video_output_s3 = cfg
             .disable_zdr_incompatible_tools
             .then(|| cfg.zdr_video_output_s3.clone())
@@ -1550,25 +1559,24 @@ impl MvpAgent {
             config_root.as_ref(),
         );
         tracing::info!(
-            worktree_type = ? worktree_type, source = wt_source,
+            worktree_type = ?worktree_type,
+            source = wt_source,
             "WORKTREE_CONFIG_SHELL: resolved worktree type at agent startup"
         );
         if relay_sync_enabled {
             tracing::info!("[grok] Relay sync: ENABLED");
         } else if tui_mode && relay_config_enabled && !has_xai_auth {
-            tracing::info!(
-                "[grok] Relay sync: DISABLED (no auth - run 'grok login' first)"
-            );
+            tracing::info!("[grok] Relay sync: DISABLED (no auth - run 'grok login' first)");
         } else if tui_mode && !relay_config_enabled {
-            tracing::debug!(
-                "Relay sync: DISABLED (not configured in config.toml or env)"
-            );
+            tracing::debug!("Relay sync: DISABLED (not configured in config.toml or env)");
         } else {
             tracing::debug!("Relay sync: DISABLED (not in TUI mode)");
         }
         if cfg.telemetry.trace_upload == Some(false) {
             tracing::info!(
-                enabled = false, reason = "feature_off", "trace_upload_status"
+                enabled = false,
+                reason = "feature_off",
+                "trace_upload_status"
             );
         }
         let (subagent_event_tx, subagent_event_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1722,7 +1730,8 @@ impl MvpAgent {
             return;
         }
         tracing::info!(
-            count = p.session_ids.len(), sessions = ? p.session_ids,
+            count = p.session_ids.len(),
+            sessions = ?p.session_ids,
             "Client disconnected; detaching sessions (no-evict keystone)"
         );
         let checks = p
@@ -1754,9 +1763,7 @@ impl MvpAgent {
                 self.require_gateway_sessions.borrow_mut().remove(&id);
                 self.set_session_live_state(&id, SessionLiveState::Dormant);
                 unloaded += 1;
-                tracing::debug!(
-                    session_id = % id.0, "idle session unloaded to disk on disconnect"
-                );
+                tracing::debug!(session_id = %id.0, "idle session unloaded to disk on disconnect");
             }
         }
         tracing::info!(kept_resident, unloaded, "client-disconnect detach complete");
@@ -1787,7 +1794,8 @@ impl MvpAgent {
         loop {
             if thread.is_finished() {
                 tracing::debug!(
-                    session_id = % session_id.0, "Old session thread finished cleanly"
+                    session_id = %session_id.0,
+                    "Old session thread finished cleanly"
                 );
                 return;
             }
@@ -2601,9 +2609,9 @@ impl MvpAgent {
                         &capture.messages,
                     );
                     futures::join!(
-                        upload_metadata(& ctx, metadata), upload_turn_messages(& ctx,
-                        capture, UploadWait::Confirm), upload_harness_session_archive(&
-                        ctx, session_state),
+                    upload_metadata(&ctx, metadata),
+                    upload_turn_messages(&ctx, capture, UploadWait::Confirm),
+                    upload_harness_session_archive(&ctx, session_state),
                     );
                     let upload_method = resolve_upload_method(&ctx);
                     write_upload_manifest(
@@ -2827,7 +2835,8 @@ impl MvpAgent {
             && let Some(def) = xai_grok_agent::discovery::by_name_in_cwd(required, cwd)
         {
             tracing::info!(
-                agent_name = % def.name, "Using agent definition from model agent_type"
+                agent_name = %def.name,
+                "Using agent definition from model agent_type"
             );
             return def;
         }
@@ -2843,11 +2852,14 @@ impl MvpAgent {
                 Ok(def) => return def,
                 Err(e) => {
                     tracing::error!(
-                        path = % path.display(), error = % e,
+                        path = %path.display(),
+                        error = %e,
                         "Failed to load agent profile from --agent-profile path"
                     );
                     eprintln!(
-                        "error: failed to load agent profile '{}': {}", path.display(), e
+                        "error: failed to load agent profile '{}': {}",
+                        path.display(),
+                        e
                     );
                     crate::instrumentation::finalize_and_exit(1);
                 }
@@ -2857,14 +2869,16 @@ impl MvpAgent {
             match AgentDefinition::from_file(path) {
                 Ok(def) => {
                     tracing::info!(
-                        agent_name = % def.name, path = % path.display(),
+                        agent_name = %def.name,
+                        path = %path.display(),
                         "Using agent definition from config.toml [agent] definition"
                     );
                     return def;
                 }
                 Err(e) => {
                     tracing::warn!(
-                        path = % path.display(), error = % e,
+                        path = %path.display(),
+                        error = %e,
                         "Failed to load agent definition from config.toml [agent] definition, \
                          falling through to next source"
                     );
@@ -2896,7 +2910,8 @@ impl MvpAgent {
                     Ok(def) => def,
                     Err(e) => {
                         tracing::warn!(
-                            path = path, error = % e,
+                            path = path,
+                            error = %e,
                             "Failed to load agent definition from file, falling back to default"
                         );
                         AgentDefinition::grok_build_plan()
@@ -2914,14 +2929,16 @@ impl MvpAgent {
             && resolved.name != required
         {
             tracing::info!(
-                resolved_agent = % resolved.name, model_agent_type = % required,
+                resolved_agent = %resolved.name,
+                model_agent_type = %required,
                 "resolve_agent_definition: model requires different agent, re-resolving"
             );
             if let Some(def) = xai_grok_agent::discovery::by_name_in_cwd(required, cwd) {
                 return def;
             }
             tracing::warn!(
-                model_agent_type = % required, fallback_agent = % resolved.name,
+                model_agent_type = %required,
+                fallback_agent = %resolved.name,
                 "resolve_agent_definition: model agent_type '{}' not found via discovery, \
                  keeping chain-resolved agent",
                 required,
@@ -3223,7 +3240,9 @@ impl MvpAgent {
         }
         let auth_method_id = std::sync::Arc::clone(&self.auth_method_id);
         tracing::info!(
-            session_id = % session_info.id.0, ? startup_hints, "startup hints"
+            session_id = %session_info.id.0,
+            ?startup_hints,
+            "startup hints"
         );
         let auto_compact_threshold_percent = {
             let cfg = self.cfg.borrow();
@@ -3266,7 +3285,8 @@ impl MvpAgent {
             (None, None, None, None)
         };
         tracing::info!(
-            session_id = % session_info.id.0, feedback_url = ? feedback_proxy_url,
+            session_id = %session_info.id.0,
+            feedback_url = ?feedback_proxy_url,
             authenticated = feedback_user_token.is_some(),
             "Initializing feedback manager for session"
         );
@@ -3292,9 +3312,11 @@ impl MvpAgent {
             overrides.apply_to_definition(&mut agent_definition);
             if overrides.has_definition_overrides() {
                 tracing::debug!(
-                    agent = % agent_definition.name, tools = ? overrides.tools,
-                    disallowed = ? overrides.disallowed_tools, permission_mode = ?
-                    overrides.permission_mode, "cli agent overrides applied"
+                    agent = %agent_definition.name,
+                    tools = ?overrides.tools,
+                    disallowed = ?overrides.disallowed_tools,
+                    permission_mode = ?overrides.permission_mode,
+                    "cli agent overrides applied"
                 );
             }
         }
@@ -3307,7 +3329,8 @@ impl MvpAgent {
                     Ok(entry) => Some((mid, entry)),
                     Err(_) => {
                         tracing::warn!(
-                            agent = % agent_definition.name, model = % id,
+                            agent = %agent_definition.name,
+                            model = %id,
                             "agent profile model not in catalog, keeping session default"
                         );
                         None
@@ -3395,7 +3418,8 @@ impl MvpAgent {
                     .join("lsp.json");
                 let project_path = tool_ctx.cwd.as_path().join(".grok").join("lsp.json");
                 tracing::warn!(
-                    cwd = % tool_ctx.cwd, user_lsp_path = % user_path.display(),
+                    cwd = %tool_ctx.cwd,
+                    user_lsp_path = %user_path.display(),
                     project_lsp_path = % project_path.display(),
                     "LSP tools enabled, but no language servers are configured"
                 );
@@ -3507,7 +3531,8 @@ impl MvpAgent {
             );
             if changed {
                 tracing::info!(
-                    session_id = % session_info.id.0, prompt_len = override_prompt.len(),
+                    session_id = %session_info.id.0,
+                    prompt_len = override_prompt.len(),
                     "cold-load: applied systemPromptOverride to loaded head"
                 );
             } else {
@@ -3563,10 +3588,7 @@ impl MvpAgent {
                         std::path::Path::new(&session_info.cwd),
                     );
                     for e in &errors {
-                        tracing::warn!(
-                            agent = % agent_definition.name, error = ? e,
-                            "agent hook parse error"
-                        );
+                        tracing::warn!(agent = %agent_definition.name, error = ?e, "agent hook parse error");
                     }
                     if specs.is_empty() {
                         return None;
@@ -3751,9 +3773,7 @@ impl MvpAgent {
         self.session_threads
             .borrow_mut()
             .insert(session_info.id.clone(), session_thread);
-        tracing::debug!(
-            session_id = % session_info.id.0, "spawn_session_on_thread complete"
-        );
+        tracing::debug!(session_id = %session_info.id.0, "spawn_session_on_thread complete");
         self.set_session_live_state(&session_info.id, SessionLiveState::IdleResident);
         self.ensure_session_supervisor();
         self.heap_profile_set_session_id(&session_info.id.0);
@@ -3765,15 +3785,16 @@ impl MvpAgent {
                 init_meta,
                 &agent_system_prompt,
             );
-            tracing::debug!(session_id = % session_info.id.0, "built system prompt");
+            tracing::debug!(
+                session_id = %session_info.id.0,
+                "built system prompt"
+            );
             let _ = handle
                 .cmd_tx
                 .send(SessionCommand::Initialize {
                     system_prompt,
                 });
-            tracing::debug!(
-                session_id = % session_info.id.0, "enqueued SessionCommand::Initialize"
-            );
+            tracing::debug!(session_id = %session_info.id.0, "enqueued SessionCommand::Initialize");
         }
         let _ = handle.cmd_tx.send(SessionCommand::AdvertiseCommands);
         if let Some(mut loc_rx) = loc_aggregate_rx {
