@@ -35,6 +35,15 @@ rules.
   inputs before creating the version tag and starting `Release`.
 - Ordinary pushes and pull-request merges must not publish a release. See
   `docs/release-distribution.md` for recovery and verification details.
+- Monitor long-running Actions and release workflows with one session-managed
+  watcher, then keep the current agent turn alive with the platform wait
+  mechanism until success, failure, or watcher error. Do not repeatedly
+  foreground-poll, end the turn while the watcher is running, rely on a
+  post-turn callback, or launch a detached watcher whose terminal result cannot
+  be delivered back to the thread.
+- Release monitoring must follow the warmup through the dispatched `Release`
+  run, then verify the tag commit and published assets. Do not advance `main`
+  while a release warmup is still bound to its current commit.
 
 ## Architecture boundaries
 
