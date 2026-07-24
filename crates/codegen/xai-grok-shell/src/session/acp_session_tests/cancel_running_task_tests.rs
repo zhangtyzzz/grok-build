@@ -50,6 +50,8 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 api_backend: Default::default(),
                 auth_scheme: Default::default(),
                 extra_headers: Default::default(),
+                query_params: Default::default(),
+                env_http_headers: Default::default(),
                 context_window: 100_000,
                 client_version: None,
                 force_http1: false,
@@ -99,6 +101,8 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                     top_p: None,
                     api_backend: Default::default(),
                     extra_headers: Default::default(),
+                    query_params: Default::default(),
+                    env_http_headers: Default::default(),
                     context_window: std::num::NonZeroU64::new(100_000).unwrap(),
                     reasoning_effort: None,
                     stream_tool_calls: None,
@@ -367,6 +371,8 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
                 model: "test-model".to_string(),
                 max_completion_tokens: None,
                 extra_headers: Default::default(),
+                query_params: Default::default(),
+                env_http_headers: Default::default(),
                 temperature: None,
                 top_p: None,
                 api_backend: Default::default(),
@@ -423,6 +429,8 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
                     top_p: None,
                     api_backend: Default::default(),
                     extra_headers: Default::default(),
+                    query_params: Default::default(),
+                    env_http_headers: Default::default(),
                     context_window: std::num::NonZeroU64::new(100_000).unwrap(),
                     reasoning_effort: None,
                     stream_tool_calls: None,
@@ -503,6 +511,8 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 model: "test-model".to_string(),
                 max_completion_tokens: None,
                 extra_headers: Default::default(),
+                query_params: Default::default(),
+                env_http_headers: Default::default(),
                 temperature: None,
                 top_p: None,
                 api_backend: Default::default(),
@@ -561,6 +571,8 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                     top_p: None,
                     api_backend: Default::default(),
                     extra_headers: Default::default(),
+                    query_params: Default::default(),
+                    env_http_headers: Default::default(),
                     context_window: std::num::NonZeroU64::new(100_000).unwrap(),
                     reasoning_effort: None,
                     stream_tool_calls: None,
@@ -781,9 +793,27 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 workspace_ops: xai_grok_workspace::WorkspaceOps::for_test(),
                 trace_config_template: std::cell::RefCell::new(None),
             });
-            let _ = actor
-                .process_conversation_turn_with_recovery("disabled-memory", None, None, None)
+            let memory_reminder = actor.first_turn_memory_reminder().await;
+            assert!(
+                memory_reminder.is_none(),
+                "disabled first-turn memory injection must not produce a reminder"
+            );
+            let request = actor
+                .chat_state_handle
+                .build_request(
+                    Vec::new(),
+                    memory_reminder,
+                    actor.memory.is_enabled(),
+                    None,
+                    session_info.id.to_string(),
+                    "disabled-memory".to_string(),
+                )
                 .await;
+            let request = request.expect("request should build");
+            assert!(
+                matches!(request.items.first(), Some(ConversationItem::System(sys))
+                if sys.content.as_ref() == "sys")
+            );
             let (flush_tx, flush_rx) = tokio::sync::oneshot::channel();
             persistence
                 .tx
@@ -2051,6 +2081,8 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 api_backend: xai_grok_sampler::ApiBackend::Responses,
                 auth_scheme: Default::default(),
                 extra_headers: Default::default(),
+                query_params: Default::default(),
+                env_http_headers: Default::default(),
                 context_window: 100_000,
                 client_version: None,
                 force_http1: false,
