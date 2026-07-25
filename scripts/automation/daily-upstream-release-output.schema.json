@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary",
+    "pull_requests",
+    "release_url"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "no_change",
+        "success",
+        "blocked",
+        "failed"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "pull_requests": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uri"
+      }
+    },
+    "release_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}
