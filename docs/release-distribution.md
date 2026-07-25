@@ -278,6 +278,26 @@ The native archive/checksum layout is also consistent with mature Rust CLI
 releases such as [uv](https://github.com/astral-sh/uv/releases) and
 [ripgrep](https://github.com/BurntSushi/ripgrep/releases).
 
+## Daily upstream release automation
+
+`scripts/automation/daily-upstream-release.sh` is the local unattended runner
+for the fork maintainer. It first calls GitHub's compare API and exits without
+starting an agent when `upstream/main` has no commits missing from the fork.
+When upstream is ahead, it creates a fresh temporary clone and starts a
+non-interactive Codex session that follows the repository instructions through
+sync pull requests, CI, versioning, warmup, environment approval, publication,
+and final release verification.
+
+The runner uses the local macOS user's existing Codex and GitHub
+authentication. Install it as a per-user `launchd` agent rather than a GitHub
+Actions schedule: the stable environment reviewer is a human account, and
+automated upstream conflicts may require agent judgment. Use a
+`StartCalendarInterval` at 08:00 while the Mac is set to `Asia/Shanghai`.
+Calendar events missed while the Mac sleeps run once when it next wakes.
+Standard output and error should be directed to persistent files under
+`~/Library/Logs`; successful releases, blocked runs, and failures also produce
+a macOS notification. No-update runs are logged only.
+
 ## Tests and release gates
 
 The local packaging test uses structurally valid synthetic executable images,
