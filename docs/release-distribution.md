@@ -260,6 +260,11 @@ commit.
 Configure both GitHub environments before the first publication. Stable
 releases should require an approving reviewer. Enable immutable releases in
 the repository settings so published tags and assets cannot later be changed.
+When a release reaches this gate, GitHub reports the publisher job as
+`waiting`, with no runner or steps, until a reviewer approves the pending
+deployment. Release monitors must inspect pending deployments rather than wait
+only for a terminal workflow result. After approval, the same workflow run
+continues and the existing watcher can observe publication success or failure.
 
 The pipeline follows GitHub's recommended draft → upload all assets → publish
 sequence for
