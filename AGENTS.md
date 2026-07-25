@@ -41,6 +41,11 @@ rules.
   foreground-poll, end the turn while the watcher is running, rely on a
   post-turn callback, or launch a detached watcher whose terminal result cannot
   be delivered back to the thread.
+- Treat an environment-gated `waiting` job as actionable: inspect the run's
+  pending deployments. If the user already authorized that exact publication
+  and the expected release environment is pending, approve it once and continue
+  the same watcher; otherwise surface the approval request and wait for user
+  authorization. A terminal-only watcher cannot wake the agent for approval.
 - Release monitoring must follow the warmup through the dispatched `Release`
   run, then verify the tag commit and published assets. Do not advance `main`
   while a release warmup is still bound to its current commit.
