@@ -586,7 +586,7 @@ impl SessionActor {
         }
         impl xai_grok_sampler::BearerResolver for AuthManagerBearerResolver {
             fn current_bearer(&self) -> Option<String> {
-                self.0.current_or_expired().map(|a| a.key)
+                self.0.current_wire_valid().map(|a| a.key)
             }
         }
         let (cfg, creds) = self
@@ -628,6 +628,13 @@ impl SessionActor {
         if use_bearer_resolver && let Some(am) = self.auth_manager.as_ref() {
             let _ = am.auth().await;
         }
+        let api_key = if use_bearer_resolver {
+            self.auth_manager
+                .as_ref()
+                .and_then(|am| am.current_wire_valid().map(|a| a.key))
+        } else {
+            creds.api_key
+        };
         let auth_scheme = model_facts.auth_scheme;
         let mut extra_headers = cfg.extra_headers;
         crate::agent::config::inject_url_derived_headers(
@@ -660,7 +667,7 @@ impl SessionActor {
             }
         }
         SamplingConfig {
-            api_key: creds.api_key,
+            api_key,
             base_url: cfg.base_url,
             model_ref: cfg.model_ref,
             route_ref: cfg.route_ref,
@@ -1417,6 +1424,11 @@ impl SessionActor {
                     }
                     Err(e) => {
                         let hard_expired = !am.has_usable_token();
+                        if hard_expired && creds.api_key.is_some() {
+                            let mut cleared = creds;
+                            cleared.api_key = None;
+                            self.chat_state_handle.update_credentials(cleared);
+                        }
                         tracing::warn!(
                             error = % e, hard_expired, model = % sampling_config.model,
                             "auth: preflight get_valid_token failed"
