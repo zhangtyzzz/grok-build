@@ -286,7 +286,9 @@ starting an agent when `upstream/main` has no commits missing from the fork.
 When upstream is ahead, it creates a fresh temporary clone and starts a
 non-interactive Codex session that follows the repository instructions through
 sync pull requests, CI, versioning, warmup, environment approval, publication,
-and final release verification.
+and final release verification. Cargo build artifacts are kept under the
+persistent state directory and reused across the runner's temporary clones;
+set `GROK_DAILY_CARGO_TARGET_DIR` to override that cache location.
 
 The runner uses the local macOS user's existing Codex and GitHub
 authentication. Install it as a per-user `launchd` agent rather than a GitHub
