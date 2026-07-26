@@ -7,16 +7,18 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/App
 FORK_REPO="${GROK_DAILY_FORK_REPO:-zhangtyzzz/grok-build}"
 UPSTREAM_REPO="${GROK_DAILY_UPSTREAM_REPO:-xai-org/grok-build}"
 STATE_DIR="${GROK_DAILY_STATE_DIR:-$HOME/Library/Application Support/grok-build-daily}"
+CARGO_TARGET_DIR="${GROK_DAILY_CARGO_TARGET_DIR:-$STATE_DIR/cargo-target}"
 CODEX_BIN="${CODEX_BIN:-/Applications/ChatGPT.app/Contents/Resources/codex}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_SCHEMA="$SCRIPT_DIR/daily-upstream-release-output.schema.json"
 LAST_RESULT="$STATE_DIR/last-result.json"
 
-if ! mkdir -p "$STATE_DIR"; then
+if ! mkdir -p "$STATE_DIR" "$CARGO_TARGET_DIR"; then
   printf 'Could not create state directory: %s\n' "$STATE_DIR" >&2
   exit 1
 fi
+export CARGO_TARGET_DIR
 
 log() {
   printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"
@@ -65,16 +67,23 @@ checkout="$run_root/repo"
 if ! gh repo clone "$FORK_REPO" "$checkout" -- --quiet; then
   fail "Could not clone $FORK_REPO; workspace preserved at $run_root"
 fi
-if ! git -C "$checkout" remote add upstream "https://github.com/$UPSTREAM_REPO.git"; then
+expected_upstream_url="https://github.com/$UPSTREAM_REPO.git"
+configured_upstream_url="$(git -C "$checkout" remote get-url upstream 2>/dev/null || true)"
+if [ -n "$configured_upstream_url" ]; then
+  if [ "$configured_upstream_url" != "$expected_upstream_url" ]; then
+    fail "Existing upstream remote points to $configured_upstream_url, expected $expected_upstream_url; workspace preserved at $run_root"
+  fi
+elif ! git -C "$checkout" remote add upstream "$expected_upstream_url"; then
   fail "Could not configure upstream remote; workspace preserved at $run_root"
 fi
 
 rm -f "$LAST_RESULT"
 
-if ! "$CODEX_BIN" exec \
+if ! "$CODEX_BIN" \
   --cd "$checkout" \
   --sandbox workspace-write \
   --ask-for-approval never \
+  exec \
   --output-schema "$OUTPUT_SCHEMA" \
   --output-last-message "$LAST_RESULT" \
   - <<'PROMPT'
@@ -114,7 +123,9 @@ Required behavior:
    recurring authorization above, then continue the same watcher.
 8. Verify the final tag resolves to the intended `main` commit and that the
    stable GitHub Release is published, is not a draft or prerelease, and has
-   the complete expected asset set.
+   the complete expected asset set. Use read-only GitHub API or `gh` queries
+   for this final remote verification; do not require a post-publication
+   `git fetch`, which may be blocked by the non-interactive sandbox.
 9. If a conflict cannot be resolved confidently, CI fails, authorization is
    insufficient, or an unexpected environment/repository is involved, do not
    merge or publish. Leave useful remote state when appropriate and return
