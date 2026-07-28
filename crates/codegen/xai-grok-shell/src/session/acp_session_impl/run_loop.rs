@@ -294,7 +294,7 @@ pub(super) async fn run_session(
                         .load(std::sync::atomic::Ordering::Relaxed);
                     if current_len > last_len {
                         tracing::info!(target: xai_grok_telemetry::memory_log::TARGET,
-                    "MEMORY_IDLE_FLUSH: timer fired (conversation {last_len} → {current_len})");
+                            "MEMORY_IDLE_FLUSH: timer fired (conversation {last_len} → {current_len})");
                         session.last_idle_flush_conversation_len
                             .store(current_len, std::sync::atomic::Ordering::Relaxed);
                         tokio::task::spawn_local({
@@ -308,7 +308,7 @@ pub(super) async fn run_session(
                         });
                     } else {
                         tracing::debug!(target: xai_grok_telemetry::memory_log::TARGET,
-                    "MEMORY_IDLE_FLUSH: skipped, no new messages since last flush (len={current_len})");
+                            "MEMORY_IDLE_FLUSH: skipped, no new messages since last flush (len={current_len})");
                     }
                     // Reset for next idle period
                     if let Some(timeout) = session.idle_flush_timeout {
@@ -345,7 +345,7 @@ pub(super) async fn run_session(
                 // ChatStateActor events — coordination signals for session-level concerns.
                 event = chat_state_event_rx.recv() => {
                     match event {
-                    Some(xai_chat_state::ChatStateEvent::ConversationReset { new_len }) => {
+                        Some(xai_chat_state::ChatStateEvent::ConversationReset { new_len }) => {
                             // Reset idle-flush counter so next idle period flushes the new state.
                             session.last_idle_flush_conversation_len
                                 .store(new_len, std::sync::atomic::Ordering::Relaxed);
@@ -533,11 +533,11 @@ pub(super) async fn run_session(
                                     result = ?result,
                                     tool_searches = telem.tool_search_count,
                                     injection_searches = telem.injection_count,
-                    recovery_searches = telem.compaction_recovery_count,
+                                    recovery_searches = telem.compaction_recovery_count,
                                     "MEMORY_SESSION_END: channel closed, session summary saved"
                                 );
                                 if let crate::session::memory::hooks::SessionEndResult::Written(ref path_str) = result {
-                    session.reindex_and_embed(std::path::Path::new(path_str), "session"). await;
+                                    session.reindex_and_embed(std::path::Path::new(path_str), "session").await;
                                     session.send_xai_notification(XaiSessionUpdate::MemorySessionSaved {
                                         path: path_str.clone(),
                                     }).await;
@@ -676,148 +676,378 @@ pub(super) async fn run_session(
                                 tracing::info!(
                                     prompt_id = %prompt_id,
                                     has_running_task = has_running,
-                    queue_depth = queue_depth,
-                    "auto-wake: session actor received synthetic prompt"); }
-        if let Some(ref tp)
-                    = traceparent { let meta = serde_json::json!({ "traceparent" : tp });
-                    xai_file_utils::trace_context::link_current_span_to_meta(& meta); } let
-                    (trace_gcs_config, artifact_tracker) = match artifact_upload_ctx { Some(tu)
-                    => (Some(tu.gcs_config), Some(tu.artifact_tracker)), None => (None, None), };
-                    let cancel_for_send_now = session.queue_input(prompt_blocks, prompt_id,
-                    prompt_mode, trace_gcs_config, artifact_tracker, client_identifier,
-                    screen_mode, verbatim, json_schema, send_now, task_wake_fallback,
-                    tool_overrides_update, respond_to, persist_ack, parsed_prompt_tx). await;
-                    if cancel_for_send_now { session
-                    .cancel_turn_for_send_now(& mut replay_buffer). await; }
-                    SessionActor::maybe_start_running_task(session.clone(), completion_tx
-                    .clone()). await; } SessionCommand::SessionMode { session_mode, responds_to }
-                    => { let outcome = session.handle_session_mode(session_mode). await
-                    .map_err(|error| error.to_string()); if outcome.is_err() && session.state
-                    .lock().await.running_task.is_some() { if let Some(notification) =
-                    replay_buffer.flush() { session.emit_buffered(notification).await; } session
-                    .cancel_running_task(false, false, false,
-                    Some("plan_transition_failed".to_owned())).await; } let _ = responds_to
-                    .send(outcome); } SessionCommand::ApplyPlanToolTransition { entering,
-                    responds_to } => { let outcome = session.apply_plan_tool_transition(entering)
-                    .await.map(|_| ()).map_err(|error| error.to_string()); match responds_to {
-                    Some(tx) => { let _ = tx.send(outcome); } None => { if let Err(error) = outcome
-                    { tracing::error!(%error, entering,
-                    "fire-and-forget Plan Mode transition failed durable barrier"); } } } }
-                    SessionCommand::SetSessionModel { sampling_config, use_concise,
-                    apply_prompt_override, skip_prompt_rewrite, auto_compact_threshold_percent,
-                    responds_to } => { let updated_model_id = session
-                    .handle_set_session_model(sampling_config, use_concise,
-                    apply_prompt_override, skip_prompt_rewrite, auto_compact_threshold_percent).
-                    await; let _ = responds_to.send(updated_model_id); }
-                    SessionCommand::RebuildAgentForDefinition { definition, responds_to } => {
-                    let outcome = session.handle_rebuild_agent_for_definition(definition). await;
-                    let _ = responds_to.send(outcome); } SessionCommand::OverrideModelName {
-                    model_name, extra_headers, context_window } => { if let Some((mut cfg,
-                    existing)) = session.chat_state_handle
-                    .get_sampling_config_and_credentials(). await {
-                    tracing::info!(target : SESSION_LOG, session_id = % session.session_info.id,
-                    old_model = % cfg.model, new_model = % model_name, extra_header_count =
-                    extra_headers.len(), old_context_window = cfg.context_window.get(),
-                    new_context_window = ? context_window.map(| cw | cw.get()),
-                    "OVERRIDE_MODEL: changing model name in sampling config"); cfg.model =
-                    model_name.clone(); cfg.model_ref = None; cfg.route_ref = None; cfg
-                    .extra_headers.extend(extra_headers); if let Some(cw) =
-                    context_window && session.compaction.context_window_override.is_none() { cfg
-                    .context_window = cw; } let model_base_url = cfg.base_url.clone(); let
-                    provider_auth_scheme = session.models_manager.models().values().find(| entry |
-                    entry.provider.is_some() && entry.info().model == model_name && entry
-                    .info().base_url == model_base_url).map(| entry | entry.info().auth_scheme);
-                    let provider_bound_target = provider_auth_scheme.is_some(); let session_key =
-                    session.auth_manager.as_ref().and_then(|manager| manager.current_or_expired()
-                    .map(|auth| auth.key)); let resolved_credentials = crate
-                    ::agent::config::try_resolve_model_credentials(None, model_name.as_str(),
-                    model_base_url.as_str(), session_key.as_deref()).map(|r|
-                    xai_chat_state::Credentials { api_key: r.api_key, auth_type: r.auth_type,
-                    alpha_test_key: existing.alpha_test_key.clone(), client_version: existing
-                    .client_version.clone(), }).unwrap_or_else(|| { if provider_bound_target {
-                    xai_chat_state::Credentials { api_key: None, auth_type:
-                    xai_chat_state::AuthType::ApiKey, alpha_test_key: existing.alpha_test_key,
-                    client_version: existing.client_version, } } else { existing } }); if session
-                    .chat_state_handle.replace_sampling_config_and_credentials(cfg,
-                    resolved_credentials).await.is_some() { session.signals_handle()
-                    .set_primary_model(&model_name); let auth_facts = provider_auth_scheme.map(|
-                    auth_scheme| (format!("\0{}\0{}", model_name, model_base_url), crate
-                    ::agent::config::ModelAuthFacts { byok: crate::agent::auth_method
-                    ::ModelByok::Byok, auth_scheme, })); session.model_auth_facts
-                    .replace(auth_facts); session.invalidate_model_auth_memo(); } else {
-                    tracing::error!(session_id = %session.session_info.id,
-                    "OVERRIDE_MODEL: chat-state actor unavailable; override was not acknowledged");
-                    } } } SessionCommand::GetCurrentModel {
-                    responds_to } => { let model = session.chat_state_handle
-                    .get_sampling_config(). await .map(| c | c.model).unwrap_or_default(); let _
-                    = responds_to.send(model); } SessionCommand::GetCurrentPromptMode {
-                    responds_to } => { let mode = * session.current_prompt_mode.lock(); let _ =
-                    responds_to.send(mode); } SessionCommand::GetModelMetadata { responds_to } =>
-                    { let id = session.chat_state_handle.get_last_model_metadata(). await; let _
-                    = responds_to.send(id); } SessionCommand::GetSessionInfo { responds_to } => {
-                    let info = session.build_session_info(). await; let _ = responds_to
-                    .send(info); } SessionCommand::BackgroundForegroundCommand { tool_call_id,
-                    respond_to } => { let result = session.agent.borrow().tool_bridge()
-                    .background_foreground_command(& tool_call_id). await; let _ = respond_to
-                    .send(result); } SessionCommand::KillBackgroundTask { task_id, respond_to }
-                    => { let result = session.agent.borrow().tool_bridge().kill_background_task(&
-                    task_id). await .map_err(| e | e.to_string()); let _ = respond_to
-                    .send(result); } SessionCommand::DeleteScheduledTask { task_id, respond_to }
-                    => { let result = session.agent.borrow().tool_bridge()
-                    .delete_scheduled_task(& task_id). await .map_err(| e | e.to_string()); let _
-                    = respond_to.send(result); } SessionCommand::ListTasks { respond_to } => {
-                    let result = session.agent.borrow().tool_bridge().list_tasks(). await; let _
-                    = respond_to.send(result); } SessionCommand::GetHooksList { respond_to } => {
-                    use crate ::extensions::hooks::hook_spec_to_info; let hooks = match &*
-                    session.hook_registry.borrow() { Some(registry) => registry.all_hooks()
-                    .iter().map(| spec | hook_spec_to_info(spec)).collect(), None => Vec::new(),
-                    }; let project_trusted = crate
-                    ::agent::folder_trust::project_scope_allowed(std::path::Path::new(& session
-                    .session_info.cwd),); let _ = respond_to
-                    .send(xai_hooks_plugins_types::HooksListResponse { hooks, project_trusted,
-                    load_errors : session.hook_load_errors.borrow().clone(), }); }
-                    SessionCommand::HooksAction { action, respond_to } => { let outcome = session
-                    .handle_hooks_action(action). await; let _ = respond_to.send(outcome); }
-                    SessionCommand::NotifyPluginUpdates { updates } => { session
-                    .send_xai_notification(XaiSessionUpdate::PluginUpdatesInstalled { updates },)
-                    . await; } SessionCommand::PluginsAction { action, respond_to } => { let
-                    outcome = session.handle_plugins_action(action). await; let _ = respond_to
-                    .send(outcome); } SessionCommand::PluginsList { respond_to } => { let _ =
-                    respond_to.send(session.plugin_registry.borrow().clone()); }
-                    SessionCommand::DispatchNotificationHook { notification_type, message, title,
-                    level, } => { session.dispatch_notification_hook(& notification_type,
-                    message, title, level,). await; } SessionCommand::DropMonitorNotifications {
-                    task_id } => { { let mut state = session.state.lock(). await; state
-                    .pending_notifications.retain(| n | { ! matches!(& n.source,
-                    NotificationSource::MonitorEvent { task_id : tid } if tid == & task_id) }); }
-                    if let Some(buffer) = & session.tool_context.monitor_event_buffer { let
-                    dropped = buffer.drain_matching(| e | e.task_id == task_id); if ! dropped
-                    .is_empty() { tracing::debug!(task_id = % task_id, dropped = dropped.len(),
-                    "dropped buffered monitor events after TaskCompleted auto-wake"); } } }
-                    SessionCommand::InjectNotification { prompt_id, prompt_blocks, priority,
-                    source } => { let is_turn_active = session.tool_context.is_turn_active
-                    .as_ref().map(| f | f.load(std::sync::atomic::Ordering::Relaxed))
-                    .unwrap_or(false); if is_turn_active && priority ==
-                    NotificationPriority::Next { if let Some(buffer) = & session.tool_context
-                    .monitor_event_buffer { let non_text_count = prompt_blocks.iter().filter(| b
-                    | ! matches!(b, acp::ContentBlock::Text(_))).count(); if non_text_count > 0 {
-                    tracing::debug!(non_text_count,
-                    "Non-text content blocks dropped in mid-turn monitor event routing"); } let
-                    event_text = prompt_blocks.iter().filter_map(| b | { if let
-                    acp::ContentBlock::Text(t) = b { Some(t.text.clone()) } else { None } })
-                    .collect::< Vec < _ >> ().join("\n"); let task_id = source.task_id()
-                    .to_owned(); const MAX_BUFFER_EVENTS : usize = 50; buffer
-                    .push_capped(xai_grok_tools::implementations::grok_build::task::types::MonitorEventNotification
-                    { task_id : task_id.clone(), event_text, owner_session_id : Some(session
-                    .session_info.id.0.to_string(),), }, MAX_BUFFER_EVENTS,);
-                    tracing::debug!(task_id = % task_id,
-                    "Routed monitor event to mid-turn buffer"); } } else { { let mut state =
-                    session.state.lock(). await; SessionActor::push_pending_notification(& mut
-                    state, PendingNotification { prompt_id, prompt_blocks, priority, source, },);
-                    } SessionActor::maybe_drain_notifications(session.clone(), completion_tx
-                    .clone()). await; } } SessionCommand::RecordGoalTurnTaskIds { task_ids } => {
-                    session.record_reparented_goal_turn_task_ids(task_ids); }
-                    SessionCommand::RemoveQueuedPrompt { id, expected_version, owner } => {
+                                    queue_depth = queue_depth,
+                                    "auto-wake: session actor received synthetic prompt"
+                                );
+                            }
+                            // Adopt the caller's trace context so session.handle_prompt
+                            // is linked to agent.prompt across the channel boundary.
+                            if let Some(ref tp) = traceparent {
+                                let meta = serde_json::json!({ "traceparent": tp });
+                                xai_file_utils::trace_context::link_current_span_to_meta(&meta);
+                            }
+                            let (trace_gcs_config, artifact_tracker) = match artifact_upload_ctx {
+                                Some(tu) => (Some(tu.gcs_config), Some(tu.artifact_tracker)),
+                                None => (None, None),
+                            };
+                            let cancel_for_send_now = session
+                                .queue_input(prompt_blocks, prompt_id, prompt_mode, trace_gcs_config, artifact_tracker, client_identifier, screen_mode, verbatim, json_schema, send_now, task_wake_fallback, tool_overrides_update, respond_to, persist_ack, parsed_prompt_tx)
+                                .await;
+                            if cancel_for_send_now {
+                                session.cancel_turn_for_send_now(&mut replay_buffer).await;
+                            }
+                            SessionActor::maybe_start_running_task(session.clone(), completion_tx.clone()).await;
+                        }
+                        SessionCommand::SessionMode { session_mode, responds_to } => {
+                            let outcome = session
+                                .handle_session_mode(session_mode)
+                                .await
+                                .map_err(|error| error.to_string());
+                            if outcome.is_err() && session.state.lock().await.running_task.is_some() {
+                                if let Some(notification) = replay_buffer.flush() {
+                                    session.emit_buffered(notification).await;
+                                }
+                                session
+                                    .cancel_running_task(
+                                        false,
+                                        false,
+                                        false,
+                                        Some("plan_transition_failed".to_owned()),
+                                    )
+                                    .await;
+                            }
+                            let _ = responds_to.send(outcome);
+                        }
+                        SessionCommand::ApplyPlanToolTransition {
+                            entering,
+                            responds_to,
+                        } => {
+                            let outcome = session
+                                .apply_plan_tool_transition(entering)
+                                .await
+                                .map(|_| ())
+                                .map_err(|error| error.to_string());
+                            match responds_to {
+                                Some(tx) => {
+                                    let _ = tx.send(outcome);
+                                }
+                                None => {
+                                    if let Err(error) = outcome {
+                                        tracing::error!(
+                                            %error,
+                                            entering,
+                                            "fire-and-forget Plan Mode transition failed durable barrier"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        SessionCommand::SetSessionModel { sampling_config, use_concise, apply_prompt_override, skip_prompt_rewrite, auto_compact_threshold_percent, responds_to } => {
+                            let updated_model_id = session.handle_set_session_model(sampling_config, use_concise, apply_prompt_override, skip_prompt_rewrite, auto_compact_threshold_percent).await;
+                            let _ = responds_to.send(updated_model_id);
+                        }
+                        SessionCommand::RebuildAgentForDefinition { definition, responds_to } => {
+                            let outcome = session.handle_rebuild_agent_for_definition(definition).await;
+                            let _ = responds_to.send(outcome);
+                        }
+                        SessionCommand::OverrideModelName { model_name, extra_headers, context_window } => {
+                            if let Some((mut cfg, existing)) = session
+                                .chat_state_handle
+                                .get_sampling_config_and_credentials()
+                                .await
+                            {
+                                tracing::info!(
+                                    target: SESSION_LOG,
+                                    session_id = %session.session_info.id,
+                                    old_model = %cfg.model,
+                                    new_model = %model_name,
+                                    extra_header_count = extra_headers.len(),
+                                    old_context_window = cfg.context_window.get(),
+                                    new_context_window = ?context_window.map(|cw| cw.get()),
+                                    "OVERRIDE_MODEL: changing model name in sampling config"
+                                );
+                                cfg.model = model_name.clone();
+                                cfg.model_ref = None;
+                                cfg.route_ref = None;
+                                cfg.extra_headers.extend(extra_headers);
+                                if let Some(cw) = context_window
+                                    && session.compaction.context_window_override.is_none()
+                                {
+                                    cfg.context_window = cw;
+                                }
+                                let model_base_url = cfg.base_url.clone();
+                                let provider_auth_scheme = session
+                                    .models_manager
+                                    .models()
+                                    .values()
+                                    .find(|entry| {
+                                        entry.provider.is_some()
+                                            && entry.info().model == model_name
+                                            && entry.info().base_url == model_base_url
+                                    })
+                                    .map(|entry| entry.info().auth_scheme);
+                                let provider_bound_target = provider_auth_scheme.is_some();
+                                let session_key = session.auth_manager.as_ref().and_then(|manager| {
+                                    manager.current_or_expired().map(|auth| auth.key)
+                                });
+                                let resolved_credentials =
+                                    crate::agent::config::try_resolve_model_credentials(
+                                        None,
+                                        model_name.as_str(),
+                                        model_base_url.as_str(),
+                                        session_key.as_deref(),
+                                    )
+                                    .map(|resolved| xai_chat_state::Credentials {
+                                        api_key: resolved.api_key,
+                                        auth_type: resolved.auth_type,
+                                        alpha_test_key: existing.alpha_test_key.clone(),
+                                        client_version: existing.client_version.clone(),
+                                    })
+                                    .unwrap_or_else(|| {
+                                        if provider_bound_target {
+                                            xai_chat_state::Credentials {
+                                                api_key: None,
+                                                auth_type: xai_chat_state::AuthType::ApiKey,
+                                                alpha_test_key: existing.alpha_test_key,
+                                                client_version: existing.client_version,
+                                            }
+                                        } else {
+                                            existing
+                                        }
+                                    });
+                                if session
+                                    .chat_state_handle
+                                    .replace_sampling_config_and_credentials(
+                                        cfg,
+                                        resolved_credentials,
+                                    )
+                                    .await
+                                    .is_some()
+                                {
+                                    session.signals_handle().set_primary_model(&model_name);
+                                    let auth_facts = provider_auth_scheme.map(|auth_scheme| {
+                                        (
+                                            format!("\0{}\0{}", model_name, model_base_url),
+                                            crate::agent::config::ModelAuthFacts {
+                                                byok: crate::agent::auth_method::ModelByok::Byok,
+                                                auth_scheme,
+                                            },
+                                        )
+                                    });
+                                    session.model_auth_facts.replace(auth_facts);
+                                    session.invalidate_model_auth_memo();
+                                } else {
+                                    tracing::error!(
+                                        session_id = %session.session_info.id,
+                                        "OVERRIDE_MODEL: chat-state actor unavailable; override was not acknowledged"
+                                    );
+                                }
+                            }
+                        }
+                        SessionCommand::GetCurrentModel { responds_to } => {
+                            let model = session.chat_state_handle.get_sampling_config().await
+                                .map(|c| c.model)
+                                .unwrap_or_default();
+                            let _ = responds_to.send(model);
+                        }
+                        SessionCommand::GetCurrentPromptMode { responds_to } => {
+                            let mode = *session.current_prompt_mode.lock();
+                            let _ = responds_to.send(mode);
+                        }
+                        SessionCommand::GetModelMetadata { responds_to } => {
+                            let id = session.chat_state_handle.get_last_model_metadata().await;
+                            let _ = responds_to.send(id);
+                        }
+                        SessionCommand::GetSessionInfo { responds_to } => {
+                            let info = session.build_session_info().await;
+                            let _ = responds_to.send(info);
+                        }
+                        SessionCommand::BackgroundForegroundCommand { tool_call_id, respond_to } => {
+                            let result = session.agent.borrow().tool_bridge()
+                                .background_foreground_command(&tool_call_id)
+                                .await;
+                            let _ = respond_to.send(result);
+                        }
+                        SessionCommand::KillBackgroundTask { task_id, respond_to } => {
+                            let result = session.agent.borrow().tool_bridge()
+                                .kill_background_task(&task_id)
+                                .await
+                                .map_err(|e| e.to_string());
+                            let _ = respond_to.send(result);
+                        }
+                        SessionCommand::DeleteScheduledTask { task_id, respond_to } => {
+                            let result = session.agent.borrow().tool_bridge()
+                                .delete_scheduled_task(&task_id)
+                                .await
+                                .map_err(|e| e.to_string());
+                            let _ = respond_to.send(result);
+                        }
+                        SessionCommand::ListTasks { respond_to } => {
+                            let result = session.agent.borrow().tool_bridge()
+                                .list_tasks()
+                                .await;
+                            let _ = respond_to.send(result);
+                        }
+                        SessionCommand::GetHooksList { respond_to } => {
+                            use crate::extensions::hooks::hook_spec_to_info;
+
+                            let hooks = match &*session.hook_registry.borrow() {
+                                Some(registry) => registry
+                                    .all_hooks()
+                                    .iter()
+                                    .map(|spec| hook_spec_to_info(spec))
+                                    .collect(),
+                                None => Vec::new(),
+                            };
+
+                            // Report the folder-trust verdict so the flag matches
+                            // the gated registry built above.
+                            let project_trusted =
+                                crate::agent::folder_trust::project_scope_allowed(
+                                    std::path::Path::new(&session.session_info.cwd),
+                                );
+
+                            let _ = respond_to.send(xai_hooks_plugins_types::HooksListResponse {
+                                hooks,
+                                project_trusted,
+                                load_errors: session.hook_load_errors.borrow().clone(),
+                            });
+                        }
+                        SessionCommand::HooksAction { action, respond_to } => {
+                            let outcome = session.handle_hooks_action(action).await;
+                            let _ = respond_to.send(outcome);
+                        }
+                        SessionCommand::NotifyPluginUpdates { updates } => {
+                            session
+                                .send_xai_notification(
+                                    XaiSessionUpdate::PluginUpdatesInstalled { updates },
+                                )
+                                .await;
+                        }
+                        SessionCommand::PluginsAction { action, respond_to } => {
+                            let outcome = session.handle_plugins_action(action).await;
+                            let _ = respond_to.send(outcome);
+                        }
+                        SessionCommand::PluginsList { respond_to } => {
+                            let _ = respond_to.send(session.plugin_registry.borrow().clone());
+                        }
+                        SessionCommand::DispatchNotificationHook {
+                            notification_type,
+                            message,
+                            title,
+                            level,
+                        } => {
+                            session
+                                .dispatch_notification_hook(
+                                    &notification_type,
+                                    message,
+                                    title,
+                                    level,
+                                )
+                                .await;
+                        }
+                        SessionCommand::DropMonitorNotifications { task_id } => {
+                            // Discard pending + mid-turn-buffered monitor events
+                            // for this task so a TaskCompleted auto-wake is the
+                            // sole model-facing signal for natural exit.
+                            {
+                                let mut state = session.state.lock().await;
+                                state.pending_notifications.retain(|n| {
+                                    !matches!(
+                                        &n.source,
+                                        NotificationSource::MonitorEvent { task_id: tid }
+                                            if tid == &task_id
+                                    )
+                                });
+                            }
+                            if let Some(buffer) = &session.tool_context.monitor_event_buffer {
+                                let dropped = buffer.drain_matching(|e| e.task_id == task_id);
+                                if !dropped.is_empty() {
+                                    tracing::debug!(
+                                        task_id = %task_id,
+                                        dropped = dropped.len(),
+                                        "dropped buffered monitor events after TaskCompleted auto-wake"
+                                    );
+                                }
+                            }
+                        }
+                        SessionCommand::InjectNotification { prompt_id, prompt_blocks, priority, source } => {
+                            let is_turn_active = session
+                                .tool_context
+                                .is_turn_active
+                                .as_ref()
+                                .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+                                .unwrap_or(false);
+
+                            if is_turn_active && priority == NotificationPriority::Next {
+                                // Mid-turn + Next: push to the shared buffer for
+                                // the turn loop's `inject_pending_monitor_events`.
+                                if let Some(buffer) = &session.tool_context.monitor_event_buffer {
+                                    let non_text_count = prompt_blocks.iter().filter(|b| !matches!(b, acp::ContentBlock::Text(_))).count();
+                                    if non_text_count > 0 {
+                                        tracing::debug!(
+                                            non_text_count,
+                                            "Non-text content blocks dropped in mid-turn monitor event routing"
+                                        );
+                                    }
+
+                                    let event_text = prompt_blocks
+                                        .iter()
+                                        .filter_map(|b| {
+                                            if let acp::ContentBlock::Text(t) = b {
+                                                Some(t.text.clone())
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n");
+
+                                    let task_id = source.task_id().to_owned();
+
+                                    // Cap to prevent unbounded growth during long tool calls.
+                                    const MAX_BUFFER_EVENTS: usize = 50;
+                                    buffer.push_capped(
+                                        xai_grok_tools::implementations::grok_build::monitor::types::MonitorEventNotification {
+                                            task_id: task_id.clone(),
+                                            event_text,
+                                            // Tag with this session's id so the
+                                            // shared (leader-mode) buffer drain
+                                            // sites only surface it here. The
+                                            // bridge guard guarantees this
+                                            // event is owned by this session.
+                                            owner_session_id: Some(
+                                                session.session_info.id.0.to_string(),
+                                            ),
+                                        },
+                                        MAX_BUFFER_EVENTS,
+                                    );
+
+                                    tracing::debug!(
+                                        task_id = %task_id,
+                                        "Routed monitor event to mid-turn buffer"
+                                    );
+                                }
+                            } else {
+                                {
+                                    let mut state = session.state.lock().await;
+                                    SessionActor::push_pending_notification(
+                                        &mut state,
+                                        PendingNotification {
+                                            prompt_id,
+                                            prompt_blocks,
+                                            priority,
+                                            source,
+                                        },
+                                    );
+                                }
+                                SessionActor::maybe_drain_notifications(session.clone(), completion_tx.clone()).await;
+                            }
+                        }
+                        SessionCommand::RecordGoalTurnTaskIds { task_ids } => {
+                            session.record_reparented_goal_turn_task_ids(task_ids);
+                        }
+                        SessionCommand::RemoveQueuedPrompt { id, expected_version, owner } => {
                             session.handle_remove_queued_prompt(&id, expected_version, owner.as_deref()).await;
                         }
                         SessionCommand::ReorderQueue { ordered_ids } => {
@@ -981,7 +1211,7 @@ pub(super) async fn run_session(
                             // that never happened.
                             let actual = session.permissions.is_yolo_mode();
                             if let Some(enabled) = yolo_toggle_report(was, actual) {
-                    session.emit_event(crate ::session::events::Event::YoloToggled { enabled });
+                                session.emit_event(crate::session::events::Event::YoloToggled { enabled });
                             }
                         }
                         SessionCommand::SetAutoMode { enabled } => {
@@ -1725,7 +1955,7 @@ pub(super) async fn run_session(
                                     turn_number.and_then(|n| usize::try_from(n).ok());
                                 let (last_user_message, last_assistant_message) = match turn_idx {
                                     Some(n) => {
-                    let conv = s.chat_state_handle.get_conversation(). await;
+                                        let conv = s.chat_state_handle.get_conversation().await;
                                         turn_texts_for_feedback(&conv, n)
                                     }
                                     None => {
@@ -1780,91 +2010,230 @@ pub(super) async fn run_session(
                                 s.handle_recap(auto).await;
                             });
                         }
-                    SessionCommand::AISuggest { prefix, cwd, model_override, respond_to } => {
-                    let s = session.clone(); tokio::task::spawn_local(async move { let result = s
-                    .handle_ai_suggest(& prefix, & cwd, model_override.as_deref()). await; let _
-                    = respond_to.send(result); }); } SessionCommand::SuggestPrompt {
-                    model_override, respond_to } => { let s = session.clone();
-                    tokio::task::spawn_local(async move { let result = s
-                    .handle_suggest_prompt(model_override.as_deref()). await; let _ = respond_to
-                    .send(result); }); } SessionCommand::RewriteMemoryNote { raw_text,
-                    context_summary, respond_to } => { let s = session.clone();
-                    tokio::task::spawn_local(async move { let result = s
-                    .handle_rewrite_memory_note(& raw_text, & context_summary). await; let _ =
-                    respond_to.send(result); }); } SessionCommand::Interject { text, id, images }
-                    => { session.broadcast_interjection(& text, id.as_deref()); session.events
-                    .emit(crate ::session::events::Event::Interjected { source : crate
-                    ::session::events::InterjectionSource::Direct, image_count : images.len() as
-                    u32, redirect_kind : crate ::session::events::RedirectKind::Interjection, });
-                    let turn_running = session.current_prompt_id.lock().ok().and_then(| g | g
-                    .clone()).is_some(); if turn_running { session.pending_interjections
-                    .push(PendingInterjection { text, attachments : images, });
-                    tracing::info!("Queued mid-turn interjection"); } else { session
-                    .queue_interjection_fallback_prompt(text, images, true). await;
-                    SessionActor::maybe_start_running_task(session.clone(), completion_tx
-                    .clone(),). await; } } SessionCommand::ExternalNotify {
-                    notification_id, kind, text, wake, respond_to } => { let text =
-                    format_external_notification(&kind, &notification_id, &text); session
-                    .broadcast_interjection(&text, Some(&notification_id)); let turn_running =
-                    session.state.lock().await.running_task.is_some(); if turn_running { session
-                    .pending_interjections.push(PendingInterjection { text, attachments:
-                    Vec::new(), }); tracing::info!(notification_id = %notification_id,
-                    kind = %kind, "Queued external notification for the active turn"); } else {
-                    session.queue_interjection_fallback_prompt(text, Vec::new(), true).await; if
-                    wake { SessionActor::maybe_start_running_task(session.clone(), completion_tx
-                    .clone(),).await; } tracing::info!(notification_id = %notification_id,
-                    kind = %kind, wake, "Queued external notification for an idle session"); }
-                    let _ = respond_to.send(ExternalNotifyAck { turn_running, will_wake:
-                    !turn_running && wake, }); } SessionCommand::GoalSummaryTurn { prompt_text } => {
-                    let prompt_id = format!("goal-summary-{}", uuid::Uuid::now_v7()); let
-                    prompt_blocks =
-                    vec![acp::ContentBlock::Text(acp::TextContent::new(prompt_text))]; let
-                    (respond_to, _) = tokio::sync::oneshot::channel(); { let mut state = session
-                    .state.lock(). await; state.pending_inputs.push_back(InputItem { prompt_id,
-                    prompt_blocks, prompt_mode : crate ::session::plan_mode::PromptMode::Agent,
-                    trace_gcs_config : None, artifact_tracker : None, client_identifier : None,
-                    screen_mode : None, verbatim : true, json_schema : None, origin :
-                    super::PromptOrigin::GoalSummary, task_wake_fallback : None,
-                    tool_overrides_update : None, respond_to, persist_ack : None,
-                    parsed_prompt_tx : None, queue_meta : None, send_now : false, }); }
-                    SessionActor::maybe_start_running_task(session.clone(),
-                    completion_tx.clone()). await; } SessionCommand::WorkflowCompletionTurn {
-                    run_id, revision } => { let state_suppressed = session.state.lock(). await
-                    .notifications_suppressed; let wake_suppressed = state_suppressed || session
-                    .goal_loop_active() || session.tool_context.task_wake_suppressed.as_ref()
-                    .is_some_and(| gate | gate.get()); let should_wake = if wake_suppressed {
-                    false } else { let tracker = session.workflow_tracker(). await; tracker
-                    .lock().is_unreported_completion(& run_id, revision) }; if ! should_wake {
-                    continue; } let prompt_id =
-                    format!("workflow-completed-{run_id}-{revision}"); let prompt_text =
-                    "A background workflow stopped. Review the workflow completion reminder, report the result to the user, and take any appropriate next action.";
-                    let (respond_to, _) = tokio::sync::oneshot::channel(); { let mut state =
-                    session.state.lock(). await; let workflow_wake_queued = state.pending_inputs
-                    .iter().any(| item | { matches!(item.origin,
-                    super::PromptOrigin::WorkflowCompleted { .. }) }); if workflow_wake_queued {
-                    continue; } state.pending_inputs.push_back(InputItem { prompt_id,
-                    prompt_blocks :
-                    vec![acp::ContentBlock::Text(acp::TextContent::new(prompt_text))],
-                    prompt_mode : crate ::session::plan_mode::PromptMode::Agent, trace_gcs_config
-                    : None, artifact_tracker : None, client_identifier : None, screen_mode :
-                    None, verbatim : true, json_schema : None, origin :
-                    super::PromptOrigin::WorkflowCompleted { completion_id :
-                    format!("{run_id}-{revision}"), }, task_wake_fallback : None,
-                    tool_overrides_update : None, respond_to, persist_ack : None,
-                    parsed_prompt_tx : None, queue_meta : None, send_now : false, }); }
-                    SessionActor::maybe_start_running_task(session.clone(),
-                    completion_tx.clone()). await; } SessionCommand::TakeTurnMessages {
-                    respond_to } => { let result = session.chat_state_handle.take_turn_messages()
-                    . await; let _ = respond_to.send(result); }
-                    SessionCommand::TakeHarnessTraceTurns { respond_to } => { let result =
-                    session.chat_state_handle.take_harness_trace_turns(). await; let _ =
-                    respond_to.send(result); } SessionCommand::TakeStreamingCapture { prompt_id,
-                    respond_to } => { let taken = { let mut cap = session.streaming_turn_capture
-                    .lock(); if cap.prompt_id.as_deref() == Some(prompt_id.as_str()) {
-                    Some(std::mem::take(& mut * cap)) } else { if ! cap.is_empty() {
-                    tracing::warn!(requested_prompt_id = % prompt_id, slot_prompt_id = ? cap
-                    .prompt_id,
-                    "streaming_capture race: live slot belongs to a different prompt; \
+                        SessionCommand::AISuggest { prefix, cwd, model_override, respond_to } => {
+                            let s = session.clone();
+                            tokio::task::spawn_local(async move {
+                                let result = s.handle_ai_suggest(&prefix, &cwd, model_override.as_deref()).await;
+                                let _ = respond_to.send(result);
+                            });
+                        }
+                        SessionCommand::SuggestPrompt { model_override, respond_to } => {
+                            let s = session.clone();
+                            tokio::task::spawn_local(async move {
+                                let result = s.handle_suggest_prompt(model_override.as_deref()).await;
+                                let _ = respond_to.send(result);
+                            });
+                        }
+                        SessionCommand::RewriteMemoryNote { raw_text, context_summary, respond_to } => {
+                            let s = session.clone();
+                            tokio::task::spawn_local(async move {
+                                let result = s.handle_rewrite_memory_note(&raw_text, &context_summary).await;
+                                let _ = respond_to.send(result);
+                            });
+                        }
+                        SessionCommand::Interject { text, id, images } => {
+                            // Broadcast to every attached client so all panes
+                            // viewing this session render the interjection block
+                            // — not just the originating client. The originator
+                            // dedups this echo by `id` against its optimistic
+                            // local block; viewers render it.
+                            session.broadcast_interjection(&text, id.as_deref());
+                            // Telemetry at enqueue (not drain) so it is recorded
+                            // even when a cancel clears the buffer before the
+                            // next drain point.
+                            session.events.emit(crate::session::events::Event::Interjected {
+                                source: crate::session::events::InterjectionSource::Direct,
+                                image_count: images.len() as u32,
+                                redirect_kind: crate::session::events::RedirectKind::Interjection,
+                            });
+                            // Buffer only into an actually-running turn — the
+                            // buffer is drained exclusively by the turn loop, so
+                            // an interjection arriving while idle (the pager's
+                            // running-state check races turn end) would strand
+                            // forever and silently drop the user's message. Run
+                            // it as its own prompt turn instead.
+                            let turn_running = session
+                                .current_prompt_id
+                                .lock()
+                                .ok()
+                                .and_then(|g| g.clone())
+                                .is_some();
+                            if turn_running {
+                                session.pending_interjections.push(PendingInterjection {
+                                    text,
+                                    attachments: images,
+                                });
+                                tracing::info!("Queued mid-turn interjection");
+                            } else {
+                                session
+                                    .queue_interjection_fallback_prompt(text, images, true)
+                                    .await;
+                                SessionActor::maybe_start_running_task(
+                                    session.clone(),
+                                    completion_tx.clone(),
+                                )
+                                .await;
+                            }
+                        }
+                        SessionCommand::ExternalNotify {
+                            notification_id,
+                            kind,
+                            text,
+                            wake,
+                            respond_to,
+                        } => {
+                            let text =
+                                format_external_notification(&kind, &notification_id, &text);
+                            session.broadcast_interjection(&text, Some(&notification_id));
+                            let turn_running = session.state.lock().await.running_task.is_some();
+                            if turn_running {
+                                session.pending_interjections.push(PendingInterjection {
+                                    text,
+                                    attachments: Vec::new(),
+                                });
+                                tracing::info!(
+                                    notification_id = %notification_id,
+                                    kind = %kind,
+                                    "Queued external notification for the active turn"
+                                );
+                            } else {
+                                session
+                                    .queue_interjection_fallback_prompt(text, Vec::new(), true)
+                                    .await;
+                                if wake {
+                                    SessionActor::maybe_start_running_task(
+                                        session.clone(),
+                                        completion_tx.clone(),
+                                    )
+                                    .await;
+                                }
+                                tracing::info!(
+                                    notification_id = %notification_id,
+                                    kind = %kind,
+                                    wake,
+                                    "Queued external notification for an idle session"
+                                );
+                            }
+                            let _ = respond_to.send(ExternalNotifyAck {
+                                turn_running,
+                                will_wake: !turn_running && wake,
+                            });
+                        }
+                        SessionCommand::GoalSummaryTurn { prompt_text } => {
+                            // Queue a synthetic prompt so the model gets a turn
+                            // to print a visible progress summary. Mirrors the
+                            // pattern used by `maybe_drain_notifications`.
+                            let prompt_id = format!("goal-summary-{}", uuid::Uuid::now_v7());
+                            let prompt_blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(prompt_text))];
+                            let (respond_to, _) = tokio::sync::oneshot::channel();
+                            {
+                                let mut state = session.state.lock().await;
+                                state.pending_inputs.push_back(InputItem {
+                                    prompt_id,
+                                    prompt_blocks,
+                                    prompt_mode: crate::session::plan_mode::PromptMode::Agent,
+                                    trace_gcs_config: None,
+                                    artifact_tracker: None,
+                                    client_identifier: None,
+                                    screen_mode: None,
+                                    verbatim: true,
+                                    json_schema: None,
+                                    origin: super::PromptOrigin::GoalSummary,
+                                    task_wake_fallback: None,
+                                    tool_overrides_update: None,
+                                    respond_to,
+                                    persist_ack: None,
+                                    parsed_prompt_tx: None,
+                                    queue_meta: None,
+                                    send_now: false,
+                                });
+                            }
+                            SessionActor::maybe_start_running_task(session.clone(), completion_tx.clone()).await;
+                        }
+                        SessionCommand::WorkflowCompletionTurn { run_id, revision } => {
+                            let state_suppressed = session.state.lock().await.notifications_suppressed;
+                            let wake_suppressed = state_suppressed
+                                || session.goal_loop_active()
+                                || session
+                                    .tool_context
+                                    .task_wake_suppressed
+                                    .as_ref()
+                                    .is_some_and(|gate| gate.get());
+                            let should_wake = if wake_suppressed {
+                                false
+                            } else {
+                                let tracker = session.workflow_tracker().await;
+                                tracker.lock().is_unreported_completion(&run_id, revision)
+                            };
+                            if !should_wake {
+                                continue;
+                            }
+                            let prompt_id = format!("workflow-completed-{run_id}-{revision}");
+                            let prompt_text = "A background workflow stopped. Review the workflow completion reminder, report the result to the user, and take any appropriate next action.";
+                            let (respond_to, _) = tokio::sync::oneshot::channel();
+                            {
+                                let mut state = session.state.lock().await;
+                                let workflow_wake_queued = state.pending_inputs.iter().any(|item| {
+                                    matches!(item.origin, super::PromptOrigin::WorkflowCompleted { .. })
+                                });
+                                if workflow_wake_queued {
+                                    continue;
+                                }
+                                state.pending_inputs.push_back(InputItem {
+                                    prompt_id,
+                                    prompt_blocks: vec![acp::ContentBlock::Text(acp::TextContent::new(prompt_text))],
+                                    prompt_mode: crate::session::plan_mode::PromptMode::Agent,
+                                    trace_gcs_config: None,
+                                    artifact_tracker: None,
+                                    client_identifier: None,
+                                    screen_mode: None,
+                                    verbatim: true,
+                                    json_schema: None,
+                                    origin: super::PromptOrigin::WorkflowCompleted {
+                                        completion_id: format!("{run_id}-{revision}"),
+                                    },
+                                    task_wake_fallback: None,
+                                    tool_overrides_update: None,
+                                    respond_to,
+                                    persist_ack: None,
+                                    parsed_prompt_tx: None,
+                                    queue_meta: None,
+                                    send_now: false,
+                                });
+                            }
+                            SessionActor::maybe_start_running_task(session.clone(), completion_tx.clone()).await;
+                        }
+                        SessionCommand::TakeTurnMessages { respond_to } => {
+                            let result = session.chat_state_handle.take_turn_messages().await;
+                            let _ = respond_to.send(result);
+                        }
+                        SessionCommand::TakeHarnessTraceTurns { respond_to } => {
+                            let result = session.chat_state_handle.take_harness_trace_turns().await;
+                            let _ = respond_to.send(result);
+                        }
+                        SessionCommand::TakeStreamingCapture { prompt_id, respond_to } => {
+                            // Out-of-band: never touches `chat_state`. The
+                            // live slot is the only source of truth — there
+                            // is no stash, so a queued prompt's
+                            // `StreamStarted` racing this take will reset
+                            // the slot to the new prompt-id and we'll log a
+                            // tripwire before returning `None`.
+                            let taken = {
+                                let mut cap = session.streaming_turn_capture.lock();
+                                if cap.prompt_id.as_deref() == Some(prompt_id.as_str()) {
+                                    Some(std::mem::take(&mut *cap))
+                                } else {
+                                    // Race: live slot now belongs to a
+                                    // different turn. Drop this take rather
+                                    // than misattribute the partial. The
+                                    // warn! is a production tripwire — if
+                                    // we ever see it fire in real traffic
+                                    // we should add a per-prompt stash.
+                                    if !cap.is_empty() {
+                                        tracing::warn!(
+                                            requested_prompt_id = %prompt_id,
+                                            slot_prompt_id = ?cap.prompt_id,
+                                            "streaming_capture race: live slot belongs to a different prompt; \
                                              dropping streaming_partial.json for the requested turn",
                                         );
                                     }
@@ -1957,12 +2326,12 @@ pub(super) async fn run_session(
                                         result = ?result,
                                         tool_searches = telem.tool_search_count,
                                         injection_searches = telem.injection_count,
-                    recovery_searches = telem.compaction_recovery_count,
+                                        recovery_searches = telem.compaction_recovery_count,
                                         "MEMORY_SESSION_END: session summary saved"
                                     );
                                     // Reindex + embed the written file so it's searchable next session
                                     if let crate::session::memory::hooks::SessionEndResult::Written(ref path_str) = result {
-                    session.reindex_and_embed(std::path::Path::new(path_str), "session"). await;
+                                        session.reindex_and_embed(std::path::Path::new(path_str), "session").await;
                                         session.send_xai_notification(XaiSessionUpdate::MemorySessionSaved {
                                             path: path_str.clone(),
                                         }).await;
@@ -1994,7 +2363,7 @@ pub(super) async fn run_session(
                         }
                     }
             }
-                }
+        }
     }
 }
 /// Extract the user query text and assistant response text for the
