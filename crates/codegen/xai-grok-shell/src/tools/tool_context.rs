@@ -16,6 +16,7 @@ use xai_grok_paths::AbsPathBuf;
 use xai_grok_workspace::file_system::{AsyncFileSystem, AsyncFsWrapper};
 use xai_grok_workspace::session::file_state::FileStateHandle;
 use xai_hunk_tracker::HunkTrackerHandle;
+use xai_tty_utils::ProcessScope;
 #[derive(Debug, Clone, Default)]
 pub struct TaskOutputTokenBudget {
     inner: Arc<parking_lot::Mutex<TaskOutputTokenBudgetState>>,
@@ -178,7 +179,7 @@ pub struct ToolContext {
     /// (`inject_pending_monitor_events`) and surfaced as ONE hidden
     /// synthetic user message before the next sampling step.
     pub monitor_event_buffer:
-        Option<xai_grok_tools::implementations::grok_build::task::types::MonitorEventBuffer>,
+        Option<xai_grok_tools::implementations::grok_build::monitor::types::MonitorEventBuffer>,
     pub task_completion_reservations:
         Option<xai_grok_tools::reminders::task_completion::TaskCompletionReservations>,
     pub task_wake_suppressed:
@@ -226,6 +227,10 @@ pub struct ToolContext {
     /// it unset.
     pub(crate) session_cmd_tx:
         Option<tokio::sync::mpsc::UnboundedSender<crate::session::SessionCommand>>,
+    /// This session's child-process reaper, set at session spawn; `None` for
+    /// contexts without one (subagents, defaults). Spawn sites enroll children
+    /// into it; enrolled children are killed when the session closes.
+    pub process_scope: Option<ProcessScope>,
 }
 impl ToolContext {
     pub(crate) fn clamp_task_model_request(
@@ -292,6 +297,7 @@ impl ToolContext {
             task_output_token_budget: None,
             sampler_retry_only_before_output: false,
             session_cmd_tx: None,
+            process_scope: None,
         }
     }
     pub fn with_preloaded_env(
@@ -333,6 +339,7 @@ impl ToolContext {
             task_output_token_budget: None,
             sampler_retry_only_before_output: false,
             session_cmd_tx: None,
+            process_scope: None,
         }
     }
     pub fn with_file_state_handle(mut self, handle: FileStateHandle) -> Self {
@@ -427,6 +434,7 @@ mod tests {
                 task_output_token_budget: None,
                 sampler_retry_only_before_output: false,
                 session_cmd_tx: None,
+                process_scope: None,
             }
         }
     }

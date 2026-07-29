@@ -76,8 +76,8 @@ use xai_grok_sampler::SamplerConfig as SamplingConfig;
 use crate::session::persistence::PersistenceHandle;
 use crate::session::worktree::BackgroundCopyContext;
 use crate::session::{
-    ParsedPromptInfo, SessionCommand, SessionHandle, SessionLiveState, SessionThread,
-    info::Info as SessionInfo, spawn_session_on_thread,
+    ParsedPromptInfo, SCHEDULER_BACKGROUND_LOOPS_META_KEY, SessionCommand, SessionHandle,
+    SessionLiveState, SessionThread, info::Info as SessionInfo, spawn_session_on_thread,
 };
 use crate::terminal::{AcpTerminalRunner, TerminalRunner};
 use crate::tools::ToolContext;
@@ -178,7 +178,7 @@ pub(crate) fn jwt_claim_matches_user_subscription_tier(
         "XPremiumPlus" => jwt_claim == "x_premium_plus",
         "SuperGrokPro" => jwt_claim == "supergrok_heavy",
         "SuperGrokLite" => jwt_claim == "supergrok_lite",
-        _ => false,
+        _ => jwt_claim.parse::<u64>().is_ok_and(|n| n != 0),
     }
 }
 fn parse_session_computer_sessions(_meta: Option<&acp::Meta>) -> Option<Vec<()>> {
@@ -615,39 +615,40 @@ const SESSION_SUPERVISOR_TICK: std::time::Duration = std::time::Duration::from_m
 /// actor is between turns and responsive); on timeout we conservatively treat
 /// the session as busy and keep it resident.
 const IDLE_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+/// Per-session state freed on removal or idle-unload (but kept across a reload
+/// rebuild); retained state instead survives an unload and is freed only at
+/// removal.
+#[derive(Default)]
+struct ResidentResources {
+    /// Strong ref pinning the code-nav index; the manager holds only a `Weak`.
+    codebase_index: Option<std::sync::Arc<xai_codebase_graph::IndexManagerHandle>>,
+    require_gateway: bool,
+}
+/// Per-session state that survives an idle-unload (so the session stays
+/// resumable); freed only at `remove_session`. See [`ResidentResources`].
+#[derive(Default)]
+struct RetainedResources {
+    turn_number: Option<u64>,
+    dispatch_lock: Option<std::rc::Rc<tokio::sync::Mutex<()>>>,
+    permission_event_receiver: Option<
+        tokio::sync::mpsc::UnboundedReceiver<PermissionEvent>,
+    >,
+}
 pub struct MvpAgent {
-    /// LEADER-SAFE(per-session): keyed by SessionId. Sessions are created/removed
-    /// per client request; no cross-session iteration except cleanup
-    /// (`remove_session`, `sweep_dead_sessions`).
+    /// LEADER-SAFE(per-session). Removed by `remove_session` / `sweep_dead_sessions`.
     pub(crate) sessions: RefCell<HashMap<acp::SessionId, SessionHandle>>,
-    /// `Send + Sync` mirror of per-session activity (running turn, pending
-    /// interactions, subagent gauge) shared with the leader's auto-update
-    /// checker, which cannot read the `!Send` maps above. Sessions are
-    /// registered at handle creation and expire when their actor exits — no
-    /// unregister bookkeeping. See [`crate::agent::activity::AgentActivity`].
+    /// LEADER-SAFE(shared): `Send + Sync` mirror of per-session activity for the
+    /// leader's auto-update checker, which cannot read the `!Send` maps. Expires
+    /// when the actor exits. See [`crate::agent::activity::AgentActivity`].
     pub(crate) activity: crate::agent::activity::AgentActivity,
-    /// Sessions with a `session/load` currently in flight. LEADER-SAFE(per-session).
-    ///
-    /// Inserted by [`Self::begin_session_load`] at the top of `load_session`
-    /// and removed when the returned RAII guard drops (any exit path). Lets
-    /// racing session-scoped requests — notably `session/prompt` sent right
-    /// behind a reconnect-replayed `session/load` after a leader restart —
-    /// wait for the load via [`Self::wait_for_in_flight_session_load`]
-    /// instead of failing with "unknown session id". The watch channel closes
-    /// when the guard drops, waking all waiters.
+    /// LEADER-SAFE(per-session): in-flight `session/load` guards. Lets a racing
+    /// `session/prompt` wait via [`Self::wait_for_in_flight_session_load`] instead
+    /// of failing "unknown session id"; the RAII guard's drop wakes waiters.
     loading_sessions: RefCell<
         HashMap<acp::SessionId, tokio::sync::watch::Receiver<bool>>,
     >,
-    /// Per-session lock ordering dispatch onto the actor's mailbox:
-    /// [`Self::prompt`] holds it across its intake preamble and
-    /// [`Self::cancel`] around its `Cancel` send, so prompts land in
-    /// submission order and a cancel cannot overtake the prompt it targets
-    /// (see `cancel_never_overtakes_in_flight_prompt_intake`). Cancels wait
-    /// out preambles held ahead of them — keep preambles lean; bridge cancels
-    /// are unordered. LEADER-SAFE(per-session): mirrors `sessions` lifecycle.
-    dispatch_locks: RefCell<
-        HashMap<acp::SessionId, std::rc::Rc<tokio::sync::Mutex<()>>>,
-    >,
+    /// LEADER-SAFE(per-session): reclaimed at `remove_session`. See [`RetainedResources`].
+    retained_resources: RefCell<HashMap<acp::SessionId, RetainedResources>>,
     /// LEADER-SAFE(per-session): keyed by SessionId. Mirrors `sessions` lifecycle.
     session_threads: RefCell<HashMap<acp::SessionId, SessionThread>>,
     /// Title per resident session id, refreshed each `build_roster`. Lets the
@@ -764,24 +765,11 @@ pub struct MvpAgent {
     buffering_settings: RefCell<Option<update_chunk_merge::BufferingSettings>>,
     /// Context for managing background copy operations (e.g., copying ignored files)
     pub(crate) background_copy_context: BackgroundCopyContext,
-    /// LEADER-SAFE(per-session): keyed by SessionId, no cross-session iteration.
-    /// Released by `remove_session`.
-    pub(crate) session_turn_numbers: RefCell<HashMap<acp::SessionId, u64>>,
-    /// LEADER-SAFE(per-session): keyed by SessionId, no cross-session iteration.
-    /// Released by `remove_session`.
-    permission_event_receivers: RefCell<
-        HashMap<acp::SessionId, tokio::sync::mpsc::UnboundedReceiver<PermissionEvent>>,
-    >,
-    /// Agent-level codebase index manager for code navigation.
-    /// Indexes are shared across sessions with the same cwd.
-    /// LEADER-SAFE(shared): keyed internally by cwd. No per-client state.
+    /// LEADER-SAFE(shared): agent-level code-nav index manager, keyed by cwd,
+    /// no per-client state.
     codebase_indexes: Arc<parking_lot::Mutex<CodebaseIndexManager>>,
-    /// Per-session strong refs that keep the code-nav index alive. The
-    /// CodebaseIndexManager holds only Weak; without these the actor would
-    /// be reaped immediately. Cleaned up in remove_session.
-    session_index_claims: RefCell<
-        HashMap<acp::SessionId, std::sync::Arc<xai_codebase_graph::IndexManagerHandle>>,
-    >,
+    /// LEADER-SAFE(per-session): reclaimed on removal / idle-unload. See [`ResidentResources`].
+    resident_resources: RefCell<HashMap<acp::SessionId, ResidentResources>>,
     /// Worktree creation type (resolved: local config > remote > default Linked).
     pub(crate) worktree_type: crate::util::config::WorktreeType,
     /// Restore codebase state on worktree resume (resolved: local config > remote > default false).
@@ -826,7 +814,7 @@ pub struct MvpAgent {
     /// Pushed by the `InjectNotification` handler when a turn is active and the
     /// notification has `Next` priority. Drained by the session turn loop
     /// (`inject_pending_monitor_events`) into a hidden synthetic user message.
-    monitor_event_buffer: xai_grok_tools::implementations::grok_build::task::types::MonitorEventBuffer,
+    monitor_event_buffer: xai_grok_tools::implementations::grok_build::monitor::types::MonitorEventBuffer,
     /// The process launch directory, captured once at construction so the
     /// deferred launch-dir init paths share one source of truth instead of each
     /// re-calling `std::env::current_dir()` (which could drift if the process
@@ -875,10 +863,6 @@ pub struct MvpAgent {
     /// The agent never opens Computer Hub as a harness/client; remote cloud
     /// sandboxes are gateway-owned (`gateway_bridge` / `computer_sessions`).
     workspace_ops: RefCell<Option<xai_grok_workspace::WorkspaceOps>>,
-    /// Sessions opened with `require_gateway` / chat light-frontend (K13).
-    /// Prompt-time guard consults this when the bridge map entry is missing,
-    /// independent of prompt `_meta` (pager often omits kind on prompt).
-    require_gateway_sessions: Rc<RefCell<std::collections::HashSet<acp::SessionId>>>,
     /// Per-session coarse lifecycle state (residency + turn-state).
     /// Updated by `spawn_and_register_session` (→ `IdleResident`) and the
     /// join-handle supervisor on actor exit (→ `DeadFailed`) / explicit close
@@ -1718,6 +1702,7 @@ impl MvpAgent {
                 explicitly_killed: false,
                 owner_session_id: None,
                 description: None,
+                is_backgrounded: true,
             };
             let notification = crate::extensions::notification::SessionNotification {
                 session_id: session_id.clone(),
