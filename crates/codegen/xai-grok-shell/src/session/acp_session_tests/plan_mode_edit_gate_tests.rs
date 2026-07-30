@@ -92,8 +92,8 @@ async fn plan_mode_rejects_grok_edit_outside_plan_file_despite_allow_all_permiss
             let result =
                 prepare(&actor, search_replace_call("call_gate", "/tmp/src/main.rs")).await;
             assert!(
-                matches!(result, Err(ToolLoop::Continue)),
-                "gate must reject with Continue (tool not executed); got {result:?}"
+                matches!(result, Err(ToolLoop::PermissionReject { .. })),
+                "gate must reject the remaining tool batch (tool not executed); got {result:?}"
             );
             let text = tool_result_text(&actor, "call_gate").await;
             assert!(

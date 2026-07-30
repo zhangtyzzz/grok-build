@@ -56,6 +56,11 @@ pub enum Action {
     ExitSession,
     /// Exit session without double-press confirmation (e.g., from command palette).
     ExitSessionConfirmed,
+    /// `/delete`: confirm, then delete history and return home.
+    DeleteCurrentSession,
+    DeleteCurrentSessionAnswered {
+        confirmed: bool,
+    },
     /// Open grok.com in the browser for SuperGrok subscription upsell.
     OpenSupergrokUrl,
     /// Re-check subscription status via the shell's `x.ai/auth/check_subscription`.
@@ -595,14 +600,15 @@ pub enum Action {
     /// Open the settings modal (F2, `/settings`, command palette).
     /// If already open, closes it instead of stacking.
     OpenSettings,
-    /// Open settings focused on a registry key (e.g. privacy banner Customize).
+    /// Open settings on a registry key: its chooser, or the browse row when
+    /// the setting is locked.
     OpenSettingsFocus {
         key: &'static str,
     },
-    /// Welcome privacy banner Accept (opt-in; ack after ACP success).
-    PrivacyBannerAccept,
-    /// Welcome privacy banner Customize (ack + open settings on coding_data_sharing).
-    PrivacyBannerCustomize,
+    /// Privacy banner `[Opt in]` (ack only after ACP success).
+    PrivacyBannerOptIn,
+    /// Privacy banner `[Opt out]` (ack now, then record the decline).
+    PrivacyBannerOptOut,
     /// Open the command palette (`/help`). The keybinding path (Ctrl+P) opens it
     /// directly in `handle_agent_action`; this lets a slash command reach the
     /// same modal through dispatch.
@@ -735,8 +741,6 @@ pub enum Action {
     TriggerDeepSearch,
     /// Force an immediate deep content search, skipping the debounce.
     ForceDeepSearch,
-    /// Show privacy and data retention status.
-    ShowPrivacyInfo,
     SetCodingDataSharing {
         opted_in: bool,
     },
@@ -1369,6 +1373,14 @@ pub struct DoctorFixTarget {
     pub session_binding_epoch: u32,
     pub cwd: std::path::PathBuf,
 }
+/// Aftermath of a successful session delete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterSessionDelete {
+    /// Picker delete — stay put.
+    Stay,
+    /// `/delete` — return to welcome.
+    Welcome,
+}
 #[derive(Debug)]
 pub enum Effect {
     /// Create a new ACP session.
@@ -1994,6 +2006,11 @@ pub enum Effect {
         opted_in: bool,
         /// Pre-toggle value to revert to on failure.
         rollback_to_opted_in: bool,
+        /// Write generation, echoed back on the `TaskResult`. Writes to this
+        /// endpoint are concurrent, so a result that isn't the newest must
+        /// not touch state: its `rollback_to_opted_in` was captured against
+        /// a world that has since moved on.
+        seq: u64,
     },
     /// Rename the current session.
     RenameSession {
@@ -2008,6 +2025,7 @@ pub enum Effect {
         source: String,
         session_id: String,
         cwd: String,
+        after: AfterSessionDelete,
     },
     /// Deep-search sessions by content (FTS via ACP).
     DeepSearchSessions { query: String, seq: u64 },
@@ -2163,6 +2181,12 @@ pub enum TaskResult {
         agent_id: AgentId,
         session_id: acp::SessionId,
         models: Option<acp::SessionModelState>,
+        /// Whether this session's scheduled fires run detached, as the shell
+        /// resolved it at spawn (response
+        /// `_meta["x.ai/schedulerBackgroundLoops"]`). `None` from a shell that
+        /// predates the key. See
+        /// [`crate::app::effects::parse_session_scheduler_background_loops`].
+        scheduler_background_loops: Option<bool>,
     },
     /// Session creation failed.
     SessionFailed {
@@ -2178,6 +2202,8 @@ pub enum TaskResult {
         /// Effective cwd inside the worktree (preserves subdirectory offset).
         session_cwd: std::path::PathBuf,
         models: Option<acp::SessionModelState>,
+        /// See [`TaskResult::SessionCreated::scheduler_background_loops`].
+        scheduler_background_loops: Option<bool>,
     },
     /// Worktree created and session forked, but not yet loaded.
     /// The dispatch handler sets session_id eagerly, then emits LoadSession.
@@ -2209,6 +2235,10 @@ pub enum TaskResult {
         /// pass the live `session/update` gate without re-rendering the user
         /// block (replay already rendered it).
         running_prompt_id: Option<String>,
+        /// See [`TaskResult::SessionCreated::scheduler_background_loops`]. A
+        /// resumed session re-spawns its actor, so the load response carries
+        /// the value that spawn just pinned.
+        scheduler_background_loops: Option<bool>,
     },
     /// Session load (resume) failed.
     SessionLoadFailed {
@@ -2548,12 +2578,14 @@ pub enum TaskResult {
     CodingDataSharingUpdated {
         agent_id: AgentId,
         opted_in: bool,
+        seq: u64,
     },
     /// Coding data sharing update failed.
     CodingDataSharingFailed {
         agent_id: AgentId,
         error: String,
         rollback_to_opted_in: bool,
+        seq: u64,
     },
     /// Session rename completed successfully.
     RenameSessionComplete {
@@ -2569,6 +2601,7 @@ pub enum TaskResult {
     DeleteSessionComplete {
         source: String,
         session_id: String,
+        after: AfterSessionDelete,
     },
     /// Session delete failed.
     DeleteSessionFailed {

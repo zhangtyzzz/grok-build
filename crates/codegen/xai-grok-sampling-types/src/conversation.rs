@@ -3111,63 +3111,107 @@ fn ephemeral_cache_control(ttl: crate::PromptCacheTtl) -> crate::messages::Cache
     }
 }
 
-/// Place a cache breakpoint on the final message so the growing conversation
-/// prefix is cached, not just the static system block.
-///
-/// Only `Text` and `ToolResult` blocks carry `cache_control` on the wire, so we
-/// attach to the last such block, walking back past any trailing non-cacheable
-/// blocks (image / tool_use / thinking). If the final message has no cacheable
-/// block at all (e.g. a lone image, or a thinking-only assistant tail), this is
-/// a whole-message no-op: that turn's prefix simply isn't cached (no fallback
-/// to an earlier message), which is acceptable graceful degradation.
-fn apply_conversation_cache_breakpoint(
-    messages: &mut [crate::messages::Message],
+/// Marks the last non-empty block that can carry a cache breakpoint, scanning
+/// back past `Thinking`, which the API rejects a breakpoint on.
+fn mark_message_cache_breakpoint(
+    msg: &mut crate::messages::Message,
     cache_control: crate::messages::CacheControl,
-) {
+) -> bool {
     use crate::messages::{ContentBlock, MessageContent};
-    let Some(last_msg) = messages.last_mut() else {
-        return;
-    };
-    match &mut last_msg.content {
+
+    match &mut msg.content {
         MessageContent::Text(text) => {
             // Anthropic rejects empty cached text blocks ("text content blocks
             // must be non-empty"). This arm is unreachable from the current
             // builder (it always emits `Blocks`), but guard the empty case so a
             // future bare-text path can never mint an invalid breakpoint.
-            if !text.is_empty() {
-                last_msg.content = MessageContent::Blocks(vec![ContentBlock::Text {
-                    text: std::mem::take(text),
-                    cache_control: Some(cache_control),
-                }]);
+            if text.is_empty() {
+                return false;
             }
+            let text = std::mem::take(text);
+            msg.content = MessageContent::Blocks(vec![ContentBlock::Text {
+                text,
+                cache_control: Some(cache_control),
+            }]);
+            true
         }
         MessageContent::Blocks(blocks) => {
             // Land on the last *non-empty* cacheable block, skipping trailing
-            // non-cacheable blocks (image / tool_use / thinking) and any empty
-            // Text / ToolResult. Empty content is harmless on lenient endpoints
-            // but a stricter provider can reject an empty cached block, and an
-            // empty tail carries no tokens worth caching anyway.
+            // thinking blocks and any empty Text / ToolResult. Image and ToolUse
+            // blocks can carry a breakpoint on the current Messages wire shape.
             for block in blocks.iter_mut().rev() {
-                match block {
+                let target = match block {
                     ContentBlock::Text {
                         text,
                         cache_control: cc,
-                    } if !text.is_empty() => {
-                        *cc = Some(cache_control);
-                        break;
-                    }
+                    } if !text.is_empty() => Some(cc),
                     ContentBlock::ToolResult {
                         content,
                         cache_control: cc,
                         ..
-                    } if !tool_result_content_is_empty(content) => {
-                        *cc = Some(cache_control);
-                        break;
+                    } if !tool_result_content_is_empty(content) => Some(cc),
+                    ContentBlock::Image {
+                        cache_control: cc, ..
                     }
-                    _ => {}
+                    | ContentBlock::ToolUse {
+                        cache_control: cc, ..
+                    } => Some(cc),
+                    ContentBlock::Text { .. }
+                    | ContentBlock::ToolResult { .. }
+                    | ContentBlock::Thinking { .. } => None,
+                };
+                if let Some(target) = target {
+                    *target = Some(cache_control);
+                    return true;
                 }
             }
+            false
         }
+    }
+}
+
+/// An entry is written only at a breakpoint, so marking the system prompt alone
+/// leaves the transcript uncached. The third covers a turn that appends more
+/// than the API's 20 block lookback. A tools-prefix breakpoint, when present,
+/// uses the fourth and final explicit slot.
+fn apply_cache_breakpoints(
+    system_blocks: &mut [crate::messages::TextBlock],
+    messages: &mut [crate::messages::Message],
+    cache_control: crate::messages::CacheControl,
+) {
+    use crate::messages::MessageRole;
+
+    if let Some(last) = system_blocks.last_mut() {
+        last.cache_control = Some(cache_control.clone());
+    }
+
+    let tip = (0..messages.len())
+        .rev()
+        .find(|&i| mark_message_cache_breakpoint(&mut messages[i], cache_control.clone()));
+
+    // Where the previous request ended. A turn can append several user messages
+    // in a row, so skip the whole trailing run rather than a neighbour of the tip.
+    if let Some(tip) = tip
+        && let Some(prev) = messages[..tip]
+            .iter()
+            .rposition(|m| matches!(m.role, MessageRole::Assistant))
+            .and_then(|assistant| {
+                messages[..assistant]
+                    .iter()
+                    .rposition(|m| matches!(m.role, MessageRole::User))
+            })
+    {
+        mark_message_cache_breakpoint(&mut messages[prev], cache_control);
+    }
+}
+
+#[cfg(test)]
+fn apply_conversation_cache_breakpoint(
+    messages: &mut [crate::messages::Message],
+    cache_control: crate::messages::CacheControl,
+) {
+    if let Some(last) = messages.last_mut() {
+        mark_message_cache_breakpoint(last, cache_control);
     }
 }
 
@@ -3232,6 +3276,7 @@ pub fn build_messages_request_with_cache_policy(
                                     media_type,
                                     data: data.to_string(),
                                 },
+                                cache_control: None,
                             }
                         } else {
                             // Malformed data URI, treat as text
@@ -3245,6 +3290,7 @@ pub fn build_messages_request_with_cache_policy(
                             source: ImageSource::Url {
                                 url: url.as_ref().to_owned(),
                             },
+                            cache_control: None,
                         }
                     } else {
                         // Unknown format, treat as text
@@ -3324,6 +3370,7 @@ pub fn build_messages_request_with_cache_policy(
                         id: sanitize_tool_call_id(&tc.id),
                         name: tc.name.clone(),
                         input,
+                        cache_control: None,
                     });
                 }
             }
@@ -3354,7 +3401,10 @@ pub fn build_messages_request_with_cache_policy(
                                     url: url.as_ref().to_owned(),
                                 }
                             };
-                            blocks.push(ContentBlock::Image { source });
+                            blocks.push(ContentBlock::Image {
+                                source,
+                                cache_control: None,
+                            });
                         }
                     }
                     ToolResultContent::Blocks(blocks)
@@ -3400,31 +3450,10 @@ pub fn build_messages_request_with_cache_policy(
     flush_assistant(&mut pending_assistant, &mut messages);
     flush_tool_results(&mut pending_tool_results, &mut messages);
 
-    // Cache the stable system prefix. The five-minute TTL is Anthropic's
-    // default, so leave it absent on the wire to preserve the legacy request
-    // shape. One hour must be explicit.
-    if prompt_cache.mode == PromptCacheMode::StablePrefix
-        && let Some(last) = system_blocks.last_mut()
-    {
-        last.cache_control = Some(ephemeral_cache_control(prompt_cache.ttl));
-    }
-
-    // Cache the conversation prefix as well. A single system-prefix breakpoint
-    // only caches the static tools + system prefix; the growing
-    // tool/assistant/user history is re-billed in full on every step of an
-    // agentic loop. Placing an `ephemeral` breakpoint on the last block of the
-    // final message lets each turn extend the cached prefix, so the next request
-    // reads the entire prior conversation from cache. Together with the tools
-    // and system breakpoints this stays under the four-breakpoint cap.
-    //
-    // Cost note: under the default `StablePrefix` policy this marks the tail on
-    // *every* request, so a one-shot caller with no follow-up turn pays the
-    // cache-write surcharge (~25% on the written tokens) without a later read.
-    // Anthropic's minimum-cacheable-prefix floor suppresses the write for small
-    // prompts, and the agentic loop recovers the cost many times over on
-    // subsequent reads, so the tradeoff favors the common case.
+    // Cache the system prefix plus the current and previous conversation tips.
     if prompt_cache.mode == PromptCacheMode::StablePrefix {
-        apply_conversation_cache_breakpoint(
+        apply_cache_breakpoints(
+            &mut system_blocks,
             &mut messages,
             ephemeral_cache_control(prompt_cache.ttl),
         );
@@ -3543,7 +3572,9 @@ impl From<crate::messages::MessagesResponse> for ConversationItem {
                     }
                     content.push_str(&text);
                 }
-                ContentBlock::ToolUse { id, name, input } => {
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => {
                     tool_calls.push(ToolCall {
                         id: Arc::<str>::from(id),
                         name,
@@ -5817,10 +5848,9 @@ mod tests {
     }
 
     #[test]
-    fn conversation_breakpoint_walks_back_past_trailing_noncacheable_block() {
-        // A production-shaped assistant turn: [Text, ToolUse]. ToolUse can't carry
-        // cache_control, so the breakpoint must skip it and land on the Text block
-        // rather than being silently dropped.
+    fn conversation_breakpoint_marks_trailing_tool_use_block() {
+        // A production-shaped assistant turn: [Text, ToolUse]. The current wire
+        // shape lets ToolUse carry the breakpoint, so it should land at the tip.
         use crate::messages::{ContentBlock, Message, MessageContent, MessageRole};
         let mut messages = vec![Message {
             role: MessageRole::Assistant,
@@ -5833,6 +5863,7 @@ mod tests {
                     id: "call-1".to_string(),
                     name: "search".to_string(),
                     input: serde_json::json!({"q": "x"}),
+                    cache_control: None,
                 },
             ]),
         }];
@@ -5847,16 +5878,16 @@ mod tests {
             matches!(
                 &blocks[0],
                 ContentBlock::Text {
-                    cache_control: Some(_),
+                    cache_control: None,
                     ..
                 }
             ),
-            "breakpoint must land on the Text block when a ToolUse trails it"
+            "the earlier Text block must remain unmarked"
         );
         let json = serde_json::to_value(&messages).unwrap();
         assert!(
-            json.pointer("/0/content/1/cache_control").is_none(),
-            "the trailing tool_use block must not carry cache_control: {json:#}"
+            json.pointer("/0/content/1/cache_control").is_some(),
+            "the trailing tool_use block must carry cache_control: {json:#}"
         );
     }
 
@@ -6055,6 +6086,176 @@ mod tests {
                     .map(|v| v.is_null())
                     .unwrap_or(false),
             "output_config must be absent when reasoning_effort is unset; got: {json:#}",
+        );
+    }
+
+    fn count_cache_control(value: &serde_json::Value) -> usize {
+        match value {
+            serde_json::Value::Object(map) => {
+                usize::from(map.contains_key("cache_control"))
+                    + map.values().map(count_cache_control).sum::<usize>()
+            }
+            serde_json::Value::Array(items) => items.iter().map(count_cache_control).sum(),
+            _ => 0,
+        }
+    }
+
+    fn marker_on_last_block(message: &serde_json::Value) -> Option<&str> {
+        message
+            .get("content")?
+            .as_array()?
+            .last()?
+            .pointer("/cache_control/type")?
+            .as_str()
+    }
+
+    fn agent_turn(n: usize) -> Vec<ConversationItem> {
+        let id = format!("call_{n}");
+        vec![
+            ConversationItem::assistant_tool_calls(vec![ToolCall {
+                id: id.as_str().into(),
+                name: "read_file".to_string(),
+                arguments: r#"{"path": "src/main.rs"}"#.into(),
+            }]),
+            ConversationItem::tool_result(id, "fn main() {}"),
+        ]
+    }
+
+    fn agent_request(turns: usize) -> serde_json::Value {
+        let mut items = vec![
+            ConversationItem::system("You are a helpful assistant."),
+            ConversationItem::user("Fix the bug"),
+        ];
+        for n in 0..turns {
+            items.extend(agent_turn(n));
+        }
+        serde_json::to_value(build_messages_request(
+            &ConversationRequest::from_items(items).with_model("messages-compatible-model"),
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn test_messages_request_cache_breakpoint_placement() {
+        let json = agent_request(2);
+        let messages = json["messages"].as_array().unwrap();
+
+        assert_eq!(
+            json.pointer("/system/0/cache_control/type")
+                .and_then(|v| v.as_str()),
+            Some("ephemeral"),
+            "{json:#}",
+        );
+        assert_eq!(
+            marker_on_last_block(messages.last().unwrap()),
+            Some("ephemeral"),
+            "tip: {json:#}"
+        );
+        assert_eq!(
+            messages.last().unwrap()["content"]
+                .as_array()
+                .and_then(|b| b.last())
+                .and_then(|b| b["type"].as_str()),
+            Some("tool_result"),
+        );
+
+        let previous_user = messages[..messages.len() - 1]
+            .iter()
+            .rposition(|m| m["role"] == "user")
+            .unwrap();
+        assert_eq!(
+            marker_on_last_block(&messages[previous_user]),
+            Some("ephemeral"),
+            "previous turn's tip: {json:#}",
+        );
+        assert_eq!(count_cache_control(&json), 3, "{json:#}");
+    }
+
+    #[test]
+    fn test_messages_request_previous_tip_skips_a_trailing_user_run() {
+        let mut items = vec![
+            ConversationItem::system("You are a helpful assistant."),
+            ConversationItem::user("Fix the bug"),
+        ];
+        items.extend(agent_turn(0));
+        items.extend(agent_turn(1));
+        // The shape after a parallel batch: tool results, then followups.
+        items.push(ConversationItem::user("[Image content]"));
+        items.push(ConversationItem::user("<system-reminder>"));
+
+        let json = serde_json::to_value(build_messages_request(
+            &ConversationRequest::from_items(items).with_model("messages-compatible-model"),
+        ))
+        .unwrap();
+        let messages = json["messages"].as_array().unwrap();
+
+        let marked: Vec<usize> = (0..messages.len())
+            .filter(|&i| marker_on_last_block(&messages[i]).is_some())
+            .collect();
+        let last_assistant = messages
+            .iter()
+            .rposition(|m| m["role"] == "assistant")
+            .unwrap();
+        assert_eq!(marked.len(), 2, "tip and previous tip only: {json:#}");
+        assert_eq!(marked[1], messages.len() - 1, "tip: {json:#}");
+        assert!(
+            marked[0] < last_assistant,
+            "the previous tip must sit before the last assistant turn, not inside \
+             the trailing user run; got {marked:?} in {json:#}",
+        );
+    }
+
+    #[test]
+    fn test_messages_request_cache_breakpoint_marks_an_image_tip() {
+        let req = ConversationRequest::from_items(vec![
+            ConversationItem::system("You are a helpful assistant."),
+            ConversationItem::User(UserItem {
+                content: vec![
+                    ContentPart::Text {
+                        text: "what is in this screenshot".into(),
+                    },
+                    ContentPart::Image {
+                        url: "data:image/png;base64,iVBOR".into(),
+                    },
+                ],
+                ..Default::default()
+            }),
+        ])
+        .with_model("messages-compatible-model");
+
+        let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+        let blocks = json["messages"][0]["content"].as_array().unwrap();
+
+        assert_eq!(blocks.last().unwrap()["type"].as_str(), Some("image"));
+        assert_eq!(
+            marker_on_last_block(&json["messages"][0]),
+            Some("ephemeral"),
+            "{json:#}",
+        );
+        assert!(blocks[0].get("cache_control").is_none(), "{json:#}");
+    }
+
+    #[test]
+    fn test_messages_request_cache_breakpoint_skips_thinking() {
+        let req = ConversationRequest::from_items(vec![
+            ConversationItem::user("Fix the bug"),
+            ConversationItem::Reasoning(synthesized_reasoning_item("weighing options")),
+            ConversationItem::assistant("Fixed it."),
+        ])
+        .with_model("messages-compatible-model");
+
+        let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+        let blocks = json["messages"][1]["content"].as_array().unwrap();
+
+        let thinking = blocks
+            .iter()
+            .find(|b| b["type"] == "thinking")
+            .expect("reasoning should emit a thinking block");
+        assert!(thinking.get("cache_control").is_none(), "{json:#}");
+        assert_eq!(
+            marker_on_last_block(&json["messages"][1]),
+            Some("ephemeral"),
+            "{json:#}",
         );
     }
 
@@ -8519,7 +8720,7 @@ mod tests {
             matches!(&inner[0], crate::messages::ContentBlock::Text { text, .. } if text == "Read image file: photo.png")
         );
         assert!(
-            matches!(&inner[1], crate::messages::ContentBlock::Image { source: crate::messages::ImageSource::Base64 { media_type, data } } if media_type == "image/png" && data == "iVBOR")
+            matches!(&inner[1], crate::messages::ContentBlock::Image { source: crate::messages::ImageSource::Base64 { media_type, data }, .. } if media_type == "image/png" && data == "iVBOR")
         );
     }
 

@@ -1489,6 +1489,7 @@ fn no_deferred_switch_means_no_extra_effect() {
             agent_id: id,
             session_id: "new-session".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -1700,6 +1701,7 @@ fn delete_session_complete_removes_only_matching_source_and_id() {
         TaskResult::DeleteSessionComplete {
             source: "local".into(),
             session_id: "s1".into(),
+            after: crate::app::actions::AfterSessionDelete::Stay,
         },
         &mut app,
     );
@@ -1780,6 +1782,7 @@ fn delete_both_session_clears_modal_and_welcome_content_hits() {
         TaskResult::DeleteSessionComplete {
             source: "both".into(),
             session_id: "shared".into(),
+            after: crate::app::actions::AfterSessionDelete::Stay,
         },
         &mut app,
     );
@@ -1877,6 +1880,7 @@ fn delete_remote_session_clears_modal_and_welcome_content_hits() {
         TaskResult::DeleteSessionComplete {
             source: "remote".into(),
             session_id: "remote-only".into(),
+            after: crate::app::actions::AfterSessionDelete::Stay,
         },
         &mut app,
     );
