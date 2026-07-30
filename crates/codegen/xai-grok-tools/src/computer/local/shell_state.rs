@@ -1185,7 +1185,7 @@ mod tests {
 
         // Turn on allexport; the option is captured by the dump and replayed
         // into every subsequent command's shell.
-        let (code, _) = run_command(&mut state, "set -a").await;
+        let (code, _) = run_command(&mut state, "builtin set -a").await;
         assert_eq!(code, 0);
 
         // This command's wrapper assigns __grok_user_cmd under allexport.
