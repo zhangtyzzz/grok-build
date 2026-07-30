@@ -116,11 +116,6 @@ dump_bash_state() {
   # shell-global in bash); replaying them would abort later user commands.
   local posix_opts
   posix_opts=$(builtin shopt -po 2>/dev/null | command grep -vE '^set [-+]o (nounset|errexit|pipefail|allexport)$' || true)
-  if (( grok_allexport_was_set )); then
-    posix_opts+=$'\nbuiltin set -o allexport'
-  else
-    posix_opts+=$'\nbuiltin set +o allexport'
-  fi
   _emit_encoded "$posix_opts" "POSIX_OPTS_B64"
 
   local bash_opts
@@ -134,6 +129,15 @@ dump_bash_state() {
   local aliases
   aliases=$(builtin alias -p 2>/dev/null || true)
   _emit_encoded "$aliases" "ALIASES_B64"
+
+  # Restore allexport last. Replaying it before the remaining encoded blocks
+  # would export their large grok_snap_* helper variables and can make later
+  # execve calls fail with E2BIG (reported by bash as exit status 126).
+  if (( grok_allexport_was_set )); then
+    _emit "builtin set -o allexport"
+  else
+    _emit "builtin set +o allexport"
+  fi
 
   _emit "# end of bash state dump"
   _emit "__GROK_BASH_STATE_END__"

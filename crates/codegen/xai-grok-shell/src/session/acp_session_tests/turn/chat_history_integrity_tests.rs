@@ -35,6 +35,10 @@ use xai_grok_test_support::{MockInferenceServer, ScriptedResponse};
 /// a nudge is delivered mid-turn after identical calls.
 const IDENTICAL_CALLS_TO_TRIP_NUDGE: usize = 8;
 
+// Match the stack allocated to production session threads. This full-turn
+// debug-build future exceeds libtest's smaller default thread stack.
+const SESSION_TEST_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
+
 const TODO_ARGS: &str = r#"{"todos":[{"id":"t1","content":"poll","status":"completed"}]}"#;
 
 const CANCEL_MARKER: &str = "cancelled by the user";
@@ -95,8 +99,27 @@ fn tool_results_by_call_id(conv: &[ConversationItem]) -> HashMap<String, Vec<Str
 /// Pre-fix this failed: the nudge was pushed after the assistant `tool_use`
 /// was committed and before `execute_tool_calls`, so integrity repair wrote
 /// a cancel result and the real result landed beside it under the same id.
-#[tokio::test(flavor = "current_thread")]
-async fn mid_turn_user_injection_must_not_duplicate_tool_results_for_one_tool_use_id() {
+#[test]
+fn mid_turn_user_injection_must_not_duplicate_tool_results_for_one_tool_use_id() {
+    let test_thread = std::thread::Builder::new()
+        .name("chat-history-integrity-test".to_string())
+        .stack_size(SESSION_TEST_THREAD_STACK_SIZE)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build chat-history integrity test runtime");
+            runtime.block_on(
+                mid_turn_user_injection_must_not_duplicate_tool_results_for_one_tool_use_id_impl(),
+            );
+        })
+        .expect("spawn chat-history integrity test thread");
+    test_thread
+        .join()
+        .expect("chat-history integrity test thread panicked");
+}
+
+async fn mid_turn_user_injection_must_not_duplicate_tool_results_for_one_tool_use_id_impl() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
