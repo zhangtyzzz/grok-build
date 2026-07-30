@@ -74,6 +74,14 @@ fn sudo_alias_injection() -> String {
 /// functions, and aliases as base64-encoded replayable shell snippets.
 const DUMP_BASH_STATE_SCRIPT: &str = r##"
 dump_bash_state() {
+  # Internal dump variables can be large. Disable inherited allexport before
+  # assigning them, then encode the user setting explicitly in the snapshot.
+  if [[ $- == *a* ]]; then
+    builtin set +a
+    local grok_allexport_was_set=1
+  else
+    local grok_allexport_was_set=0
+  fi
   set -euo pipefail
   if ! command -v base64 >/dev/null 2>&1; then
     echo "Error: base64 command is required" >&2
@@ -107,7 +115,12 @@ dump_bash_state() {
   # errexit/pipefail here are this function's own `set -euo pipefail` (set is
   # shell-global in bash); replaying them would abort later user commands.
   local posix_opts
-  posix_opts=$(builtin shopt -po 2>/dev/null | command grep -vE '^set [-+]o (nounset|errexit|pipefail)$' || true)
+  posix_opts=$(builtin shopt -po 2>/dev/null | command grep -vE '^set [-+]o (nounset|errexit|pipefail|allexport)$' || true)
+  if (( grok_allexport_was_set )); then
+    posix_opts+=$'\nbuiltin set -o allexport'
+  else
+    posix_opts+=$'\nbuiltin set +o allexport'
+  fi
   _emit_encoded "$posix_opts" "POSIX_OPTS_B64"
 
   local bash_opts
@@ -1185,7 +1198,7 @@ mod tests {
 
         // Turn on allexport; the option is captured by the dump and replayed
         // into every subsequent command's shell.
-        let (code, _) = run_command(&mut state, "builtin set -a").await;
+        let (code, _) = run_command(&mut state, "set -a").await;
         assert_eq!(code, 0);
 
         // This command's wrapper assigns __grok_user_cmd under allexport.
