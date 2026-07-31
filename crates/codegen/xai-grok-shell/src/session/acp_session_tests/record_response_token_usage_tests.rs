@@ -20,6 +20,9 @@ fn response_with_usage(total_tokens: u32) -> ConversationResponse {
         message_chunks_emitted: 1,
         doom_loop_signals: Vec::new(),
         stop_message: None,
+        message_id: None,
+        raw_stop_reason: None,
+        stop_sequence: None,
     }
 }
 
@@ -32,6 +35,9 @@ fn response_without_usage() -> ConversationResponse {
         message_chunks_emitted: 1,
         doom_loop_signals: Vec::new(),
         stop_message: None,
+        message_id: None,
+        raw_stop_reason: None,
+        stop_sequence: None,
     }
 }
 
