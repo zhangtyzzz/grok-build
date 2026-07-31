@@ -53,9 +53,16 @@ impl MessagesReducer {
         // already inside `input_tokens`. The Messages wire wants a single
         // disjoint `cache_creation_input_tokens`, so fold the TTL buckets back
         // together and take them out of `input_tokens`.
+        //
+        // `cache_creation_input_tokens` is read for forward compatibility and is
+        // always absent today: `project_result_usage` emits the TTL buckets
+        // instead. If an upstream sync ever makes the projection emit the
+        // aggregate *alongside* the TTL buckets, this sum would double-count it
+        // — that projection is the single place to keep the two mutually
+        // exclusive.
         let cache_creation_input_tokens = field(u, "cache_creation_input_tokens")
-            + field(u, "cache_write_5m_input_tokens")
-            + field(u, "cache_write_1h_input_tokens");
+            .saturating_add(field(u, "cache_write_5m_input_tokens"))
+            .saturating_add(field(u, "cache_write_1h_input_tokens"));
         let usage = MessageUsage {
             input_tokens: field(u, "input_tokens").saturating_sub(cache_creation_input_tokens),
             output_tokens: field(u, "output_tokens"),
@@ -111,8 +118,8 @@ pub(super) fn messages_model_usage(
             // Same TTL fold as the terminal usage: the per-model rows carry the
             // fork's `cacheWrite*` detail buckets inside `inputTokens`.
             let cache_creation_input_tokens = n("cacheCreationInputTokens")
-                + n("cacheWrite5mInputTokens")
-                + n("cacheWrite1hInputTokens");
+                .saturating_add(n("cacheWrite5mInputTokens"))
+                .saturating_add(n("cacheWrite1hInputTokens"));
             (
                 model.clone(),
                 to_line(&ModelUsage {
