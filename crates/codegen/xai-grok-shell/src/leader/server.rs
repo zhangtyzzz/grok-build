@@ -348,18 +348,6 @@ fn is_session_load_request(json: &serde_json::Value) -> bool {
         .is_some_and(|m| m == "session/load")
 }
 
-/// `sessions notify` is a passive control request, even though its payload
-/// names a session. The short-lived notifier must receive its request-id
-/// response without becoming that session's subscriber/driver or replacing
-/// the interactive fallback client.
-fn is_passive_session_notify_request(json: &serde_json::Value) -> bool {
-    json.get("method").and_then(serde_json::Value::as_str) == Some("ext_method")
-        && json
-            .get("params")
-            .and_then(|params| params.get("method"))
-            .and_then(serde_json::Value::as_str)
-            == Some("x.ai/session/notify")
-}
 /// Extract the leader unicast target `ClientId` from a notification's
 /// `params._meta["x.ai/leaderClientId"]`.
 ///
@@ -1854,17 +1842,12 @@ pub async fn run_leader_server(
                         }
                         continue;
                     }
-                    let passive_session_notify =
-                        json.as_ref().is_some_and(is_passive_session_notify_request);
-                    if !passive_session_notify
-                        && let Some(client) = clients.get(&id)
+                    if let Some(client) = clients.get(&id)
                         && client.mode == ClientMode::Stdio
                     {
                         last_active_client = Some(id);
                     }
-                    if !passive_session_notify
-                        && let Some(session_id) = json.as_ref().and_then(extract_session_id)
-                    {
+                    if let Some(session_id) = json.as_ref().and_then(extract_session_id) {
                         session_subscribers
                             .entry(session_id.clone())
                             .or_default()
@@ -4144,25 +4127,6 @@ mod tests {
         );
     }
     #[test]
-    fn only_session_notify_ext_requests_are_passive() {
-        let notify = pv(
-            r#"{"jsonrpc":"2.0","method":"ext_method","id":9,"params":{"method":"x.ai/session/notify","params":{"sessionId":"sess-live"}}}"#,
-        );
-        assert!(is_passive_session_notify_request(&notify));
-
-        let ordinary_ext = pv(
-            r#"{"jsonrpc":"2.0","method":"ext_method","id":9,"params":{"method":"x.ai/session/close","params":{"sessionId":"sess-live"}}}"#,
-        );
-        assert!(!is_passive_session_notify_request(&ordinary_ext));
-
-        let ordinary_session_request = pv(
-            r#"{"jsonrpc":"2.0","method":"session/prompt","id":9,"params":{"sessionId":"sess-live"}}"#,
-        );
-        assert!(!is_passive_session_notify_request(
-            &ordinary_session_request
-        ));
-    }
-    #[test]
     fn extract_session_id_from_prompt_complete_works() {
         let payload = r#"{"jsonrpc":"2.0","method":"x.ai/session/prompt_complete","params":{"sessionId":"sess-prompt"}}"#;
         assert_eq!(
@@ -5453,106 +5417,6 @@ mod tests {
         assert!(
             second.as_deref().is_some_and(|p| p.contains("live1")),
             "buffered live notif must arrive (in order) after the load response, got {second:?}"
-        );
-        cancel.cancel();
-    }
-
-    /// A command-only reviewer uses a short-lived stdio connection. Its
-    /// `x.ai/session/notify` request must keep normal request/response routing,
-    /// but must not attach that connection to the target session or disturb
-    /// the interactive client's fallback route.
-    #[tokio::test]
-    async fn session_notify_client_is_passive_and_disconnect_has_no_session_side_effects() {
-        let temp = TempDir::new().unwrap();
-        let (sock_path, cancel, response_tx, mut acp_rx) =
-            setup_persistent_server_with_agent(&temp).await;
-
-        let (mut interactive_reader, mut interactive_writer) =
-            connect_and_register(&sock_path, "interactive").await;
-        load_session(&mut interactive_writer, "sess-interactive").await;
-        complete_load(&mut acp_rx, &response_tx).await;
-        let _ = next_acp_payload(&mut interactive_reader).await;
-
-        let (mut notifier_reader, mut notifier_writer) =
-            connect_and_register(&sock_path, "reviewer-hook").await;
-        let notify = r#"{"jsonrpc":"2.0","method":"ext_method","id":9,"params":{"method":"x.ai/session/notify","params":{"sessionId":"sess-passive","notificationId":"review:abc","kind":"reviewer","text":"looks good","wake":true}}}"#;
-        write_message(
-            &mut notifier_writer,
-            &ClientMessage::Acp {
-                payload: notify.to_string(),
-            },
-        )
-        .await
-        .unwrap();
-
-        let forwarded = tokio::time::timeout(Duration::from_secs(1), acp_rx.recv())
-            .await
-            .expect("notify request should reach the agent")
-            .expect("agent channel closed");
-        let forwarded: serde_json::Value = serde_json::from_str(&forwarded).unwrap();
-        assert_eq!(forwarded["method"], "ext_method");
-        assert_eq!(
-            forwarded["params"]["method"], "x.ai/session/notify",
-            "the passive special-case must not rewrite the ACP request shape"
-        );
-        let namespaced_id = forwarded["id"].clone();
-        response_tx
-            .send(
-                serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": namespaced_id,
-                    "result": {"status": "queued"}
-                })
-                .to_string(),
-            )
-            .unwrap();
-        let response = next_acp_payload(&mut notifier_reader)
-            .await
-            .expect("notifier should receive its request-id response");
-        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
-        assert_eq!(response["id"], 9);
-        assert_eq!(response["result"]["status"], "queued");
-
-        // With no real viewer for sess-passive, a reverse request must be
-        // dropped. Receiving it here would prove the notifier became driver.
-        response_tx
-            .send(
-                r#"{"jsonrpc":"2.0","id":42,"method":"fs/read_text_file","params":{"sessionId":"sess-passive","path":"/tmp/x"}}"#
-                    .to_string(),
-            )
-            .unwrap();
-        assert!(
-            next_acp_payload(&mut notifier_reader).await.is_none(),
-            "session notify connection must not become the session driver"
-        );
-
-        write_message(&mut notifier_writer, &ClientMessage::Disconnect)
-            .await
-            .unwrap();
-        drop(notifier_reader);
-        drop(notifier_writer);
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        while let Ok(payload) = acp_rx.try_recv() {
-            assert!(
-                !payload.contains("x.ai/internal/evict_sessions")
-                    && !payload.contains("sess-passive"),
-                "passive notifier disconnect must not detach/evict a session: {payload}"
-            );
-        }
-
-        // The notifier also must not replace/clear the interactive fallback.
-        response_tx
-            .send(
-                r#"{"jsonrpc":"2.0","method":"agent/progress","params":{"status":"working"}}"#
-                    .to_string(),
-            )
-            .unwrap();
-        let fallback = next_acp_payload(&mut interactive_reader)
-            .await
-            .expect("interactive client should remain the fallback route");
-        assert!(
-            fallback.contains("agent/progress"),
-            "unexpected fallback payload: {fallback}"
         );
         cancel.cancel();
     }

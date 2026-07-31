@@ -149,26 +149,21 @@ plus atomic rename. The non-Unix fallback rejects links seen during validation
 but, because it lacks a handle-relative parent walk, does not claim the same
 protection against a concurrent reparse-point swap.
 
-### External-agent notification
+### Asynchronous commit review
 
-An asynchronous reviewer is one use of the generic extension boundary:
+An asynchronous reviewer runs entirely through the generic hook and subagent
+boundaries, with no dedicated runtime support:
 
-1. A command-only `PostToolUse` hook recognizes a successful direct
-   `git commit`, atomically claims the repository/commit pair, and launches a
-   detached headless reviewer.
-2. The reviewer starts as a normal headless session without a model pin, so
-   the user's configured default model or logical route—including a custom
-   provider—is resolved by the regular runtime. A local plugin fork may opt
-   into explicit agent or model overrides.
-3. On completion it calls `grok sessions notify` with a stable notification
-   ID.
-4. The leader accepts the result only for an already-live session, queues it
-   through that session's actor, and optionally wakes an idle turn.
+1. A `SessionStart` hook records the repository's `HEAD` as the session
+   baseline.
+2. A `Stop` hook compares `HEAD` at turn end. When a commit moved it, the hook
+   advances the baseline and returns a block decision asking the agent to spawn
+   a read-only review subagent.
+3. The subagent is a child of the live session, so its findings return through
+   the normal subagent result path.
 
-External findings are inserted as explicitly untrusted user-level content,
-not as system instructions. Notification deduplication is bounded and
-leader-process-local; an external adapter owns any stronger job idempotency.
-The release archive does not bundle a reviewer hook or agent.
+External findings reach the model as ordinary subagent output, not as system
+instructions. The release archive does not bundle a reviewer hook or agent.
 
 The Messages transport can emit either the legacy five-minute cache breakpoint,
 an explicit one-hour breakpoint, or no breakpoint. Cache reads and five-minute

@@ -9,8 +9,8 @@
 //! - Session → Client: `session_notification` via a shared gateway handle
 //!
 use super::commands::{
-    ExternalNotifyAck, ParsedPromptInfo, PromptCompletionKind, PromptTurnOk, PromptTurnResult,
-    SessionCommand, TaskWakeAdmission, TaskWakeFallback, ok_end_turn,
+    ParsedPromptInfo, PromptCompletionKind, PromptTurnOk, PromptTurnResult, SessionCommand,
+    TaskWakeAdmission, TaskWakeFallback, ok_end_turn,
 };
 use super::handle::SessionHandle;
 use super::notifications::NotificationSender;

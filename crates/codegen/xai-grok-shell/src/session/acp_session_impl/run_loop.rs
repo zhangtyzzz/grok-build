@@ -2079,50 +2079,6 @@ pub(super) async fn run_session(
                                 .await;
                             }
                         }
-                        SessionCommand::ExternalNotify {
-                            notification_id,
-                            kind,
-                            text,
-                            wake,
-                            respond_to,
-                        } => {
-                            let text =
-                                format_external_notification(&kind, &notification_id, &text);
-                            session.broadcast_interjection(&text, Some(&notification_id));
-                            let turn_running = session.state.lock().await.running_task.is_some();
-                            if turn_running {
-                                session.pending_interjections.push(PendingInterjection {
-                                    text,
-                                    attachments: Vec::new(),
-                                });
-                                tracing::info!(
-                                    notification_id = %notification_id,
-                                    kind = %kind,
-                                    "Queued external notification for the active turn"
-                                );
-                            } else {
-                                session
-                                    .queue_interjection_fallback_prompt(text, Vec::new(), true)
-                                    .await;
-                                if wake {
-                                    SessionActor::maybe_start_running_task(
-                                        session.clone(),
-                                        completion_tx.clone(),
-                                    )
-                                    .await;
-                                }
-                                tracing::info!(
-                                    notification_id = %notification_id,
-                                    kind = %kind,
-                                    wake,
-                                    "Queued external notification for an idle session"
-                                );
-                            }
-                            let _ = respond_to.send(ExternalNotifyAck {
-                                turn_running,
-                                will_wake: !turn_running && wake,
-                            });
-                        }
                         SessionCommand::GoalSummaryTurn { prompt_text } => {
                             // Queue a synthetic prompt so the model gets a turn
                             // to print a visible progress summary. Mirrors the
