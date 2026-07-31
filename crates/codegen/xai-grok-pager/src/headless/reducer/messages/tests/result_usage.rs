@@ -76,12 +76,15 @@ fn messages_result_carries_required_fields() {
 fn messages_result_usage_splits_disjoint_buckets() {
     let mut r = messages(false);
     r.reduce(StreamEvent::AgentMessage("hi".into()));
+    // This fork reports cache writes split by TTL inside `inputTokens`; the
+    // Messages shape folds them back into one disjoint bucket.
     let aggregate = json!({
         "inputTokens": 100,
         "outputTokens": 7,
         "totalTokens": 107,
         "cachedReadTokens": 10,
-        "cacheCreationTokens": 5,
+        "cacheWrite5mInputTokens": 3,
+        "cacheWrite1hInputTokens": 2,
         "numTurns": 1,
     });
     let out = r.finish(&TurnEnd {
@@ -123,11 +126,11 @@ fn messages_result_usage_incomplete_aggregate_zeroes_buckets() {
 #[test]
 fn messages_model_usage_maps_and_zero_fills() {
     let rows = json!({
-        "grok-4": {"inputTokens": 90, "outputTokens": 7, "cacheReadInputTokens": 10, "cacheCreationInputTokens": 25, "costUSD": 0.02},
+        "grok-4": {"inputTokens": 90, "outputTokens": 7, "cacheReadInputTokens": 10, "cacheWrite5mInputTokens": 20, "cacheWrite1hInputTokens": 5, "costUSD": 0.02},
     });
     let out = messages_model_usage(Some(&rows), Some("grok-4"), 0, Some(131_072));
     let mu = &out["grok-4"];
-    assert_eq!(mu["inputTokens"], 90);
+    assert_eq!(mu["inputTokens"], 65);
     assert_eq!(mu["outputTokens"], 7);
     assert_eq!(mu["cacheReadInputTokens"], 10);
     assert_eq!(mu["cacheCreationInputTokens"], 25);
