@@ -943,6 +943,12 @@ mod tests {
     }
     /// `parse_list_req` forces the conversations-only `kind` exactly when
     /// process chat mode is on; otherwise the client request is untouched.
+    ///
+    /// [`crate::agent::chat_modes::process_chat_mode_enabled`] is hard-off in
+    /// this tree, so setting the env var cannot switch forcing on. The
+    /// expectation is therefore derived from the flag rather than assuming it,
+    /// and the force-versus-honor decision itself is pinned directly by
+    /// [`unrecognized_client_kind_is_not_a_client_sent_kind_filter`].
     #[test]
     #[serial_test::serial]
     fn parse_list_req_forces_kind_under_process_chat_mode_only() {
@@ -951,28 +957,29 @@ mod tests {
             "_meta": { "x.ai/facetFilters": { "kind": ["build"], "starred": [true] } },
         })
         .to_string();
+        let build = vec![serde_json::json!("build")];
+        let chat = vec![serde_json::json!("chat")];
         {
             let _off = xai_grok_test_support::EnvGuard::unset(GROK_CHAT_MODE_ENV);
             let req = parse_list_req(&raw).expect("parse");
             let parsed = ParsedMeta::parse(req.meta.as_ref());
             assert_eq!(
                 parsed.facet_filters.get(KIND_FACET_KEY),
-                Some(&vec![serde_json::json!("build")]),
+                Some(&build),
                 "non-chat: client kind filter untouched"
             );
         }
         {
             let _on = xai_grok_test_support::EnvGuard::set(GROK_CHAT_MODE_ENV, "1");
+            // Forcing engages only for a chat-mode agent that does not honor
+            // an explicit client `kind` (the Local-history case).
+            let forces = crate::agent::chat_modes::process_chat_mode_enabled()
+                && !cfg!(feature = "local-workspace");
             let req = parse_list_req(&raw).expect("parse");
             let parsed = ParsedMeta::parse(req.meta.as_ref());
-            let expected_build = if cfg!(feature = "local-workspace") {
-                Some(&vec![serde_json::json!("build")])
-            } else {
-                Some(&vec![serde_json::json!("build")])
-            };
             assert_eq!(
                 parsed.facet_filters.get(KIND_FACET_KEY),
-                expected_build,
+                Some(if forces { &chat } else { &build }),
                 "client kind=build under process chat mode"
             );
             assert_eq!(
@@ -980,27 +987,47 @@ mod tests {
                 Some(&vec![serde_json::json!(true)]),
                 "other facets pass through"
             );
-            let req = parse_list_req("{}").expect("parse");
+        }
+    }
+    /// Only an explicit `chat`/`build` counts as a client-sent `kind`, so an
+    /// absent, empty, null, or unrecognized one leaves chat mode free to force
+    /// conversations-only — and that forcing rewrites `kind` to exactly
+    /// `["chat"]`. Pinned on the decision and rewrite directly, so it holds
+    /// whether or not the process-wide chat-mode flag can be enabled.
+    #[test]
+    fn unrecognized_client_kind_is_not_a_client_sent_kind_filter() {
+        let honored = [
+            serde_json::json!({ "_meta": { "x.ai/facetFilters": { "kind": ["chat"] } } }),
+            serde_json::json!({ "_meta": { "x.ai/facetFilters": { "kind": ["build"] } } }),
+            serde_json::json!({ "_meta": { "x.ai/facetFilters": { "kind": "chat" } } }),
+            serde_json::json!({ "_meta": { "x.ai/facetFilters": { "kind": ["other", "build"] } } }),
+        ];
+        for raw in honored {
+            let req = parse_list_req(&raw.to_string()).expect("parse");
+            assert!(
+                client_sent_kind_filter(&req),
+                "an explicit chat/build kind must be honored: {raw}"
+            );
+        }
+        let ignored = [
+            serde_json::json!({}),
+            serde_json::json!({ "_meta": { "x.ai/facetFilters": { "kind": [] } } }),
+            serde_json::json!({ "_meta": { "x.ai/facetFilters": { "kind": null } } }),
+            serde_json::json!({ "_meta": { "x.ai/facetFilters": { "kind": ["other"] } } }),
+        ];
+        for raw in ignored {
+            let mut req = parse_list_req(&raw.to_string()).expect("parse");
+            assert!(
+                !client_sent_kind_filter(&req),
+                "an empty/null/unrecognized kind is not a client filter: {raw}"
+            );
+            force_kind_chat(&mut req);
             let parsed = ParsedMeta::parse(req.meta.as_ref());
-            let expected = None;
             assert_eq!(
                 parsed.facet_filters.get(KIND_FACET_KEY),
-                expected,
-                "absent client kind still forces chat under process chat mode"
+                Some(&vec![serde_json::json!("chat")]),
+                "forcing must rewrite kind to exactly [\"chat\"]: {raw}"
             );
-            for bad in [
-                serde_json::json!({ "_meta": { "x.ai/facetFilters": { "kind": [] } } }),
-                serde_json::json!({ "_meta": { "x.ai/facetFilters": { "kind": null } } }),
-                serde_json::json!({ "_meta": { "x.ai/facetFilters": { "kind": ["other"] } } }),
-            ] {
-                let req = parse_list_req(&bad.to_string()).expect("parse");
-                let parsed = ParsedMeta::parse(req.meta.as_ref());
-                assert_eq!(
-                    parsed.facet_filters.get(KIND_FACET_KEY),
-                    expected,
-                    "empty/null/unknown kind must still force chat: {bad}"
-                );
-            }
         }
     }
     /// Wire pin for the cross-crate `x.ai/partial` envelope the pager parses:
