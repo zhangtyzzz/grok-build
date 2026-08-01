@@ -1139,7 +1139,10 @@ impl SessionActor {
                         "auth recovery: sampler 401, devbox re-mint, retrying"
                     );
                     self.refresh_sampler_for_retry().await;
-                    return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit);
+                    return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
+                        credential: error.credential,
+                        store: RecoveredStore::SessionToken,
+                    });
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -1167,7 +1170,10 @@ impl SessionActor {
                     None,
                 );
                 self.refresh_sampler_for_retry().await;
-                return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit);
+                return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
+                    credential: error.credential,
+                    store: RecoveredStore::SessionToken,
+                });
             }
             tracing::warn!(session_id = %self.session_info.id.0, "auth recovery: sampler 401, refresh failed");
             xai_grok_telemetry::unified_log::warn(
@@ -1180,7 +1186,10 @@ impl SessionActor {
             && self.try_provider_401_recovery(provider).await
         {
             self.prepare_sampler_for_turn().await?;
-            return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit);
+            return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
+                credential: error.credential,
+                store: RecoveredStore::AuthProvider,
+            });
         }
         if matches!(error.kind, SamplingErrorKind::IdleTimeout) {
             self.signals_handle().record_idle_timeout();
@@ -1385,8 +1394,8 @@ impl SessionActor {
                     SamplerFailureRecovery::CompactAndResubmit => {
                         Ok(SamplerTurnOutcome::CompactAndResubmit)
                     }
-                    SamplerFailureRecovery::RefreshAuthAndResubmit => {
-                        Ok(SamplerTurnOutcome::RefreshAuthAndResubmit)
+                    SamplerFailureRecovery::RefreshAuthAndResubmit { credential, store } => {
+                        Ok(SamplerTurnOutcome::RefreshAuthAndResubmit { credential, store })
                     }
                 }
             }
