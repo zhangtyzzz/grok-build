@@ -243,6 +243,10 @@ name = "test_session_load_memory"
 required-features = ["test-support"]
 
 [[test]]
+name = "test_fork_copy_memory"
+required-features = ["test-support"]
+
+[[test]]
 name = "session_fork_replay_memory"
 required-features = ["test-support"]
 
