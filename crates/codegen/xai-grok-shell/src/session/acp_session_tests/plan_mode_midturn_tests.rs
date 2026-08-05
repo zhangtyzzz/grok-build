@@ -366,7 +366,7 @@ async fn enter_plan_tool_result_waits_for_planner_model_barrier() {
                     "enter-plan-1",
                     "enter_plan_mode",
                     "enter_plan_mode",
-                    result,
+                    DrainedToolSuccess::new(result),
                     0,
                     "test",
                     &serde_json::json!({}),
