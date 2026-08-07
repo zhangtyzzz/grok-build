@@ -276,7 +276,7 @@ async fn cancel_barrier_rejects_task_completion_wake_without_reporting_it() {
                 res.get::<xai_grok_tools::types::resources::State<
                     xai_grok_tools::reminders::task_completion::ReportedTaskCompletions,
                 >>()
-                .is_none(),
+                .is_none_or(|reported| !reported.is_reported("bg-suppressed")),
                 "declined admission must not report before user re-engagement"
             );
             drop(res);
@@ -424,7 +424,7 @@ async fn task_completion_wake_is_admitted_without_cancel_barrier() {
                     .get::<xai_grok_tools::types::resources::State<
                         xai_grok_tools::reminders::task_completion::ReportedTaskCompletions,
                     >>()
-                    .is_none(),
+                    .is_none_or(|reported| !reported.is_reported("bg-normal")),
                 "queue acceptance alone must not mark the completion reported"
             );
             let actor_for_turn = actor.clone();
