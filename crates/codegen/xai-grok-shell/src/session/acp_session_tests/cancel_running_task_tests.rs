@@ -1470,8 +1470,41 @@ async fn maybe_inject_interrupt_reminder_injects_once() {
 /// `PromptOrigin::User` call site in `handle_prompt` and the relative ordering.
 /// Synchronizes on the persist-ack (fires after both items are pushed, before
 /// the model call), then aborts the turn so the dead-URL model call can't hang.
-#[tokio::test(flavor = "current_thread")]
-async fn handle_prompt_injects_interrupt_reminder_before_user_message() {
+///
+/// These integration tests poll the real `handle_prompt` future, which is
+/// larger than libtest's default Linux thread stack in a debug build. Match
+/// the production session thread's stack size so the test exercises behavior
+/// instead of aborting the whole test process with a stack overflow.
+const PROMPT_WIRING_TEST_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
+
+fn run_prompt_wiring_test<F>(name: &'static str, body: fn() -> F)
+where
+    F: std::future::Future<Output = ()> + 'static,
+{
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(PROMPT_WIRING_TEST_THREAD_STACK_SIZE)
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build prompt wiring test runtime");
+            runtime.block_on(body());
+        })
+        .expect("spawn prompt wiring test thread")
+        .join()
+        .expect("prompt wiring test thread panicked");
+}
+
+#[test]
+fn handle_prompt_injects_interrupt_reminder_before_user_message() {
+    run_prompt_wiring_test(
+        "interrupt-reminder-user-prompt",
+        handle_prompt_injects_interrupt_reminder_before_user_message_impl,
+    );
+}
+
+async fn handle_prompt_injects_interrupt_reminder_before_user_message_impl() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -1497,7 +1530,7 @@ async fn handle_prompt_injects_interrupt_reminder_before_user_message() {
                     )
                     .await
             });
-            assert!(ack_rx. await .is_ok(), "persist ack should resolve");
+            assert!(ack_rx.await.is_ok(), "persist ack should resolve");
             let conv = actor.chat_state_handle.get_conversation().await;
             let user_idx = conv
                 .iter()
@@ -1521,7 +1554,7 @@ async fn handle_prompt_injects_interrupt_reminder_before_user_message() {
                     .contains(crate::session::acp_session::INTERRUPT_REMINDER),
                 "the preceding system-reminder must carry the interrupt notice"
             );
-            assert!(! actor.events.take_pending_interrupt_reminder());
+            assert!(!actor.events.take_pending_interrupt_reminder());
             prompt_task.abort();
         })
         .await;
@@ -1530,8 +1563,15 @@ async fn handle_prompt_injects_interrupt_reminder_before_user_message() {
 /// between the abort and the user's resend must NOT consume the one-shot or
 /// inject the reminder — it has to survive to the next *genuine* user turn.
 /// Guards the `PromptOrigin::User` gate on the injection call.
-#[tokio::test(flavor = "current_thread")]
-async fn handle_prompt_synthetic_origin_preserves_interrupt_reminder() {
+#[test]
+fn handle_prompt_synthetic_origin_preserves_interrupt_reminder() {
+    run_prompt_wiring_test(
+        "interrupt-reminder-synthetic-prompt",
+        handle_prompt_synthetic_origin_preserves_interrupt_reminder_impl,
+    );
+}
+
+async fn handle_prompt_synthetic_origin_preserves_interrupt_reminder_impl() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
