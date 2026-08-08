@@ -19,6 +19,13 @@ const TEST_TIMING: BootstrapTiming = BootstrapTiming {
     refresh: Duration::from_millis(50),
     peer_wait: Duration::from_millis(200),
     poll: Duration::from_millis(10),
+    claim_hold: Duration::ZERO,
+};
+const SINGLE_FLIGHT_TIMING: BootstrapTiming = BootstrapTiming {
+    // Longer than two poll intervals: the losing gate must observe the live
+    // claim before the winner can finish the tiny two-session reindex.
+    claim_hold: Duration::from_millis(25),
+    ..TEST_TIMING
 };
 const _: () = assert!(TEST_TIMING.refresh.as_millis() < TEST_TIMING.lease.as_millis());
 const _: () = assert!(TEST_TIMING.poll.as_millis() < TEST_TIMING.peer_wait.as_millis());
@@ -272,7 +279,7 @@ async fn test_concurrent_gates_single_flight() {
                 &root_a,
                 &storage_a,
                 &pa,
-                &TEST_TIMING,
+                &SINGLE_FLIGHT_TIMING,
                 BootstrapRole::Launch,
             )
             .await
@@ -283,7 +290,7 @@ async fn test_concurrent_gates_single_flight() {
                 &root_b,
                 &storage_b,
                 &pb,
-                &TEST_TIMING,
+                &SINGLE_FLIGHT_TIMING,
                 BootstrapRole::Launch,
             )
             .await

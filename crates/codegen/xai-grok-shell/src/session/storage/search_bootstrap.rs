@@ -36,6 +36,10 @@ struct BootstrapTiming {
     refresh: Duration,
     peer_wait: Duration,
     poll: Duration,
+    /// Test-only scheduling hook: keep a newly acquired claim live long
+    /// enough for a deliberately concurrent waiter to observe contention.
+    #[cfg(test)]
+    claim_hold: Duration,
 }
 
 const TIMING: BootstrapTiming = BootstrapTiming {
@@ -43,6 +47,8 @@ const TIMING: BootstrapTiming = BootstrapTiming {
     refresh: Duration::from_secs(30),
     peer_wait: Duration::from_secs(60),
     poll: Duration::from_secs(1),
+    #[cfg(test)]
+    claim_hold: Duration::ZERO,
 };
 // The refresh must fire several times within a lease, and a waiter must
 // poll at least once within the peer wait.
@@ -193,6 +199,10 @@ async fn bootstrap_with_lease_inner(
         }
 
         if claim_bootstrap_lease(&db_path, &token, timing.lease).await? {
+            #[cfg(test)]
+            if !timing.claim_hold.is_zero() {
+                tokio::time::sleep(timing.claim_hold).await;
+            }
             // Only a launch's first claim ignores an existing marker (the
             // launch owes pruning and skipped retries); everyone else
             // adopts any completed marker.
