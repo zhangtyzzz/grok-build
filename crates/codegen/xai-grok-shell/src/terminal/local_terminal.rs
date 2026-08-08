@@ -289,13 +289,17 @@ mod tests {
     #[cfg(unix)]
     async fn test_timeout_kills_grandchildren_and_returns_promptly() {
         let mut request = make_request("sleep 5 & echo bgpid=$!; sleep 5");
-        request.timeout = std::time::Duration::from_millis(300);
+        // Leave enough startup budget for a loaded CI runner to execute the
+        // shell and publish the background PID before the timeout. The
+        // behavior under test is teardown after timeout, not sub-300ms shell
+        // startup latency.
+        request.timeout = std::time::Duration::from_secs(1);
 
         let started = std::time::Instant::now();
         let result = LocalTerminalRunner.run(request).await.unwrap();
 
         assert!(result.timed_out, "run should report the timeout");
-        // Prompt return: request timeout (0.3s) + pipe EOF from the group
+        // Prompt return: request timeout (1s) + pipe EOF from the group
         // kill (normally instant; KILL_REAP_TIMEOUT-bounded worst case) —
         // anything near the 5s sleeps means we waited for the grandchild.
         assert!(
