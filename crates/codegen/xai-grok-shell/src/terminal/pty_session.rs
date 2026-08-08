@@ -972,7 +972,7 @@ mod tests {
                 close_pty(&pty_id).await.expect("close pty");
 
                 let deadline = std::time::Instant::now() + Duration::from_secs(5);
-                while unsafe { libc::kill(grandchild, 0) } == 0 {
+                while process_is_running(grandchild) {
                     assert!(
                         std::time::Instant::now() < deadline,
                         "grandchild {grandchild} survived the pty close"
@@ -1017,7 +1017,7 @@ mod tests {
                 scope.kill_all();
 
                 let deadline = std::time::Instant::now() + Duration::from_secs(5);
-                while unsafe { libc::kill(grandchild, 0) } == 0 {
+                while process_is_running(grandchild) {
                     assert!(
                         std::time::Instant::now() < deadline,
                         "grandchild {grandchild} survived scope teardown"
@@ -1057,6 +1057,28 @@ mod tests {
                 "shell {pid} survived the guard drop"
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    #[cfg(unix)]
+    fn process_is_running(pid: i32) -> bool {
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return false;
+        }
+
+        // `kill(pid, 0)` also succeeds for a zombie. An orphaned background
+        // job may remain a zombie briefly until init reaps it, especially on
+        // a loaded test runner, but it is no longer executing. Keep failures
+        // to inspect the state conservative so this helper cannot hide a live
+        // process.
+        let output = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output();
+        match output {
+            Ok(output) if output.status.success() => !String::from_utf8_lossy(&output.stdout)
+                .trim_start()
+                .starts_with('Z'),
+            _ => true,
         }
     }
 
