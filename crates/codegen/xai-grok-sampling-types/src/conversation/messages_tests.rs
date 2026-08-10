@@ -1,6 +1,5 @@
 //! Tests for the Messages API conversion.
 
-use super::messages::{apply_conversation_cache_breakpoint, ephemeral_cache_control};
 use super::test_support::*;
 use super::*;
 
@@ -188,6 +187,151 @@ fn test_messages_request_cache_breakpoint_marks_an_image_tip() {
         "{json:#}",
     );
     assert!(blocks[0].get("cache_control").is_none(), "{json:#}");
+}
+
+fn cache_policy_request() -> ConversationRequest {
+    ConversationRequest::from_items(vec![
+        ConversationItem::system("You are a helpful assistant."),
+        ConversationItem::user("Fix the bug"),
+        ConversationItem::assistant("Fixed it."),
+        ConversationItem::user("thanks"),
+    ])
+    .with_model("messages-compatible-model")
+}
+
+/// Collect every `cache_control` object the request carries, system first.
+fn cache_controls(json: &serde_json::Value) -> Vec<serde_json::Value> {
+    let mut found = Vec::new();
+    let mut visit = |container: &serde_json::Value| {
+        if let Some(blocks) = container.as_array() {
+            for block in blocks {
+                if let Some(cc) = block.get("cache_control") {
+                    found.push(cc.clone());
+                }
+            }
+        }
+    };
+    visit(&json["system"]);
+    if let Some(messages) = json["messages"].as_array() {
+        for msg in messages {
+            visit(&msg["content"]);
+        }
+    }
+    found
+}
+
+#[test]
+fn cache_policy_five_minutes_reproduces_the_upstream_wire_shape() {
+    let req = cache_policy_request();
+    let default_policy = serde_json::to_value(build_messages_request_with_cache_policy(
+        &req,
+        crate::PromptCachePolicy::STABLE_PREFIX_5M,
+    ))
+    .unwrap();
+
+    assert_eq!(
+        default_policy,
+        serde_json::to_value(build_messages_request(&req)).unwrap(),
+        "the default policy must not alter upstream's request byte for byte",
+    );
+    let controls = cache_controls(&default_policy);
+    assert!(!controls.is_empty(), "{default_policy:#}");
+    for cc in controls {
+        assert_eq!(cc["type"].as_str(), Some("ephemeral"));
+        assert!(
+            cc.get("ttl").is_none(),
+            "the five-minute default omits the wire TTL: {cc:#}",
+        );
+    }
+}
+
+#[test]
+fn cache_policy_one_hour_retags_every_placed_breakpoint() {
+    let req = cache_policy_request();
+    let json = serde_json::to_value(build_messages_request_with_cache_policy(
+        &req,
+        crate::PromptCachePolicy::STABLE_PREFIX_1H,
+    ))
+    .unwrap();
+
+    let controls = cache_controls(&json);
+    let upstream_count =
+        cache_controls(&serde_json::to_value(build_messages_request(&req)).unwrap());
+    assert_eq!(
+        controls.len(),
+        upstream_count.len(),
+        "the TTL must not add or drop breakpoints: {json:#}",
+    );
+    for cc in controls {
+        assert_eq!(cc["type"].as_str(), Some("ephemeral"));
+        assert_eq!(cc["ttl"].as_str(), Some("1h"), "{json:#}");
+    }
+}
+
+#[test]
+fn cache_policy_off_removes_every_breakpoint_and_restores_text_system() {
+    let req = cache_policy_request();
+    let json = serde_json::to_value(build_messages_request_with_cache_policy(
+        &req,
+        crate::PromptCachePolicy::OFF,
+    ))
+    .unwrap();
+
+    assert!(
+        cache_controls(&json).is_empty(),
+        "opting out must leave no breakpoint: {json:#}",
+    );
+    assert_eq!(
+        json["system"].as_str(),
+        Some("You are a helpful assistant."),
+        "a single uncached system block collapses back to text form: {json:#}",
+    );
+}
+
+#[test]
+fn test_messages_request_cache_breakpoint_skips_an_empty_tool_result() {
+    // A tool that produced no output still becomes a `tool_result` block with
+    // empty text, and the Messages API rejects a breakpoint on an empty block.
+    // The batch's earlier non-empty result must take it instead.
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::system("You are a helpful assistant."),
+        ConversationItem::user("run both tools"),
+        ConversationItem::assistant_tool_calls(vec![
+            ToolCall {
+                id: "call_1".into(),
+                name: "read_file".to_string(),
+                arguments: r#"{"path": "src/main.rs"}"#.into(),
+            },
+            ToolCall {
+                id: "call_2".into(),
+                name: "write".to_string(),
+                arguments: "{}".into(),
+            },
+        ]),
+        ConversationItem::tool_result("call_1", "fn main() {}"),
+        ConversationItem::tool_result("call_2", ""),
+    ])
+    .with_model("messages-compatible-model");
+
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    let tip = json["messages"].as_array().unwrap().last().unwrap();
+    let blocks = tip["content"].as_array().unwrap();
+
+    assert_eq!(
+        blocks.len(),
+        2,
+        "both tool results batch together: {json:#}"
+    );
+    assert_eq!(blocks[1]["content"].as_str(), Some(""), "{json:#}");
+    assert!(
+        blocks[1].get("cache_control").is_none(),
+        "an empty tool_result must not carry a breakpoint: {json:#}",
+    );
+    assert_eq!(
+        blocks[0]["cache_control"]["type"].as_str(),
+        Some("ephemeral"),
+        "the breakpoint must fall back to the last non-empty block: {json:#}",
+    );
 }
 
 #[test]
@@ -509,394 +653,4 @@ fn upgrade_legacy_reasoning_singular_anthropic_no_id() {
     };
     assert_eq!(r.id, "");
     assert_eq!(r.encrypted_content.as_deref(), Some("signature-bytes-here"));
-}
-
-fn messages_cache_test_request() -> ConversationRequest {
-    ConversationRequest {
-        items: vec![
-            ConversationItem::system("Stable system prompt"),
-            ConversationItem::user("Hello"),
-        ],
-        model: Some("test-model".to_string()),
-        ..Default::default()
-    }
-}
-
-#[test]
-fn messages_default_cache_policy_keeps_legacy_5m_wire_shape() {
-    let json =
-        serde_json::to_value(build_messages_request(&messages_cache_test_request())).unwrap();
-    let cache_control = json
-        .pointer("/system/0/cache_control")
-        .expect("default policy should cache the stable system prefix");
-    assert_eq!(
-        cache_control
-            .get("type")
-            .and_then(serde_json::Value::as_str),
-        Some("ephemeral")
-    );
-    assert!(
-        cache_control.get("ttl").is_none(),
-        "default 5m must stay implicit on the wire: {json:#}"
-    );
-}
-
-#[test]
-fn messages_one_hour_cache_policy_serializes_explicit_ttl() {
-    let json = serde_json::to_value(build_messages_request_with_cache_policy(
-        &messages_cache_test_request(),
-        crate::PromptCachePolicy::STABLE_PREFIX_1H,
-    ))
-    .unwrap();
-    assert_eq!(
-        json.pointer("/system/0/cache_control/ttl")
-            .and_then(serde_json::Value::as_str),
-        Some("1h"),
-        "one-hour cache must carry an explicit TTL: {json:#}"
-    );
-}
-
-#[test]
-fn messages_off_cache_policy_emits_no_breakpoint() {
-    let json = serde_json::to_value(build_messages_request_with_cache_policy(
-        &messages_cache_test_request(),
-        crate::PromptCachePolicy::OFF,
-    ))
-    .unwrap();
-    assert!(
-        json.pointer("/system/0/cache_control").is_none()
-            && !json.to_string().contains("cache_control"),
-        "off policy must not emit a cache breakpoint: {json:#}"
-    );
-    assert_eq!(
-        json.get("system").and_then(serde_json::Value::as_str),
-        Some("Stable system prompt"),
-        "a single uncached system block should retain the compact text form"
-    );
-}
-
-#[test]
-fn messages_stable_prefix_also_caches_conversation_tail() {
-    // The final message (here the sole user turn) must carry a second
-    // ephemeral breakpoint so the growing conversation prefix is cached and
-    // read back on the next agentic step, not just the static system block.
-    let json =
-        serde_json::to_value(build_messages_request(&messages_cache_test_request())).unwrap();
-    let tail = json
-        .pointer("/messages/0/content/0/cache_control")
-        .expect("stable-prefix must cache the last message's tail block");
-    assert_eq!(
-        tail.get("type").and_then(serde_json::Value::as_str),
-        Some("ephemeral")
-    );
-    assert!(
-        tail.get("ttl").is_none(),
-        "default 5m must stay implicit on the conversation breakpoint too: {json:#}"
-    );
-    // System and conversation breakpoints must coexist on the same request
-    // (exactly two), guarding against a refactor dropping either one.
-    assert!(
-        json.pointer("/system/0/cache_control").is_some(),
-        "the system-prefix breakpoint must remain alongside the conversation one: {json:#}"
-    );
-    assert_eq!(
-        json.to_string().matches("cache_control").count(),
-        2,
-        "exactly two breakpoints (system + conversation) expected: {json:#}"
-    );
-}
-
-#[test]
-fn messages_stable_prefix_caches_only_last_tool_definition() {
-    let request = ConversationRequest {
-        tools: vec![
-            ToolSpec {
-                name: "read_file".to_string(),
-                description: Some("Read a file".to_string()),
-                parameters: serde_json::json!({"type": "object"}),
-            },
-            ToolSpec {
-                name: "run_command".to_string(),
-                description: Some("Run a command".to_string()),
-                parameters: serde_json::json!({"type": "object"}),
-            },
-        ],
-        ..messages_cache_test_request()
-    };
-
-    let json = serde_json::to_value(build_messages_request(&request)).unwrap();
-    assert!(
-        json.pointer("/tools/0/cache_control").is_none(),
-        "only the final tool definition should carry a breakpoint: {json:#}"
-    );
-    assert_eq!(
-        json.pointer("/tools/1/cache_control/type")
-            .and_then(serde_json::Value::as_str),
-        Some("ephemeral")
-    );
-    assert_eq!(
-        json.to_string().matches("cache_control").count(),
-        3,
-        "expected tools + system + conversation breakpoints: {json:#}"
-    );
-
-    let off_json = serde_json::to_value(build_messages_request_with_cache_policy(
-        &request,
-        crate::PromptCachePolicy::OFF,
-    ))
-    .unwrap();
-    assert!(
-        !off_json.to_string().contains("cache_control"),
-        "off policy must omit the tool breakpoint too: {off_json:#}"
-    );
-}
-
-#[test]
-fn conversation_breakpoint_converts_plain_text_message() {
-    // Defensive `MessageContent::Text` arm: the current builder always emits
-    // `Blocks`, but if a bare-text message reaches the helper it must be
-    // promoted to a single cached text block rather than silently skipped.
-    use crate::messages::{ContentBlock, Message, MessageContent, MessageRole};
-    let mut messages = vec![Message {
-        role: MessageRole::User,
-        content: MessageContent::Text("plain user turn".to_string()),
-    }];
-    apply_conversation_cache_breakpoint(
-        &mut messages,
-        ephemeral_cache_control(crate::PromptCacheTtl::OneHour),
-    );
-    let MessageContent::Blocks(blocks) = &messages[0].content else {
-        panic!("a bare-text message must be promoted to Blocks");
-    };
-    assert!(
-        matches!(
-            &blocks[0],
-            ContentBlock::Text { text, cache_control: Some(_) } if text == "plain user turn"
-        ),
-        "the promoted text block must preserve its text and carry the breakpoint"
-    );
-}
-
-#[test]
-fn conversation_breakpoint_skips_empty_text_message() {
-    // An empty bare-text message must not be promoted to an (invalid) empty
-    // cached text block; leave it untouched.
-    use crate::messages::{Message, MessageContent, MessageRole};
-    let mut messages = vec![Message {
-        role: MessageRole::User,
-        content: MessageContent::Text(String::new()),
-    }];
-    apply_conversation_cache_breakpoint(
-        &mut messages,
-        ephemeral_cache_control(crate::PromptCacheTtl::OneHour),
-    );
-    assert!(
-        matches!(&messages[0].content, MessageContent::Text(t) if t.is_empty()),
-        "empty text must stay an untouched no-op, not an empty cached block"
-    );
-}
-
-#[test]
-fn conversation_breakpoint_lands_on_last_cacheable_block() {
-    // Multiple cacheable blocks: the breakpoint must land on the LAST one
-    // (the ToolResult), not the earlier Text.
-    use crate::messages::{ContentBlock, Message, MessageContent, MessageRole, ToolResultContent};
-    let mut messages = vec![Message {
-        role: MessageRole::User,
-        content: MessageContent::Blocks(vec![
-            ContentBlock::Text {
-                text: "here are the results".to_string(),
-                cache_control: None,
-            },
-            ContentBlock::ToolResult {
-                tool_use_id: "tool-1".to_string(),
-                content: ToolResultContent::Text("output".to_string()),
-                cache_control: None,
-            },
-        ]),
-    }];
-    apply_conversation_cache_breakpoint(
-        &mut messages,
-        ephemeral_cache_control(crate::PromptCacheTtl::OneHour),
-    );
-    let MessageContent::Blocks(blocks) = &messages[0].content else {
-        panic!("expected blocks");
-    };
-    assert!(
-        matches!(
-            &blocks[0],
-            ContentBlock::Text {
-                cache_control: None,
-                ..
-            }
-        ),
-        "the earlier Text block must not carry the breakpoint"
-    );
-    assert!(
-        matches!(
-            &blocks[1],
-            ContentBlock::ToolResult {
-                cache_control: Some(_),
-                ..
-            }
-        ),
-        "the breakpoint must land on the last cacheable block (ToolResult)"
-    );
-}
-
-#[test]
-fn conversation_breakpoint_skips_empty_trailing_tool_result() {
-    // Reachable agentic case: a tool returns empty output as the final
-    // block. The breakpoint must skip the empty ToolResult and land on the
-    // preceding non-empty Text, never marking an empty block.
-    use crate::messages::{ContentBlock, Message, MessageContent, MessageRole, ToolResultContent};
-    let mut messages = vec![Message {
-        role: MessageRole::User,
-        content: MessageContent::Blocks(vec![
-            ContentBlock::Text {
-                text: "context".to_string(),
-                cache_control: None,
-            },
-            ContentBlock::ToolResult {
-                tool_use_id: "tool-1".to_string(),
-                content: ToolResultContent::Text(String::new()),
-                cache_control: None,
-            },
-        ]),
-    }];
-    apply_conversation_cache_breakpoint(
-        &mut messages,
-        ephemeral_cache_control(crate::PromptCacheTtl::OneHour),
-    );
-    let MessageContent::Blocks(blocks) = &messages[0].content else {
-        panic!("expected blocks");
-    };
-    assert!(
-        matches!(
-            &blocks[0],
-            ContentBlock::Text {
-                cache_control: Some(_),
-                ..
-            }
-        ),
-        "breakpoint must fall back to the non-empty Text block"
-    );
-    assert!(
-        matches!(
-            &blocks[1],
-            ContentBlock::ToolResult {
-                cache_control: None,
-                ..
-            }
-        ),
-        "the empty ToolResult must not carry a breakpoint"
-    );
-}
-
-#[test]
-fn messages_one_hour_cache_extends_to_conversation_tail() {
-    let json = serde_json::to_value(build_messages_request_with_cache_policy(
-        &messages_cache_test_request(),
-        crate::PromptCachePolicy::STABLE_PREFIX_1H,
-    ))
-    .unwrap();
-    assert_eq!(
-        json.pointer("/messages/0/content/0/cache_control/ttl")
-            .and_then(serde_json::Value::as_str),
-        Some("1h"),
-        "one-hour policy must extend the explicit TTL to the conversation breakpoint: {json:#}"
-    );
-}
-
-#[test]
-fn conversation_breakpoint_lands_on_tool_result_tail() {
-    // The real agentic case: the final message is a user turn whose last
-    // block is a ToolResult (Blocks path, not the Text->Blocks conversion).
-    use crate::messages::{ContentBlock, Message, MessageContent, MessageRole, ToolResultContent};
-    let mut messages = vec![Message {
-        role: MessageRole::User,
-        content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
-            tool_use_id: "tool-1".to_string(),
-            content: ToolResultContent::Text("output".to_string()),
-            cache_control: None,
-        }]),
-    }];
-    apply_conversation_cache_breakpoint(
-        &mut messages,
-        ephemeral_cache_control(crate::PromptCacheTtl::OneHour),
-    );
-    let json = serde_json::to_value(&messages).unwrap();
-    assert_eq!(
-        json.pointer("/0/content/0/cache_control/ttl")
-            .and_then(serde_json::Value::as_str),
-        Some("1h"),
-        "the agentic ToolResult tail must carry the conversation breakpoint: {json:#}"
-    );
-}
-
-#[test]
-fn conversation_breakpoint_marks_trailing_tool_use_block() {
-    // A production-shaped assistant turn: [Text, ToolUse]. The current wire
-    // shape lets ToolUse carry the breakpoint, so it should land at the tip.
-    use crate::messages::{ContentBlock, Message, MessageContent, MessageRole};
-    let mut messages = vec![Message {
-        role: MessageRole::Assistant,
-        content: MessageContent::Blocks(vec![
-            ContentBlock::Text {
-                text: "let me call a tool".to_string(),
-                cache_control: None,
-            },
-            ContentBlock::ToolUse {
-                id: "call-1".to_string(),
-                name: "search".to_string(),
-                input: serde_json::json!({"q": "x"}),
-                cache_control: None,
-            },
-        ]),
-    }];
-    apply_conversation_cache_breakpoint(
-        &mut messages,
-        ephemeral_cache_control(crate::PromptCacheTtl::FiveMinutes),
-    );
-    let MessageContent::Blocks(blocks) = &messages[0].content else {
-        panic!("expected blocks");
-    };
-    assert!(
-        matches!(
-            &blocks[0],
-            ContentBlock::Text {
-                cache_control: None,
-                ..
-            }
-        ),
-        "the earlier Text block must remain unmarked"
-    );
-    let json = serde_json::to_value(&messages).unwrap();
-    assert!(
-        json.pointer("/0/content/1/cache_control").is_some(),
-        "the trailing tool_use block must carry cache_control: {json:#}"
-    );
-}
-
-#[test]
-fn conversation_breakpoint_noops_without_cacheable_block() {
-    // No Text/ToolResult block anywhere in the final message: a whole-message
-    // no-op (that turn's prefix simply isn't cached), never a panic.
-    use crate::messages::{ContentBlock, Message, MessageContent, MessageRole};
-    let mut messages = vec![Message {
-        role: MessageRole::Assistant,
-        content: MessageContent::Blocks(vec![ContentBlock::Thinking {
-            thinking: "only thinking".to_string(),
-            signature: String::new(),
-        }]),
-    }];
-    apply_conversation_cache_breakpoint(
-        &mut messages,
-        ephemeral_cache_control(crate::PromptCacheTtl::OneHour),
-    );
-    let json = serde_json::to_value(&messages).unwrap();
-    assert!(
-        !json.to_string().contains("cache_control"),
-        "a message with no cacheable block must stay a no-op: {json:#}"
-    );
 }

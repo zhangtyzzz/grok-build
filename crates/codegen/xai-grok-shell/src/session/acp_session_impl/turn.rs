@@ -88,8 +88,6 @@ struct TurnSpanTotals {
     input_tokens: i64,
     output_tokens: i64,
     cache_read_tokens: i64,
-    cache_write_5m_input_tokens: i64,
-    cache_write_1h_input_tokens: i64,
     has_tool_call: bool,
 }
 impl TurnSpanTotals {
@@ -101,19 +99,9 @@ impl TurnSpanTotals {
             self.input_tokens += i64::from(u.prompt_tokens);
             self.output_tokens += i64::from(u.completion_tokens);
             self.cache_read_tokens += i64::from(u.cached_prompt_tokens);
-            self.cache_write_5m_input_tokens += i64::from(u.cache_write_5m_input_tokens);
-            self.cache_write_1h_input_tokens += i64::from(u.cache_write_1h_input_tokens);
             span.record("input_tokens", self.input_tokens);
             span.record("output_tokens", self.output_tokens);
             span.record("cache_read_tokens", self.cache_read_tokens);
-            span.record(
-                "cache_write_5m_input_tokens",
-                self.cache_write_5m_input_tokens,
-            );
-            span.record(
-                "cache_write_1h_input_tokens",
-                self.cache_write_1h_input_tokens,
-            );
         }
         if let Some(sr) = response.stop_reason {
             span.record("stop_reason", sr.as_str());
@@ -711,7 +699,7 @@ impl SessionActor {
             xai_grok_telemetry::unified_log::info(
                 "shell.task_wake.gate_cleared",
                 Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!({ "reason" : "handle_prompt_user_start" })),
+                Some(serde_json::json!({ "reason": "handle_prompt_user_start" })),
             );
             self.consume_deferred_completions_for_user_turn().await;
         }
@@ -1690,7 +1678,7 @@ impl SessionActor {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         if !self.memory.initial_injection_config.enabled {
             tracing::info!(
-                target : xai_grok_telemetry::memory_log::TARGET,
+                target: xai_grok_telemetry::memory_log::TARGET,
                 "MEMORY_INJECT: first-turn injection disabled by config"
             );
             return None;
@@ -1703,7 +1691,7 @@ impl SessionActor {
         let conversation = self.chat_state_handle.get_conversation().await;
         if crate::session::helpers::memory_context::conversation_has_memory_context(&conversation) {
             tracing::info!(
-                target : xai_grok_telemetry::memory_log::TARGET,
+                target: xai_grok_telemetry::memory_log::TARGET,
                 "MEMORY_INJECT: existing memory-context block present in system message -- skipping re-injection to preserve prompt cache"
             );
             return None;
@@ -1890,8 +1878,6 @@ impl SessionActor {
             input_tokens = tracing::field::Empty,
             output_tokens = tracing::field::Empty,
             cache_read_tokens = tracing::field::Empty,
-            cache_write_5m_input_tokens = tracing::field::Empty,
-            cache_write_1h_input_tokens = tracing::field::Empty,
             stop_reason = tracing::field::Empty,
             response.has_tool_call = tracing::field::Empty,
             request_id = tracing::field::Empty,
@@ -2084,7 +2070,7 @@ impl SessionActor {
                     .injection_count
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 tracing::info!(
-                    target : xai_grok_telemetry::memory_log::TARGET,
+                    target: xai_grok_telemetry::memory_log::TARGET,
                     "MEMORY_INJECT: first-turn memory context injected"
                 );
             }
@@ -2105,7 +2091,7 @@ impl SessionActor {
                 && let Some(trigger_info) = self.check_auto_compact_needed().await
                 && let Err(e) = self.run_compact_only(trigger_info).await
             {
-                tracing::error!(error = % e, "Pre-sampling auto-compaction failed");
+                tracing::error!(error = %e, "Pre-sampling auto-compaction failed");
                 if Self::is_auth_compact_error(&e) {
                     return Err(self.surface_compact_auth_failure(e).await);
                 }
@@ -2372,8 +2358,6 @@ impl SessionActor {
             let usage = response.usage.as_ref();
             let prompt_tokens = usage.map(|u| u.prompt_tokens);
             let cached_prompt_tokens = usage.map(|u| u.cached_prompt_tokens);
-            let cache_write_5m_input_tokens = usage.map(|u| u.cache_write_5m_input_tokens);
-            let cache_write_1h_input_tokens = usage.map(|u| u.cache_write_1h_input_tokens);
             let completion_tokens = usage.map(|u| u.completion_tokens);
             let reasoning_tokens = usage.map(|u| u.reasoning_tokens);
             let ttft_ms = latency.time_to_first_token_ms;
@@ -2393,18 +2377,19 @@ impl SessionActor {
             xai_grok_telemetry::unified_log::info(
                 "shell.turn.inference_done",
                 Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!(
-                    { "loop_index" : loop_index, "model_elapsed_ms" :
-                    model_elapsed_ms, "elapsed_since_turn_start_ms" : conv_turn_start
-                    .elapsed().as_millis() as u64, "ttft_ms" : ttft_ms, "itl_p50_ms"
-                    : latency.itl_p50_ms, "attempts" : latency.attempts,
-                    "prompt_tokens" : prompt_tokens, "cached_prompt_tokens" :
-                    cached_prompt_tokens, "cache_write_5m_input_tokens" :
-                    cache_write_5m_input_tokens, "cache_write_1h_input_tokens" :
-                    cache_write_1h_input_tokens, "completion_tokens" : completion_tokens,
-                    "reasoning_tokens" : reasoning_tokens, "tokens_per_sec" :
-                    tokens_per_sec, }
-                )),
+                Some(serde_json::json!({
+                    "loop_index": loop_index,
+                    "model_elapsed_ms": model_elapsed_ms,
+                    "elapsed_since_turn_start_ms": conv_turn_start.elapsed().as_millis() as u64,
+                    "ttft_ms": ttft_ms,
+                    "itl_p50_ms": latency.itl_p50_ms,
+                    "attempts": latency.attempts,
+                    "prompt_tokens": prompt_tokens,
+                    "cached_prompt_tokens": cached_prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "reasoning_tokens": reasoning_tokens,
+                    "tokens_per_sec": tokens_per_sec,
+                })),
             );
             if let Some(usage) = response.usage.as_ref() {
                 self.chat_state_handle
@@ -2540,8 +2525,8 @@ impl SessionActor {
                             tracing::info!(
                                 prompt_id = %req_id,
                                 pending = ?input.pending,
-                                unbacked_in_progress = ? input.in_progress_unbacked,
-                                backed_in_progress = ? input.in_progress_backed,
+                                unbacked_in_progress = ?input.in_progress_unbacked,
+                                backed_in_progress = ?input.in_progress_backed,
                                 backing_task_count = input.backing_task_count,
                                 todo_gate_fires,
                                 reason = reason.as_str(),
@@ -2741,7 +2726,7 @@ impl SessionActor {
                 && let Some(trigger_info) = self.check_preflight_overflow().await
             {
                 if let Err(e) = self.run_compact_only(trigger_info).await {
-                    tracing::error!(error = % e, "Preflight overflow compaction failed");
+                    tracing::error!(error = %e, "Preflight overflow compaction failed");
                     if Self::is_auth_compact_error(&e) {
                         return Err(self.surface_compact_auth_failure(e).await);
                     }

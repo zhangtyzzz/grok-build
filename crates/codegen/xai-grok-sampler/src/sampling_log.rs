@@ -33,7 +33,5 @@ pub fn request_span(
         reasoning_effort = tracing::field::Empty,
         output_tokens = tracing::field::Empty,
         reasoning_tokens = tracing::field::Empty,
-        cache_write_5m_input_tokens = tracing::field::Empty,
-        cache_write_1h_input_tokens = tracing::field::Empty,
     )
 }

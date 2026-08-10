@@ -112,8 +112,6 @@ pub fn stream_messages<'a>(
         let mut final_input_tokens: u32 = 0;
         let mut final_cache_read_input_tokens: u32 = 0;
         let mut final_cache_creation_input_tokens: u32 = 0;
-        let mut final_cache_write_5m_input_tokens: u32 = 0;
-        let mut final_cache_write_1h_input_tokens: u32 = 0;
         let mut final_output_tokens: u32 = 0;
         let mut final_stop_reason: Option<StopReason> = None;
         let mut final_stop_message: Option<String> = None;
@@ -181,12 +179,6 @@ pub fn stream_messages<'a>(
                     final_input_tokens = message.usage.input_tokens;
                     final_cache_read_input_tokens = message.usage.cache_read_input_tokens;
                     final_cache_creation_input_tokens = message.usage.cache_creation_input_tokens;
-                    if let Some(cache_creation) = message.usage.cache_creation {
-                        final_cache_write_5m_input_tokens =
-                            cache_creation.ephemeral_5m_input_tokens;
-                        final_cache_write_1h_input_tokens =
-                            cache_creation.ephemeral_1h_input_tokens;
-                    }
                     // Surface the real id/model/input-usage in order, before any
                     // content, so partial-mode framing emits them on the real
                     // `message_start` instead of a synthesized placeholder.
@@ -481,12 +473,6 @@ pub fn stream_messages<'a>(
                     if let Some(cache_creation) = usage.cache_creation_input_tokens {
                         final_cache_creation_input_tokens = cache_creation;
                     }
-                    if let Some(cache_creation) = usage.cache_creation {
-                        final_cache_write_5m_input_tokens =
-                            cache_creation.ephemeral_5m_input_tokens;
-                        final_cache_write_1h_input_tokens =
-                            cache_creation.ephemeral_1h_input_tokens;
-                    }
                 }
 
                 MessageStreamEvent::MessageStop => {
@@ -551,8 +537,7 @@ pub fn stream_messages<'a>(
                 total_tokens: total_prompt_tokens.saturating_add(final_output_tokens),
                 reasoning_tokens: 0,
                 cached_prompt_tokens: final_cache_read_input_tokens,
-                cache_write_5m_input_tokens: final_cache_write_5m_input_tokens,
-                cache_write_1h_input_tokens: final_cache_write_1h_input_tokens,
+                cache_creation_prompt_tokens: final_cache_creation_input_tokens,
             })
         } else {
             None

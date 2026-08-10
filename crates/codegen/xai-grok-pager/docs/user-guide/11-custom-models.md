@@ -148,10 +148,13 @@ prompt_cache = { mode = "off", ttl = "5m" }
 ```
 
 For five minutes, Grok omits the wire `ttl` field; for one hour it sends
-`ttl: "1h"`. Usage tracks cache reads and separates five-minute and one-hour
-cache writes. Cache breakpoints are placed on the last tool definition, the
-system prompt, and the last message — matching the Anthropic SDK convention
-and its `tools → system → messages` cache-prefix hierarchy.
+`ttl: "1h"`. Only the lifetime is configurable: breakpoint placement — the
+system prompt plus the current and previous conversation tips — is Grok's
+default behavior and is unchanged by this setting. Because Anthropic caches the
+`tools → system → messages` prefix as a whole, the system-prompt breakpoint
+already covers the tool definitions ahead of it. Cache reads and writes are
+reported through the usual `cache_read_input_tokens` and
+`cache_creation_input_tokens` counters.
 
 ---
 

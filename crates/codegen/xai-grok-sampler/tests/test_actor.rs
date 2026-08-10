@@ -619,144 +619,6 @@ fn messages_config(base_url: String) -> SamplerConfig {
     cfg
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn messages_prompt_cache_policy_reaches_wire_request() {
-    use std::sync::Mutex;
-
-    let captured_body: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
-    let captured_handler = Arc::clone(&captured_body);
-    let app = Router::new().route(
-        "/v1/messages",
-        post(move |axum::Json(body): axum::Json<serde_json::Value>| {
-            let captured = Arc::clone(&captured_handler);
-            async move {
-                *captured.lock().unwrap() = Some(body);
-                let events =
-                    sse::messages_api_events("ok", "messages-compatible-model", "end_turn");
-                Sse::new(stream::iter(
-                    events.into_iter().map(Ok::<_, std::convert::Infallible>),
-                ))
-            }
-        }),
-    );
-    let server = MockServer::spawn(app).await;
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
-    let mut cfg = messages_config(server.base_url());
-    cfg.prompt_cache = PromptCachePolicy::STABLE_PREFIX_1H;
-    let handle = SamplerActor::spawn(cfg, RetryPolicy::default(), event_tx);
-    let request = ConversationRequest {
-        items: vec![
-            ConversationItem::system("stable instructions"),
-            ConversationItem::user("hi"),
-        ],
-        ..Default::default()
-    };
-
-    handle
-        .submit_and_collect(RequestId::from("req-cache-1h"), request)
-        .await
-        .expect("messages request should complete");
-    server.shutdown();
-
-    let body = captured_body
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("request body captured");
-    assert_eq!(
-        body.pointer("/system/0/cache_control/ttl")
-            .and_then(serde_json::Value::as_str),
-        Some("1h")
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn messages_cache_ttl_usage_survives_http_sse_pipeline() {
-    let app = Router::new().route(
-        "/v1/messages",
-        post(|| async {
-            let events = vec![
-                Event::default().data(
-                    json!({
-                        "type": "message_start",
-                        "message": {
-                            "id": "msg_cache_usage",
-                            "type": "message",
-                            "role": "assistant",
-                            "content": [],
-                            "model": "messages-compatible-model",
-                            "stop_reason": null,
-                            "usage": {
-                                "input_tokens": 10,
-                                "output_tokens": 0,
-                                "cache_creation_input_tokens": 200,
-                                "cache_read_input_tokens": 30,
-                                "cache_creation": {
-                                    "ephemeral_5m_input_tokens": 120,
-                                    "ephemeral_1h_input_tokens": 80
-                                }
-                            }
-                        }
-                    })
-                    .to_string(),
-                ),
-                Event::default().data(
-                    json!({
-                        "type": "content_block_start",
-                        "index": 0,
-                        "content_block": {"type": "text", "text": ""}
-                    })
-                    .to_string(),
-                ),
-                Event::default().data(
-                    json!({
-                        "type": "content_block_delta",
-                        "index": 0,
-                        "delta": {"type": "text_delta", "text": "ok"}
-                    })
-                    .to_string(),
-                ),
-                Event::default()
-                    .data(json!({"type": "content_block_stop", "index": 0}).to_string()),
-                Event::default().data(
-                    json!({
-                        "type": "message_delta",
-                        "delta": {"stop_reason": "end_turn"},
-                        "usage": {"output_tokens": 5}
-                    })
-                    .to_string(),
-                ),
-                Event::default().data(json!({"type": "message_stop"}).to_string()),
-            ];
-            Sse::new(stream::iter(
-                events.into_iter().map(Ok::<_, std::convert::Infallible>),
-            ))
-        }),
-    );
-    let server = MockServer::spawn(app).await;
-    let (event_tx, _event_rx) = mpsc::unbounded_channel();
-    let handle = SamplerActor::spawn(
-        messages_config(server.base_url()),
-        RetryPolicy::default(),
-        event_tx,
-    );
-
-    let (response, _metrics) = handle
-        .submit_and_collect(RequestId::from("req-cache-usage"), user_request("hi"))
-        .await
-        .expect("messages request should complete");
-    server.shutdown();
-
-    let usage = response
-        .usage
-        .expect("usage should survive the SSE pipeline");
-    assert_eq!(usage.prompt_tokens, 10 + 200 + 30);
-    assert_eq!(usage.completion_tokens, 5);
-    assert_eq!(usage.cached_prompt_tokens, 30);
-    assert_eq!(usage.cache_write_5m_input_tokens, 120);
-    assert_eq!(usage.cache_write_1h_input_tokens, 80);
-}
-
 /// Regression for the refusal-stop_reason incident: a well-formed stream
 /// terminated by `stop_reason: "refusal"` must produce a successful
 /// completion from EXACTLY ONE request — no retry storm.
@@ -984,6 +846,57 @@ fn responses_config(base_url: String, doom_loop: Option<DoomLoopRecoveryPolicy>)
 /// Non-standard keepalive events from OpenAI-compatible proxies are transport
 /// liveness signals, not model output. They must be absorbed before typed
 /// Responses API deserialization so the surrounding response can complete.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn messages_prompt_cache_policy_reaches_wire_request() {
+    use std::sync::Mutex;
+
+    let captured_body: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+    let captured_handler = Arc::clone(&captured_body);
+    let app = Router::new().route(
+        "/v1/messages",
+        post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+            let captured = Arc::clone(&captured_handler);
+            async move {
+                *captured.lock().unwrap() = Some(body);
+                let events =
+                    sse::messages_api_events("ok", "messages-compatible-model", "end_turn");
+                Sse::new(stream::iter(
+                    events.into_iter().map(Ok::<_, std::convert::Infallible>),
+                ))
+            }
+        }),
+    );
+    let server = MockServer::spawn(app).await;
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let mut cfg = messages_config(server.base_url());
+    cfg.prompt_cache = PromptCachePolicy::STABLE_PREFIX_1H;
+    let handle = SamplerActor::spawn(cfg, RetryPolicy::default(), event_tx);
+    let request = ConversationRequest {
+        items: vec![
+            ConversationItem::system("stable instructions"),
+            ConversationItem::user("hi"),
+        ],
+        ..Default::default()
+    };
+
+    handle
+        .submit_and_collect(RequestId::from("req-cache-1h"), request)
+        .await
+        .expect("messages request should complete");
+    server.shutdown();
+
+    let body = captured_body
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("request body captured");
+    assert_eq!(
+        body.pointer("/system/0/cache_control/ttl")
+            .and_then(serde_json::Value::as_str),
+        Some("1h")
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn responses_keepalive_events_are_ignored() {
     let counter = Arc::new(AtomicU32::new(0));

@@ -724,25 +724,15 @@ pub struct TokenUsage {
     pub completion_tokens: u32,
     pub total_tokens: u32,
     pub reasoning_tokens: u32,
-    /// Prompt tokens served from cache.
-    /// - OpenAI: `prompt_tokens_details.cached_tokens` / `input_tokens_details.cached_tokens`.
-    /// - Anthropic Messages: `usage.cache_read_input_tokens`. Cache writes
-    ///   (`cache_creation_input_tokens`) are NOT counted here; they are folded
-    ///   into `prompt_tokens` and split by TTL in the fields below.
+    /// Prompt tokens served from cache (the cache-hit subset of `prompt_tokens`).
+    /// OpenAI: `prompt_tokens_details.cached_tokens`. Messages: `cache_read_input_tokens`.
     #[serde(default)]
     pub cached_prompt_tokens: u32,
-    /// Prompt tokens written to Anthropic's default five-minute cache.
-    /// This is a detail bucket already included in `prompt_tokens`.
-    #[serde(default, skip_serializing_if = "u32_is_zero")]
-    pub cache_write_5m_input_tokens: u32,
-    /// Prompt tokens written to Anthropic's one-hour cache.
-    /// This is a detail bucket already included in `prompt_tokens`.
-    #[serde(default, skip_serializing_if = "u32_is_zero")]
-    pub cache_write_1h_input_tokens: u32,
-}
-
-fn u32_is_zero(value: &u32) -> bool {
-    *value == 0
+    /// Prompt tokens written to cache this call (Messages `cache_creation_input_tokens`,
+    /// billed at ~1.25x). Part of `prompt_tokens` but distinct from cache reads; 0 on
+    /// backends without a cache-write signal.
+    #[serde(default)]
+    pub cache_creation_prompt_tokens: u32,
 }
 
 impl TokenUsage {
@@ -751,14 +741,6 @@ impl TokenUsage {
         span.record("completion_tokens", self.completion_tokens);
         span.record("reasoning_tokens", self.reasoning_tokens);
         span.record("cached_prompt_tokens", self.cached_prompt_tokens);
-        span.record(
-            "cache_write_5m_input_tokens",
-            self.cache_write_5m_input_tokens,
-        );
-        span.record(
-            "cache_write_1h_input_tokens",
-            self.cache_write_1h_input_tokens,
-        );
     }
 }
 
@@ -777,8 +759,7 @@ impl From<Usage> for TokenUsage {
                 .as_ref()
                 .map_or(0, |d| d.reasoning_tokens),
             cached_prompt_tokens,
-            cache_write_5m_input_tokens: 0,
-            cache_write_1h_input_tokens: 0,
+            cache_creation_prompt_tokens: 0,
         }
     }
 }
@@ -2428,26 +2409,6 @@ mod tests {
                 "{backend:?}: forwards_prompt_cache_key() disagrees with the mapping"
             );
         }
-    }
-
-    #[test]
-    fn token_usage_cache_write_buckets_preserve_legacy_json_shape() {
-        let legacy_json = serde_json::to_value(TokenUsage::default()).unwrap();
-        assert!(legacy_json.get("cache_write_5m_input_tokens").is_none());
-        assert!(legacy_json.get("cache_write_1h_input_tokens").is_none());
-
-        let usage = TokenUsage {
-            cache_write_5m_input_tokens: 100,
-            cache_write_1h_input_tokens: 200,
-            ..Default::default()
-        };
-        let detailed_json = serde_json::to_value(&usage).unwrap();
-        assert_eq!(detailed_json["cache_write_5m_input_tokens"], 100);
-        assert_eq!(detailed_json["cache_write_1h_input_tokens"], 200);
-
-        let decoded: TokenUsage = serde_json::from_value(legacy_json).unwrap();
-        assert_eq!(decoded.cache_write_5m_input_tokens, 0);
-        assert_eq!(decoded.cache_write_1h_input_tokens, 0);
     }
 
     #[test]

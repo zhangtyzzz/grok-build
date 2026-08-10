@@ -643,7 +643,7 @@ impl SessionActor {
                         Some(_) => None,
                         None => {
                             tracing::debug!(
-                                subagent_id = % subagent_id,
+                                subagent_id = %subagent_id,
                                 "progress tick for unregistered subagent; dropped"
                             );
                             None
@@ -754,24 +754,21 @@ impl SessionActor {
         &self,
         response: &xai_grok_sampling_types::ConversationResponse,
     ) -> XaiSessionUpdate {
-        let usage = response.usage.as_ref().map(|u| {
-            // This fork splits cache writes by TTL; the wire bucket is
-            // their sum so the Messages `message.usage` shape holds.
-            let cache_creation = u
-                .cache_write_5m_input_tokens
-                .saturating_add(u.cache_write_1h_input_tokens);
-            crate::extensions::notification::ResponseUsage {
-                input_tokens: u64::from(
-                    u.prompt_tokens
-                        .saturating_sub(u.cached_prompt_tokens)
-                        .saturating_sub(cache_creation),
-                ),
-                output_tokens: u64::from(u.completion_tokens),
-                cache_read_input_tokens: u64::from(u.cached_prompt_tokens),
-                cache_creation_input_tokens: u64::from(cache_creation),
-                reasoning_tokens: u64::from(u.reasoning_tokens),
-            }
-        });
+        let usage =
+            response
+                .usage
+                .as_ref()
+                .map(|u| crate::extensions::notification::ResponseUsage {
+                    input_tokens: u64::from(
+                        u.prompt_tokens
+                            .saturating_sub(u.cached_prompt_tokens)
+                            .saturating_sub(u.cache_creation_prompt_tokens),
+                    ),
+                    output_tokens: u64::from(u.completion_tokens),
+                    cache_read_input_tokens: u64::from(u.cached_prompt_tokens),
+                    cache_creation_input_tokens: u64::from(u.cache_creation_prompt_tokens),
+                    reasoning_tokens: u64::from(u.reasoning_tokens),
+                });
         let signature = response
             .reasoning_items()
             .find_map(|r| r.encrypted_content.clone());
