@@ -294,6 +294,14 @@ task_completion_wake_is_admitted_without_cancel_barrier
 测试**。这个方法在本轮已经产出两个明确结论（§7.2 证明补丁掩盖了真实分歧；§7.3 证明补丁与
 生产代码耦合），比读代码猜测可靠。建议按 owning crate 分批，每批一个提交。
 
+**已顺带核实一项，避免后人误删：** `plan_mode_edit_gate_tests.rs`（`+2/−2`，把期望从
+`ToolLoop::Continue` 改成 `ToolLoop::PermissionReject`）以及与之配套的
+`plan_exit_batch_barrier_tests.rs`，**不是**被改松的断言，而是有我们自己的生产改动支撑的：
+上游 `tool_calls.rs:1021` 在 plan-mode 拒绝编辑时返回 `Ok(Err(ToolLoop::Continue))`，我们改成
+了 `PermissionReject`（配套还把 `leave_plan_mode_to_default` 改成 async 并加了持久化失败回滚）。
+这属于 §4 plan 文件防护那条线上的真实自有行为，**应当保留**，不要按"测试修补"处理。它和 §7.2
+的区别正是判定这批补丁的关键：看还原后失败的是"断言被改松"还是"生产行为确实不同"。
+
 ### 7.6 顺带发现：一个上游自身的非 hermetic 测试
 
 `claude_import::tests::gate_load_claude_env_returns_empty_when_marker_set` 会读取真实的
