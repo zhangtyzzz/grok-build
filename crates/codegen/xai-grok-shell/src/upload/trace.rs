@@ -838,7 +838,7 @@ pub(crate) async fn upload_memory_state(ctx: &PromptTraceContext) {
     let archive = match crate::session::memory::archive::build_memory_archive(&storage) {
         Ok(a) => a,
         Err(e) => {
-            tracing::warn!(error = % e, "failed to build memory archive, skipping");
+            tracing::warn!(error = %e, "failed to build memory archive, skipping");
             return;
         }
     };
@@ -1202,7 +1202,7 @@ pub(crate) fn spawn_startup_spill_reconcile(
                         tracing::info!(removed, "purged spilled uploads from a prior run");
                     }
                     Err(e) => {
-                        tracing::warn!(error = % e, "startup spill purge task failed")
+                        tracing::warn!(error = %e, "startup spill purge task failed")
                     }
                 }
             }

@@ -36,10 +36,17 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install pinned Rust toolchain
+      - name: Resolve the pinned Rust toolchain
         run: |
-          rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
-          rustup default 1.92.0
+          set -euo pipefail
+          channel="$(awk -F '"' '/^channel = /{ print $2; exit }' rust-toolchain.toml)"
+          test -n "$channel"
+          echo "RUST_CHANNEL=$channel" >>"$GITHUB_ENV"
+          echo "using Rust $channel from rust-toolchain.toml"
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_CHANNEL" --profile minimal --component rustfmt,clippy
 
       - name: Restore Cargo source cache
         id: cargo-cache
@@ -50,16 +57,16 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-          key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-1.92.0-${{ hashFiles('Cargo.lock') }}
+          key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_CHANNEL }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            cargo-v1-${{ runner.os }}-${{ runner.arch }}-1.92.0-
+            cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_CHANNEL }}-
 
       - name: Set up compiler cache
         id: compiler-cache
         uses: ./.github/actions/setup-compiler-cache
         with:
           namespace: ci-rust
-          toolchain: 1.92.0
+          toolchain: ${{ env.RUST_CHANNEL }}
           lock-hash: ${{ hashFiles('Cargo.lock') }}
           revision: ${{ github.sha }}
           cache-size: 3G
@@ -152,10 +159,17 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install pinned Rust toolchain
+      - name: Resolve the pinned Rust toolchain
         run: |
-          rustup toolchain install 1.92.0 --profile minimal --component clippy
-          rustup default 1.92.0
+          set -euo pipefail
+          channel="$(awk -F '"' '/^channel = /{ print $2; exit }' rust-toolchain.toml)"
+          test -n "$channel"
+          echo "RUST_CHANNEL=$channel" >>"$GITHUB_ENV"
+          echo "using Rust $channel from rust-toolchain.toml"
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_CHANNEL" --profile minimal --component clippy
 
       - name: Restore Cargo source cache
         id: cargo-cache
@@ -166,16 +180,16 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-          key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-1.92.0-${{ hashFiles('Cargo.lock') }}
+          key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_CHANNEL }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            cargo-v1-${{ runner.os }}-${{ runner.arch }}-1.92.0-
+            cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_CHANNEL }}-
 
       - name: Set up compiler cache
         id: compiler-cache
         uses: ./.github/actions/setup-compiler-cache
         with:
           namespace: ci-terminal
-          toolchain: 1.92.0
+          toolchain: ${{ env.RUST_CHANNEL }}
           lock-hash: ${{ hashFiles('Cargo.lock') }}
           revision: ${{ github.sha }}
           cache-size: 4G
@@ -239,10 +253,17 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install pinned Rust toolchain
+      - name: Resolve the pinned Rust toolchain
         run: |
-          rustup toolchain install 1.92.0 --profile minimal
-          rustup default 1.92.0
+          set -euo pipefail
+          channel="$(awk -F '"' '/^channel = /{ print $2; exit }' rust-toolchain.toml)"
+          test -n "$channel"
+          echo "RUST_CHANNEL=$channel" >>"$GITHUB_ENV"
+          echo "using Rust $channel from rust-toolchain.toml"
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_CHANNEL" --profile minimal
 
       - name: Restore Cargo source cache
         id: cargo-cache
@@ -253,16 +274,16 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-          key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-1.92.0-${{ hashFiles('Cargo.lock') }}
+          key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_CHANNEL }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            cargo-v1-${{ runner.os }}-${{ runner.arch }}-1.92.0-
+            cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_CHANNEL }}-
 
       - name: Set up compiler cache
         id: compiler-cache
         uses: ./.github/actions/setup-compiler-cache
         with:
           namespace: ci-windows-protobuf
-          toolchain: 1.92.0
+          toolchain: ${{ env.RUST_CHANNEL }}
           lock-hash: ${{ hashFiles('Cargo.lock') }}
           revision: ${{ github.sha }}
           cache-size: 512M

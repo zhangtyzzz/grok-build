@@ -308,7 +308,7 @@ impl JsonlStorageAdapter {
                 file.read_exact(&mut last)?;
                 if last[0] != b'\n' {
                     tracing::warn!(
-                        path = % path.display(),
+                        path = %path.display(),
                         "jsonl file has a torn trailing line (previous append crashed mid-write?); terminating it before appending"
                     );
                     line.insert(0, b'\n');

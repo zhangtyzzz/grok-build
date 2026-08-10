@@ -92,7 +92,7 @@ impl SessionActor {
             Some(serde_json::json!({
                 "new_model": &sampling_config.model,
                 "api_backend": format!("{:?}", sampling_config.api_backend),
-                "supports_backend_search" : sampling_config.supports_backend_search,
+                "supports_backend_search": sampling_config.supports_backend_search,
             })),
         );
         let (_, existing) = self
@@ -456,7 +456,7 @@ impl SessionActor {
     pub(super) async fn handle_replace_system_prompt(&self, system_prompt: String) {
         if self.startup_hints.preserve_inherited_system {
             tracing::debug!(
-                session_id = % self.session_info.id.0,
+                session_id = %self.session_info.id.0,
                 "handle_replace_system_prompt: skipped (preserve_inherited_system)"
             );
             return;
@@ -467,7 +467,7 @@ impl SessionActor {
             .await
         else {
             tracing::error!(
-                session_id = % self.session_info.id.0,
+                session_id = %self.session_info.id.0,
                 "handle_replace_system_prompt: chat-state actor unavailable; override not applied"
             );
             return;
@@ -481,7 +481,7 @@ impl SessionActor {
             );
         } else {
             tracing::debug!(
-                session_id = % self.session_info.id.0,
+                session_id = %self.session_info.id.0,
                 "handle_replace_system_prompt: head already matches, no-op"
             );
         }

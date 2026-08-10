@@ -195,7 +195,7 @@ async fn fetch_bundle_inner(
         return Err(BackendError::RequestFailed { status: 401, body });
     }
     tracing::debug!(
-        status = % archive_response.status(),
+        status = %archive_response.status(),
         "archive endpoint unavailable, falling back to legacy JSON"
     );
     let bundle = fetch_subagent_bundle(
@@ -377,7 +377,7 @@ impl BackendClient {
             Ok(()) => {}
             Err(BackendError::RequestFailed { status: 413, .. }) => {
                 tracing::warn!(
-                    session_id = % session.session_id,
+                    session_id = %session.session_id,
                     "Backend returned 413 for save_session_data; \
                      session data should already be in GCS via signed URL"
                 );
@@ -1086,7 +1086,7 @@ mod tests {
     fn get_env_keys_parses_strings_and_rejects_non_strings() {
         use crate::agent::config::EnvKeys;
         let parse = |v: serde_json::Value| {
-            let obj = serde_json::json!({ "env_key" : v });
+            let obj = serde_json::json!({ "env_key": v });
             get_env_keys(obj.as_object().unwrap(), "env_key")
         };
         assert_eq!(parse(serde_json::json!("A")), Some(EnvKeys::single("A")));

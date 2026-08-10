@@ -293,7 +293,7 @@ impl SubagentsConfig {
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(e) => {
-                tracing::debug!(error = % e, "Failed to read personas directory");
+                tracing::debug!(error = %e, "Failed to read personas directory");
                 return;
             }
         };
@@ -321,7 +321,7 @@ impl SubagentsConfig {
                     }
                 },
                 Err(e) => {
-                    tracing::warn!(error = % e, "Failed to read persona file");
+                    tracing::warn!(error = %e, "Failed to read persona file");
                 }
             }
         }
@@ -333,7 +333,7 @@ impl SubagentsConfig {
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(e) => {
-                tracing::debug!(error = % e, "Failed to read roles directory");
+                tracing::debug!(error = %e, "Failed to read roles directory");
                 return;
             }
         };
@@ -353,7 +353,7 @@ impl SubagentsConfig {
                 Ok(content) => match toml::from_str::<SubagentRole>(&content) {
                     Ok(mut role) => {
                         role.source_dir = path.parent().map(|p| p.to_path_buf());
-                        tracing::debug!(role = % name, "Loaded role from file");
+                        tracing::debug!(role = %name, "Loaded role from file");
                         self.roles.insert(name, role);
                     }
                     Err(e) => {

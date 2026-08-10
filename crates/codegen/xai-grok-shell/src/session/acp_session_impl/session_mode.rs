@@ -961,7 +961,7 @@ impl SessionActor {
                 .activate_mid_turn(format!("<{tag}>\n{rendered}\n</{tag}>")),
             None => {
                 tracing::warn!(
-                    session_id = % self.session_info.id.0,
+                    session_id = %self.session_info.id.0,
                     "Mid-turn plan activation: reminder render failed; \
                      activating without a buffered reminder"
                 );

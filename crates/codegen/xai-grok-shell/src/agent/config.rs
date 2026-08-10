@@ -474,7 +474,7 @@ impl EndpointsConfig {
             });
         }
         tracing::warn!(
-            bucket = % bucket_url,
+            bucket = %bucket_url,
             "trace_upload_bucket has unrecognized scheme (expected gs:// or s3://), ignoring"
         );
         None
@@ -2704,9 +2704,9 @@ impl Config {
             "telemetry_source": telemetry.source.to_string(),
             "in_requirement_pin": req.pinned(),
             "in_requirement_src": req.source().map(|s| s.to_string()),
-            "in_env_trace_upload" : std::env::var("GROK_TELEMETRY_TRACE_UPLOAD").ok(),
-            "in_env_telemetry_enabled" : std::env::var("GROK_TELEMETRY_ENABLED").ok(),
-            "in_cfg_telemetry_trace_upload" : self.telemetry.trace_upload,
+            "in_env_trace_upload": std::env::var("GROK_TELEMETRY_TRACE_UPLOAD").ok(),
+            "in_env_telemetry_enabled": std::env::var("GROK_TELEMETRY_ENABLED").ok(),
+            "in_cfg_telemetry_trace_upload": self.telemetry.trace_upload,
             "in_cfg_features_telemetry": self.features.telemetry.map(|m| m.to_string()),
             "in_remote_trace_upload_enabled": self
                 .remote_settings
@@ -3823,7 +3823,7 @@ pub(crate) fn resolve_model_list(
                         model = %entry.info.model,
                         client_default = default_cw,
                         inherited = donor.info.context_window.get(),
-                        donor_model = % donor.info.model,
+                        donor_model = %donor.info.model,
                         "prefetched model missing context_window, inheriting from hardcoded default"
                     );
                     entry.info.context_window = donor.info.context_window;
@@ -3965,7 +3965,7 @@ pub(crate) fn resolve_model_list(
     }
     if let Some(ref global_agent_type) = cfg.models.agent_type {
         tracing::warn!(
-            global_agent_type = % global_agent_type,
+            global_agent_type = %global_agent_type,
             "[models] agent_type is deprecated. Set agent_type on each [model.X] entry instead."
         );
         for entry in resolved.values_mut() {
@@ -5413,10 +5413,10 @@ pub(crate) fn try_resolve_model_credentials(
     session_key: Option<&str>,
 ) -> Option<ResolvedCredentials> {
     let raw = crate::config::load_effective_config()
-        .map_err(|e| tracing::warn!(error = % e, "config load failed for credential resolution"))
+        .map_err(|e| tracing::warn!(error = %e, "config load failed for credential resolution"))
         .ok()?;
     let cfg = Config::new_from_toml_cfg(&raw)
-        .map_err(|e| tracing::warn!(error = % e, "config parse failed for credential resolution"))
+        .map_err(|e| tracing::warn!(error = %e, "config parse failed for credential resolution"))
         .ok()?;
     let models = crate::agent::models::resolve_model_catalog(&cfg, None);
     let entry = find_model_by_locator(&models, model_ref, model_id, base_url)?;
@@ -5521,13 +5521,13 @@ enum ModelLookup<'a> {
 /// stay conservative on a transient config failure.
 fn with_resolved_model<T>(model_id: &str, f: impl FnOnce(ModelLookup) -> T) -> T {
     let Some(raw) = crate::config::load_effective_config()
-        .map_err(|e| tracing::warn!(error = % e, "config load failed for model auth lookup"))
+        .map_err(|e| tracing::warn!(error = %e, "config load failed for model auth lookup"))
         .ok()
     else {
         return f(ModelLookup::ConfigUnavailable);
     };
     let Some(cfg) = Config::new_from_toml_cfg(&raw)
-        .map_err(|e| tracing::warn!(error = % e, "config parse failed for model auth lookup"))
+        .map_err(|e| tracing::warn!(error = %e, "config parse failed for model auth lookup"))
         .ok()
     else {
         return f(ModelLookup::ConfigUnavailable);
@@ -5543,13 +5543,13 @@ fn with_resolved_model_locator<T>(
     f: impl FnOnce(ModelLookup) -> T,
 ) -> T {
     let Some(raw) = crate::config::load_effective_config()
-        .map_err(|e| tracing::warn!(error = % e, "config load failed for model auth lookup"))
+        .map_err(|e| tracing::warn!(error = %e, "config load failed for model auth lookup"))
         .ok()
     else {
         return f(ModelLookup::ConfigUnavailable);
     };
     let Some(cfg) = Config::new_from_toml_cfg(&raw)
-        .map_err(|e| tracing::warn!(error = % e, "config parse failed for model auth lookup"))
+        .map_err(|e| tracing::warn!(error = %e, "config parse failed for model auth lookup"))
         .ok()
     else {
         return f(ModelLookup::ConfigUnavailable);
@@ -5600,7 +5600,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
         }
         if entry.effective_auth_provider().is_some() {
             tracing::warn!(
-                model = % model_id,
+                model = %model_id,
                 "aux model uses an auth provider with no cached token; the caller falls back to its session default"
             );
             return None;
@@ -5675,7 +5675,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
         });
     }
     tracing::warn!(
-        aux_model = % model_id,
+        aux_model = %model_id,
         "no credentials for auxiliary model; falling back to active model",
     );
     None
@@ -5914,7 +5914,7 @@ pub(crate) fn resolve_web_search_sampling_config(
         let credentials = resolve_credentials_enforced(&entry, session_key, disable_api_key_auth);
         if credentials.api_key.is_none() && entry.effective_auth_provider().is_some() {
             tracing::warn!(
-                web_search_model = % model_id,
+                web_search_model = %model_id,
                 "web search model uses an auth provider with no cached token; disabling web search"
             );
             return None;
@@ -5941,7 +5941,7 @@ pub(crate) fn resolve_web_search_sampling_config(
     };
     if resolved.is_none() {
         tracing::warn!(
-            web_search_model = % model_id,
+            web_search_model = %model_id,
             "configured web_search model not found; disabling web search"
         );
     }
@@ -6451,11 +6451,11 @@ reasoning_effort = "low"
     #[test]
     fn laziness_detector_include_reasoning_serde_states() {
         let some_true: LazinessDetectorPerModelConfig =
-            serde_json::from_value(serde_json::json!({ "include_reasoning" : true }))
+            serde_json::from_value(serde_json::json!({ "include_reasoning": true }))
                 .expect("Some(true)");
         assert_eq!(some_true.include_reasoning, Some(true));
         let some_false: LazinessDetectorPerModelConfig =
-            serde_json::from_value(serde_json::json!({ "include_reasoning" : false }))
+            serde_json::from_value(serde_json::json!({ "include_reasoning": false }))
                 .expect("Some(false)");
         assert_eq!(some_false.include_reasoning, Some(false));
         let absent: LazinessDetectorPerModelConfig =

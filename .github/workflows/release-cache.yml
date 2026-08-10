@@ -102,19 +102,26 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Resolve the pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          channel="$(awk -F '"' '/^channel = /{ print $2; exit }' rust-toolchain.toml)"
+          test -n "$channel"
+          echo "RUST_CHANNEL=$channel" >>"$GITHUB_ENV"
+          echo "using Rust $channel from rust-toolchain.toml"
+
       - name: Restore exact release build
         id: release-build-cache
         continue-on-error: true
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target/release-build-cache/${{ matrix.target }}
-          key: release-build-v2-${{ matrix.target }}-rust-1.92.0-${{ hashFiles('Cargo.lock') }}-${{ needs.metadata.outputs.commit }}
+          key: release-build-v2-${{ matrix.target }}-rust-${{ env.RUST_CHANNEL }}-${{ hashFiles('Cargo.lock') }}-${{ needs.metadata.outputs.commit }}
 
-      - name: Install pinned Rust toolchain
+      - name: Install the pinned Rust toolchain
         if: steps.release-build-cache.outputs.cache-hit != 'true'
         run: |
-          rustup toolchain install 1.92.0 --profile minimal
-          rustup default 1.92.0
+          rustup toolchain install "$RUST_CHANNEL" --profile minimal
           rustup target add "${{ matrix.target }}"
 
       - name: Restore Cargo source cache
@@ -127,9 +134,9 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-          key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-1.92.0-${{ hashFiles('Cargo.lock') }}
+          key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_CHANNEL }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            cargo-v1-${{ runner.os }}-${{ runner.arch }}-1.92.0-
+            cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_CHANNEL }}-
 
       - name: Prepare checksum-pinned bundled tools
         if: steps.release-build-cache.outputs.cache-hit != 'true'

@@ -102,7 +102,7 @@ where
         xai_grok_telemetry::unified_log::warn(
             "auth recovery: tool 401, refresh failed",
             None,
-            Some(serde_json::json!({ "tool" : tool_name })),
+            Some(serde_json::json!({ "tool": tool_name })),
         );
         result
     }
@@ -836,7 +836,7 @@ impl SessionActor {
         );
         self.permissions.set_classifier_with_side_query(clf, true);
         tracing::info!(
-            session_id = % self.session_info.id,
+            session_id = %self.session_info.id,
             "Wired live LLM permission auto-mode classifier (session sampling channel)"
         );
     }
@@ -1227,7 +1227,7 @@ impl SessionActor {
                     reasoning_tokens = ctx.reasoning_tokens.unwrap_or(0),
                     finish_reason = ctx.finish_reason_str(),
                     first_choice_seen = ctx.first_choice_seen,
-                    model = % ctx.model,
+                    model = %ctx.model,
                     "empty response after retries exhausted: {reason}",
                     reason = ctx.reason,
                 );
@@ -1527,7 +1527,7 @@ impl SessionActor {
         };
         if key == &new_key {
             tracing::warn!(
-                model = % current_model_id,
+                model = %current_model_id,
                 "Config.toml returned same token (not yet rotated by external process?)"
             );
             return;
@@ -1553,10 +1553,10 @@ impl SessionActor {
         current_base_url: &str,
     ) -> Option<String> {
         let raw_config = crate::config::load_effective_config()
-            .map_err(|e| tracing::warn!(error = % e, "Failed to reload config"))
+            .map_err(|e| tracing::warn!(error = %e, "Failed to reload config"))
             .ok()?;
         let config = crate::agent::config::Config::new_from_toml_cfg(&raw_config)
-            .map_err(|e| tracing::warn!(error = % e, "Failed to parse reloaded config.toml"))
+            .map_err(|e| tracing::warn!(error = %e, "Failed to parse reloaded config.toml"))
             .ok()?;
         let catalog = crate::agent::models::resolve_model_catalog(&config, None);
         let Some(model) = crate::agent::config::find_model_by_locator(

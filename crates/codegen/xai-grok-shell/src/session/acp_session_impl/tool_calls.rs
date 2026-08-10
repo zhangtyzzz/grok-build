@@ -995,7 +995,7 @@ impl SessionActor {
                 ) {
                     let total_count = objects.len();
                     if objects.is_empty() {
-                        json!({ "raw" : call.function.arguments.clone() })
+                        json!({ "raw": call.function.arguments.clone() })
                     } else {
                         let best_match = objects[0].clone();
                         let mut selected_index = 0;
@@ -1031,7 +1031,7 @@ impl SessionActor {
                         "Failed to parse arguments as JSON ({}), wrapping in 'raw' field",
                         e
                     );
-                    json!({ "raw" : call.function.arguments.clone() })
+                    json!({ "raw": call.function.arguments.clone() })
                 }
             }
         };
@@ -1492,7 +1492,7 @@ impl SessionActor {
             }
         } else if is_cursor_switch_to_agent {
             tracing::info!(
-                tool_call_id = % tool_call_id,
+                tool_call_id = %tool_call_id,
                 "[exit_plan_mode] cursor SwitchMode(agent) with empty plan — skipping intercept"
             );
         }
@@ -1656,7 +1656,7 @@ impl SessionActor {
             format!("exit-plan-mode-resume-{}", self.session_info.id.0).as_str(),
         ));
         tracing::info!(
-            tool_call_id = % tool_call_id,
+            tool_call_id = %tool_call_id,
             "[exit_plan_mode] re-parking approval after resume"
         );
         let parsed = match self
