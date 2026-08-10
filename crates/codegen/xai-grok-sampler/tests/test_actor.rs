@@ -890,10 +890,108 @@ async fn messages_prompt_cache_policy_reaches_wire_request() {
         .unwrap()
         .clone()
         .expect("request body captured");
+    // Assert on every breakpoint, not just the system block: a regression that
+    // tags the system prefix but leaves the conversation tips at the implicit
+    // five minutes would still satisfy a `/system/0` spot check, and the
+    // conversation tips are where a long session actually earns the 1h cache.
+    let markers = collect_cache_controls(&body);
+    assert!(
+        markers.len() >= 2,
+        "expected a system and at least one conversation breakpoint: {body:#}"
+    );
+    for marker in &markers {
+        assert_eq!(
+            marker.get("type").and_then(serde_json::Value::as_str),
+            Some("ephemeral"),
+            "{body:#}"
+        );
+        assert_eq!(
+            marker.get("ttl").and_then(serde_json::Value::as_str),
+            Some("1h"),
+            "every placed breakpoint must carry the configured TTL: {body:#}"
+        );
+    }
     assert_eq!(
         body.pointer("/system/0/cache_control/ttl")
             .and_then(serde_json::Value::as_str),
         Some("1h")
+    );
+}
+
+/// Every `cache_control` object in a Messages request body, system prefix first.
+fn collect_cache_controls(body: &serde_json::Value) -> Vec<serde_json::Value> {
+    let mut found = Vec::new();
+    let mut visit = |blocks: &serde_json::Value| {
+        if let Some(blocks) = blocks.as_array() {
+            for block in blocks {
+                if let Some(marker) = block.get("cache_control") {
+                    found.push(marker.clone());
+                }
+            }
+        }
+    };
+    visit(&body["system"]);
+    if let Some(messages) = body["messages"].as_array() {
+        for message in messages {
+            visit(&message["content"]);
+        }
+    }
+    found
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn messages_prompt_cache_off_sends_no_breakpoint() {
+    use std::sync::Mutex;
+
+    let captured_body: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+    let captured_handler = Arc::clone(&captured_body);
+    let app = Router::new().route(
+        "/v1/messages",
+        post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+            let captured = Arc::clone(&captured_handler);
+            async move {
+                *captured.lock().unwrap() = Some(body);
+                let events =
+                    sse::messages_api_events("ok", "messages-compatible-model", "end_turn");
+                Sse::new(stream::iter(
+                    events.into_iter().map(Ok::<_, std::convert::Infallible>),
+                ))
+            }
+        }),
+    );
+    let server = MockServer::spawn(app).await;
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let mut cfg = messages_config(server.base_url());
+    cfg.prompt_cache = PromptCachePolicy::OFF;
+    let handle = SamplerActor::spawn(cfg, RetryPolicy::default(), event_tx);
+    let request = ConversationRequest {
+        items: vec![
+            ConversationItem::system("stable instructions"),
+            ConversationItem::user("hi"),
+        ],
+        ..Default::default()
+    };
+
+    handle
+        .submit_and_collect(RequestId::from("req-cache-off"), request)
+        .await
+        .expect("messages request should complete");
+    server.shutdown();
+
+    let body = captured_body
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("request body captured");
+    assert!(
+        collect_cache_controls(&body).is_empty(),
+        "opting out must send no cache_control at all: {body:#}"
+    );
+    // Opting out also restores upstream's bare-text system form.
+    assert_eq!(
+        body["system"].as_str(),
+        Some("stable instructions"),
+        "{body:#}"
     );
 }
 
