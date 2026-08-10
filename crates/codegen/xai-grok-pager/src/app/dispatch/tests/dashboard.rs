@@ -1194,11 +1194,11 @@ fn dashboard_second_stash_does_not_overwrite_first() {
     );
     let reply_sent = effects.iter().any(|e| {
         matches!(
-        e,
-        Effect::SendPromptBlocks { agent_id, blocks, .. }
-            if *agent_id == AgentId(0)
-                && blocks.iter().any(|b| matches!(b, acp::ContentBlock::Image(_)))
-            )
+            e,
+            Effect::SendPromptBlocks { agent_id, blocks, .. }
+                if *agent_id == AgentId(0)
+                    && blocks.iter().any(|b| matches!(b, acp::ContentBlock::Image(_)))
+        )
     });
     assert!(
         reply_sent,

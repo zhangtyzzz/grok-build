@@ -150,9 +150,8 @@ impl PromptUsage {
             output_tokens,
             total_tokens: _, // derived from input + output
             cached_read_tokens,
-            cache_write_5m_input_tokens,
-            cache_write_1h_input_tokens,
-            reasoning_tokens: _, // subset of output_tokens
+            cache_creation_tokens, // subset of input_tokens on the wire
+            reasoning_tokens: _,   // subset of output_tokens
             model_calls,
             api_duration_ms: _, // timing, not tokens
             cost_usd_ticks: _,  // cost without usage cannot occur
@@ -163,8 +162,7 @@ impl PromptUsage {
             && input_tokens == 0
             && output_tokens == 0
             && cached_read_tokens == 0
-            && cache_write_5m_input_tokens == 0
-            && cache_write_1h_input_tokens == 0
+            && cache_creation_tokens == 0
             && self.model_usage.is_empty()
     }
 }
@@ -182,12 +180,10 @@ pub struct PromptUsageModel {
     pub total_tokens: u64,
     #[serde(default)]
     pub cached_read_tokens: u64,
-    /// Five-minute cache writes, already included in `input_tokens`.
-    #[serde(default, skip_serializing_if = "u64_is_zero")]
-    pub cache_write_5m_input_tokens: u64,
-    /// One-hour cache writes, already included in `input_tokens`.
-    #[serde(default, skip_serializing_if = "u64_is_zero")]
-    pub cache_write_1h_input_tokens: u64,
+    /// Cache-creation prompt tokens, folded into `input_tokens` on the ACP wire
+    /// but projected as a disjoint bucket in the headless shape.
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
     #[serde(default)]
     pub reasoning_tokens: u64,
     #[serde(default)]
@@ -210,10 +206,6 @@ pub struct PromptUsageModel {
     /// `cost_is_partial` only — never on the public ACP wire.
     #[serde(default, skip_serializing)]
     pub cost_missing_calls: u64,
-}
-
-fn u64_is_zero(value: &u64) -> bool {
-    *value == 0
 }
 
 /// One model call's token usage: the four Messages API `message.usage` fields
@@ -241,8 +233,7 @@ impl From<&xai_chat_state::UsageTotals> for PromptUsageModel {
             input_tokens,
             output_tokens,
             cached_read_tokens,
-            cache_write_5m_input_tokens,
-            cache_write_1h_input_tokens,
+            cache_creation_tokens,
             reasoning_tokens,
             model_calls,
             api_duration_ms,
@@ -254,8 +245,7 @@ impl From<&xai_chat_state::UsageTotals> for PromptUsageModel {
             output_tokens,
             total_tokens: t.total_tokens(),
             cached_read_tokens,
-            cache_write_5m_input_tokens,
-            cache_write_1h_input_tokens,
+            cache_creation_tokens,
             reasoning_tokens,
             model_calls,
             api_duration_ms,
@@ -298,9 +288,9 @@ pub(crate) fn uncached_input_tokens(full_input: u64, cached_read: u64) -> u64 {
 
 /// Project usage onto a headless result object.
 ///
-/// - `usage.input_tokens` = uncached (`full − cache_read`); identity
-///   `uncached + cache_read + output = total_tokens`. Cache writes stay a
-///   detail bucket of the prompt, reported per TTL and omitted when zero.
+/// - `usage.input_tokens` = uncached (`full − cache_read − cache_creation`), so
+///   the three prompt buckets are disjoint; identity
+///   `input_tokens + cache_read + cache_creation + output = total_tokens`.
 /// - Omits all cost floats when partial or incomplete (absence ≠ free).
 /// - Incomplete with no tokens emits only `usage_is_incomplete` (no zero usage object).
 /// - `modelUsage` rows are a reduced external-compat schema (camelCase; no reasoning/duration).
@@ -317,8 +307,7 @@ pub(crate) fn project_result_usage(result: &mut serde_json::Value, usage: &Promp
         output_tokens,
         total_tokens,
         cached_read_tokens,
-        cache_write_5m_input_tokens,
-        cache_write_1h_input_tokens,
+        cache_creation_tokens,
         reasoning_tokens,
         model_calls: _,     // totals-level; headless carries num_turns instead
         api_duration_ms: _, // dropped: not part of the frozen headless shape
@@ -326,20 +315,15 @@ pub(crate) fn project_result_usage(result: &mut serde_json::Value, usage: &Promp
         cost_is_partial,
         cost_missing_calls: _, // internal partiality count; the flag suffices
     } = usage.totals;
-    let mut projected_usage = serde_json::json!({
-        "input_tokens": uncached_input_tokens(input_tokens, cached_read_tokens),
+    result["usage"] = serde_json::json!({
+        "input_tokens": uncached_input_tokens(input_tokens, cached_read_tokens)
+            .saturating_sub(cache_creation_tokens),
         "cache_read_input_tokens": cached_read_tokens,
+        "cache_creation_input_tokens": cache_creation_tokens,
         "output_tokens": output_tokens,
         "reasoning_tokens": reasoning_tokens,
         "total_tokens": total_tokens,
     });
-    if cache_write_5m_input_tokens > 0 {
-        projected_usage["cache_write_5m_input_tokens"] = cache_write_5m_input_tokens.into();
-    }
-    if cache_write_1h_input_tokens > 0 {
-        projected_usage["cache_write_1h_input_tokens"] = cache_write_1h_input_tokens.into();
-    }
-    result["usage"] = projected_usage;
     result["num_turns"] = usage.num_turns.into();
     if usage.usage_is_incomplete {
         result["usage_is_incomplete"] = true.into();
@@ -363,8 +347,7 @@ pub(crate) fn project_result_usage(result: &mut serde_json::Value, usage: &Promp
                 output_tokens,
                 total_tokens: _, // derivable per row
                 cached_read_tokens,
-                cache_write_5m_input_tokens,
-                cache_write_1h_input_tokens,
+                cache_creation_tokens,
                 reasoning_tokens: _, // dropped: reduced per-model schema
                 model_calls,
                 api_duration_ms: _, // dropped: reduced per-model schema
@@ -373,17 +356,13 @@ pub(crate) fn project_result_usage(result: &mut serde_json::Value, usage: &Promp
                 cost_missing_calls: _,
             } = *m;
             let mut entry = serde_json::json!({
-                "inputTokens": uncached_input_tokens(input_tokens, cached_read_tokens),
+                "inputTokens": uncached_input_tokens(input_tokens, cached_read_tokens)
+                    .saturating_sub(cache_creation_tokens),
                 "outputTokens": output_tokens,
                 "cacheReadInputTokens": cached_read_tokens,
+                "cacheCreationInputTokens": cache_creation_tokens,
                 "modelCalls": model_calls,
             });
-            if cache_write_5m_input_tokens > 0 {
-                entry["cacheWrite5mInputTokens"] = cache_write_5m_input_tokens.into();
-            }
-            if cache_write_1h_input_tokens > 0 {
-                entry["cacheWrite1hInputTokens"] = cache_write_1h_input_tokens.into();
-            }
             if !hide_costs
                 && let Some(ticks) = cost_usd_ticks
                 && !cost_is_partial
@@ -2380,8 +2359,6 @@ mod tests {
             PromptUsageModel {
                 input_tokens: 100,
                 cached_read_tokens: 40,
-                cache_write_5m_input_tokens: 15,
-                cache_write_1h_input_tokens: 25,
                 output_tokens: 10,
                 total_tokens: 110,
                 model_calls: 4,
@@ -2393,8 +2370,6 @@ mod tests {
             totals: PromptUsageModel {
                 input_tokens: 100,
                 cached_read_tokens: 40,
-                cache_write_5m_input_tokens: 15,
-                cache_write_1h_input_tokens: 25,
                 output_tokens: 10,
                 total_tokens: 110,
                 model_calls: 5,
@@ -2468,8 +2443,6 @@ mod tests {
         };
         let v = serde_json::to_value(&model).unwrap();
         assert!(v.get("costMissingCalls").is_none());
-        assert!(v.get("cacheWrite5mInputTokens").is_none());
-        assert!(v.get("cacheWrite1hInputTokens").is_none());
         assert_eq!(v["costIsPartial"], true);
     }
 
@@ -2502,8 +2475,6 @@ mod tests {
             PromptUsageModel {
                 input_tokens: 100,
                 cached_read_tokens: 40,
-                cache_write_5m_input_tokens: 15,
-                cache_write_1h_input_tokens: 25,
                 output_tokens: 10,
                 total_tokens: 110,
                 model_calls: 1,
@@ -2515,8 +2486,6 @@ mod tests {
             totals: PromptUsageModel {
                 input_tokens: 100,
                 cached_read_tokens: 40,
-                cache_write_5m_input_tokens: 15,
-                cache_write_1h_input_tokens: 25,
                 output_tokens: 10,
                 total_tokens: 110,
                 model_calls: 1,
@@ -2541,18 +2510,9 @@ mod tests {
         let acp = serde_json::to_value(&usage).unwrap();
         assert_eq!(acp["inputTokens"], 100);
         assert_eq!(acp["cachedReadTokens"], 40);
-        assert_eq!(acp["cacheWrite5mInputTokens"], 15);
-        assert_eq!(acp["cacheWrite1hInputTokens"], 25);
-        let round_tripped: PromptUsage = serde_json::from_value(acp.clone()).unwrap();
-        assert_eq!(round_tripped.totals.cache_write_5m_input_tokens, 15);
-        assert_eq!(round_tripped.totals.cache_write_1h_input_tokens, 25);
         assert_ne!(acp["inputTokens"], result["usage"]["input_tokens"]);
         assert_eq!(result["modelUsage"]["m"]["inputTokens"], 60);
         assert_eq!(result["modelUsage"]["m"]["cacheReadInputTokens"], 40);
-        assert_eq!(result["usage"]["cache_write_5m_input_tokens"], 15);
-        assert_eq!(result["usage"]["cache_write_1h_input_tokens"], 25);
-        assert_eq!(result["modelUsage"]["m"]["cacheWrite5mInputTokens"], 15);
-        assert_eq!(result["modelUsage"]["m"]["cacheWrite1hInputTokens"], 25);
         assert_eq!(result["total_cost_usd"], 0.2);
         // Exact ticks accompany the float for tick-exact reconciliation.
         assert_eq!(result["total_cost_usd_ticks"], 2_000_000_000_i64);

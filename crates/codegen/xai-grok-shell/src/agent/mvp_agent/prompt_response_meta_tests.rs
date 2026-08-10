@@ -34,8 +34,6 @@ fn includes_baseline_keys_without_usage() {
     assert!(meta.get("inputTokens").is_none());
     assert!(meta.get("outputTokens").is_none());
     assert!(meta.get("cachedReadTokens").is_none());
-    assert!(meta.get("cacheWrite5mInputTokens").is_none());
-    assert!(meta.get("cacheWrite1hInputTokens").is_none());
 }
 
 #[test]
@@ -46,8 +44,7 @@ fn enriches_meta_with_camelcase_token_keys() {
         total_tokens: 1700,
         reasoning_tokens: 75,
         cached_prompt_tokens: 1000,
-        cache_write_5m_input_tokens: 400,
-        cache_write_1h_input_tokens: 600,
+        cache_creation_prompt_tokens: 0,
     };
     let meta = build_prompt_response_meta(PromptResponseMetaArgs {
         last_turn_usage: Some(&usage),
@@ -57,8 +54,6 @@ fn enriches_meta_with_camelcase_token_keys() {
     assert_eq!(meta["inputTokens"], 1500);
     assert_eq!(meta["outputTokens"], 200);
     assert_eq!(meta["cachedReadTokens"], 1000);
-    assert_eq!(meta["cacheWrite5mInputTokens"], 400);
-    assert_eq!(meta["cacheWrite1hInputTokens"], 600);
     // Reasoning tokens carried through for diagnostic visibility.
     assert_eq!(meta["reasoningTokens"], 75);
 }
@@ -75,16 +70,13 @@ fn preserves_zero_token_values() {
         total_tokens: 110,
         reasoning_tokens: 0,
         cached_prompt_tokens: 0,
-        cache_write_5m_input_tokens: 0,
-        cache_write_1h_input_tokens: 0,
+        cache_creation_prompt_tokens: 0,
     };
     let meta = build_prompt_response_meta(PromptResponseMetaArgs {
         last_turn_usage: Some(&usage),
         ..args("s", "p", 110, "m")
     });
     assert_eq!(meta["cachedReadTokens"], 0);
-    assert_eq!(meta["cacheWrite5mInputTokens"], 0);
-    assert_eq!(meta["cacheWrite1hInputTokens"], 0);
     assert_eq!(meta["reasoningTokens"], 0);
 }
 
@@ -99,8 +91,7 @@ fn usage_object_lands_on_meta() {
             total_tokens: 999_999,
             reasoning_tokens: 0,
             cached_prompt_tokens: 0,
-            cache_write_5m_input_tokens: 0,
-            cache_write_1h_input_tokens: 0,
+            cache_creation_prompt_tokens: 0,
         },
         None,
         None,

@@ -2,8 +2,7 @@
 
 use super::*;
 
-/// Whether a tool-result payload carries no cacheable content (so a cache
-/// breakpoint would sit on an empty block).
+/// Whether a tool-result payload carries nothing a breakpoint could sit on.
 fn tool_result_content_is_empty(content: &crate::messages::ToolResultContent) -> bool {
     use crate::messages::ToolResultContent;
     match content {
@@ -12,100 +11,81 @@ fn tool_result_content_is_empty(content: &crate::messages::ToolResultContent) ->
     }
 }
 
-/// Build an `ephemeral` cache breakpoint for the given TTL. Anthropic defaults
-/// an omitted TTL to five minutes, so the 5m case leaves `ttl` absent to
-/// preserve the legacy wire shape; one hour must be explicit. Shared by the
-/// system-prefix and conversation-prefix breakpoints so their wire encoding
-/// cannot drift.
-pub(super) fn ephemeral_cache_control(ttl: crate::PromptCacheTtl) -> crate::messages::CacheControl {
-    crate::messages::CacheControl {
-        r#type: "ephemeral".to_string(),
-        ttl: match ttl {
-            crate::PromptCacheTtl::FiveMinutes => None,
-            crate::PromptCacheTtl::OneHour => Some(crate::PromptCacheTtl::OneHour),
-        },
-    }
-}
-
-/// Marks the last non-empty block that can carry a cache breakpoint, scanning
-/// back past `Thinking`, which the API rejects a breakpoint on.
-fn mark_message_cache_breakpoint(
-    msg: &mut crate::messages::Message,
-    cache_control: crate::messages::CacheControl,
-) -> bool {
-    use crate::messages::{ContentBlock, MessageContent};
+/// Marks the last block that can carry one, scanning back past `Thinking`,
+/// which the API rejects a breakpoint on, and past empty `Text` / `ToolResult`
+/// payloads, which it rejects for the same reason ("text content blocks must be
+/// non-empty"). The empty case is not hypothetical: `ConversationItem::ToolResult`
+/// below always builds a `ToolResultContent::Text`, so a tool that produced no
+/// output leaves an empty block as the tip of the turn.
+fn mark_message_cache_breakpoint(msg: &mut crate::messages::Message) -> bool {
+    use crate::messages::{CacheControl, ContentBlock, MessageContent};
 
     match &mut msg.content {
+        MessageContent::Blocks(blocks) => {
+            for block in blocks.iter_mut().rev() {
+                let cache_control = match block {
+                    ContentBlock::Text {
+                        text,
+                        cache_control,
+                    } => {
+                        if text.is_empty() {
+                            continue;
+                        }
+                        cache_control
+                    }
+                    ContentBlock::ToolResult {
+                        content,
+                        cache_control,
+                        ..
+                    } => {
+                        if tool_result_content_is_empty(content) {
+                            continue;
+                        }
+                        cache_control
+                    }
+                    ContentBlock::Image { cache_control, .. }
+                    | ContentBlock::ToolUse { cache_control, .. } => cache_control,
+                    ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => {
+                        continue;
+                    }
+                };
+                *cache_control = Some(CacheControl::ephemeral());
+                return true;
+            }
+            false
+        }
         // Plain text cannot carry a breakpoint, so promote it to block form.
         MessageContent::Text(text) => {
-            // Anthropic rejects empty cached text blocks ("text content blocks
-            // must be non-empty"). This arm is unreachable from the current
-            // builder (it always emits `Blocks`), but guard the empty case so a
-            // future bare-text path can never mint an invalid breakpoint.
             if text.is_empty() {
                 return false;
             }
             let text = std::mem::take(text);
             msg.content = MessageContent::Blocks(vec![ContentBlock::Text {
                 text,
-                cache_control: Some(cache_control),
+                cache_control: Some(CacheControl::ephemeral()),
             }]);
             true
-        }
-        MessageContent::Blocks(blocks) => {
-            // Land on the last *non-empty* cacheable block, skipping trailing
-            // thinking blocks and any empty Text / ToolResult. Image and ToolUse
-            // blocks can carry a breakpoint on the current Messages wire shape.
-            for block in blocks.iter_mut().rev() {
-                let target = match block {
-                    ContentBlock::Text {
-                        text,
-                        cache_control: cc,
-                    } if !text.is_empty() => Some(cc),
-                    ContentBlock::ToolResult {
-                        content,
-                        cache_control: cc,
-                        ..
-                    } if !tool_result_content_is_empty(content) => Some(cc),
-                    ContentBlock::Image {
-                        cache_control: cc, ..
-                    }
-                    | ContentBlock::ToolUse {
-                        cache_control: cc, ..
-                    } => Some(cc),
-                    ContentBlock::Text { .. }
-                    | ContentBlock::ToolResult { .. }
-                    | ContentBlock::Thinking { .. }
-                    | ContentBlock::RedactedThinking { .. } => None,
-                };
-                if let Some(target) = target {
-                    *target = Some(cache_control);
-                    return true;
-                }
-            }
-            false
         }
     }
 }
 
 /// An entry is written only at a breakpoint, so marking the system prompt alone
 /// leaves the transcript uncached. The third covers a turn that appends more
-/// than the API's 20 block lookback. A tools-prefix breakpoint, when present,
-/// uses the fourth and final explicit slot.
+/// than the API's 20 block lookback. The fourth slot stays free: a gateway that
+/// turns on automatic caching takes it, and five is rejected outright.
 fn apply_cache_breakpoints(
     system_blocks: &mut [crate::messages::TextBlock],
     messages: &mut [crate::messages::Message],
-    cache_control: crate::messages::CacheControl,
 ) {
-    use crate::messages::MessageRole;
+    use crate::messages::{CacheControl, MessageRole};
 
     if let Some(last) = system_blocks.last_mut() {
-        last.cache_control = Some(cache_control.clone());
+        last.cache_control = Some(CacheControl::ephemeral());
     }
 
     let tip = (0..messages.len())
         .rev()
-        .find(|&i| mark_message_cache_breakpoint(&mut messages[i], cache_control.clone()));
+        .find(|&i| mark_message_cache_breakpoint(&mut messages[i]));
 
     // Where the previous request ended. A turn can append several user messages
     // in a row, so skip the whole trailing run rather than a neighbour of the tip.
@@ -119,33 +99,86 @@ fn apply_cache_breakpoints(
                     .rposition(|m| matches!(m.role, MessageRole::User))
             })
     {
-        mark_message_cache_breakpoint(&mut messages[prev], cache_control);
+        mark_message_cache_breakpoint(&mut messages[prev]);
     }
 }
 
-#[cfg(test)]
-pub(super) fn apply_conversation_cache_breakpoint(
-    messages: &mut [crate::messages::Message],
-    cache_control: crate::messages::CacheControl,
+/// Visit every slot upstream's `apply_cache_breakpoints` can place a breakpoint
+/// in, on an already-built request.
+///
+/// The fork's cache policy is applied here, *after* upstream's placement, rather
+/// than by threading a policy through `apply_cache_breakpoints`. Placement is
+/// upstream's decision and changes there (it was last rewritten wholesale) must
+/// land without a fork edit; only the lifetime and the opt-out are ours.
+fn for_each_cache_control(
+    req: &mut crate::messages::MessagesRequest,
+    mut visit: impl FnMut(&mut Option<crate::messages::CacheControl>),
 ) {
-    if let Some(last) = messages.last_mut() {
-        mark_message_cache_breakpoint(last, cache_control);
+    use crate::messages::{ContentBlock, MessageContent, SystemParam};
+
+    if let Some(SystemParam::Blocks(blocks)) = req.system.as_mut() {
+        for block in blocks.iter_mut() {
+            visit(&mut block.cache_control);
+        }
+    }
+    for msg in req.messages.iter_mut() {
+        if let MessageContent::Blocks(blocks) = &mut msg.content {
+            for block in blocks.iter_mut() {
+                match block {
+                    ContentBlock::Text { cache_control, .. }
+                    | ContentBlock::ToolResult { cache_control, .. }
+                    | ContentBlock::Image { cache_control, .. }
+                    | ContentBlock::ToolUse { cache_control, .. } => visit(cache_control),
+                    ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => {}
+                }
+            }
+        }
     }
 }
 
-/// Convert a `ConversationRequest` into a Messages API request using the
-/// backwards-compatible five-minute stable-prefix cache policy.
-pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::MessagesRequest {
-    build_messages_request_with_cache_policy(req, crate::PromptCachePolicy::default())
-}
-
-/// Convert a `ConversationRequest` into a Messages API request with an explicit
+/// Convert a `ConversationRequest` into a Messages API request under an explicit
 /// prompt-cache policy.
+///
+/// [`PromptCacheTtl::FiveMinutes`] is the API default and reproduces
+/// [`build_messages_request`] byte for byte, so the common path stays on
+/// upstream's exact wire shape.
+///
+/// [`PromptCacheTtl::FiveMinutes`]: crate::PromptCacheTtl::FiveMinutes
 pub fn build_messages_request_with_cache_policy(
     req: &ConversationRequest,
     prompt_cache: crate::PromptCachePolicy,
 ) -> crate::messages::MessagesRequest {
-    use crate::PromptCacheMode;
+    use crate::messages::SystemParam;
+    use crate::{PromptCacheMode, PromptCacheTtl};
+
+    let mut out = build_messages_request(req);
+    match (prompt_cache.mode, prompt_cache.ttl) {
+        // Upstream's wire shape: `ephemeral` with the TTL field absent.
+        (PromptCacheMode::StablePrefix, PromptCacheTtl::FiveMinutes) => {}
+        (PromptCacheMode::StablePrefix, ttl) => {
+            for_each_cache_control(&mut out, |slot| {
+                if let Some(cache_control) = slot.as_mut() {
+                    cache_control.ttl = Some(ttl);
+                }
+            });
+        }
+        (PromptCacheMode::Off, _) => {
+            for_each_cache_control(&mut out, |slot| *slot = None);
+            // Restore the bare-text system form upstream emits when nothing in
+            // the system prefix carries a breakpoint.
+            if let Some(SystemParam::Blocks(blocks)) = out.system.as_ref()
+                && let [only] = blocks.as_slice()
+                && only.cache_control.is_none()
+            {
+                out.system = Some(SystemParam::Text(only.text.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// Convert a `ConversationRequest` into a Messages API request.
+pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::MessagesRequest {
     use crate::messages::{
         ContentBlock, ImageSource, Message, MessageContent, MessageRole, MessagesRequest,
         OutputConfig, SystemParam, TextBlock, ToolChoiceParam, ToolParam, ToolResultContent,
@@ -350,14 +383,7 @@ pub fn build_messages_request_with_cache_policy(
     flush_assistant(&mut pending_assistant, &mut messages);
     flush_tool_results(&mut pending_tool_results, &mut messages);
 
-    // Cache the system prefix plus the current and previous conversation tips.
-    if prompt_cache.mode == PromptCacheMode::StablePrefix {
-        apply_cache_breakpoints(
-            &mut system_blocks,
-            &mut messages,
-            ephemeral_cache_control(prompt_cache.ttl),
-        );
-    }
+    apply_cache_breakpoints(&mut system_blocks, &mut messages);
 
     let system: Option<SystemParam> = if system_blocks.is_empty() {
         None
@@ -368,26 +394,16 @@ pub fn build_messages_request_with_cache_policy(
         Some(SystemParam::Blocks(system_blocks))
     };
 
-    // Build tools. A breakpoint on the final definition caches the complete
-    // tools prefix independently, matching the Anthropic SDK / pi convention.
     let tools: Option<Vec<ToolParam>> = if req.tools.is_empty() {
         None
     } else {
-        let len = req.tools.len();
-        let cc = if prompt_cache.mode == PromptCacheMode::StablePrefix {
-            Some(ephemeral_cache_control(prompt_cache.ttl))
-        } else {
-            None
-        };
         Some(
             req.tools
                 .iter()
-                .enumerate()
-                .map(|(i, t)| ToolParam {
+                .map(|t| ToolParam {
                     name: t.name.clone(),
                     description: t.description.clone(),
                     input_schema: t.parameters.clone(),
-                    cache_control: if i == len - 1 { cc.clone() } else { None },
                 })
                 .collect(),
         )

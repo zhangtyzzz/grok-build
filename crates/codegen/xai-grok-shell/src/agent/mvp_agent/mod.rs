@@ -499,10 +499,6 @@ pub(crate) struct PromptResponseMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cached_read_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_write_5m_input_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_write_1h_input_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u32>,
     /// Whole-prompt billing (sibling token fields are last call only).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -573,8 +569,6 @@ pub(crate) fn build_prompt_response_meta(
         input_tokens: last_turn_usage.map(|u| u.prompt_tokens),
         output_tokens: last_turn_usage.map(|u| u.completion_tokens),
         cached_read_tokens: last_turn_usage.map(|u| u.cached_prompt_tokens),
-        cache_write_5m_input_tokens: last_turn_usage.map(|u| u.cache_write_5m_input_tokens),
-        cache_write_1h_input_tokens: last_turn_usage.map(|u| u.cache_write_1h_input_tokens),
         reasoning_tokens: last_turn_usage.map(|u| u.reasoning_tokens),
         usage: prompt_usage,
         cancellation_category,

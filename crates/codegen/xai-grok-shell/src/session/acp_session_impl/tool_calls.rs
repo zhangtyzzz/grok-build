@@ -995,7 +995,7 @@ impl SessionActor {
                 ) {
                     let total_count = objects.len();
                     if objects.is_empty() {
-                        json!({ "raw" : call.function.arguments.clone() })
+                        json!({ "raw": call.function.arguments.clone() })
                     } else {
                         let best_match = objects[0].clone();
                         let mut selected_index = 0;
@@ -1031,7 +1031,7 @@ impl SessionActor {
                         "Failed to parse arguments as JSON ({}), wrapping in 'raw' field",
                         e
                     );
-                    json!({ "raw" : call.function.arguments.clone() })
+                    json!({ "raw": call.function.arguments.clone() })
                 }
             }
         };
@@ -1492,7 +1492,7 @@ impl SessionActor {
             }
         } else if is_cursor_switch_to_agent {
             tracing::info!(
-                tool_call_id = % tool_call_id,
+                tool_call_id = %tool_call_id,
                 "[exit_plan_mode] cursor SwitchMode(agent) with empty plan — skipping intercept"
             );
         }
@@ -1656,7 +1656,7 @@ impl SessionActor {
             format!("exit-plan-mode-resume-{}", self.session_info.id.0).as_str(),
         ));
         tracing::info!(
-            tool_call_id = % tool_call_id,
+            tool_call_id = %tool_call_id,
             "[exit_plan_mode] re-parking approval after resume"
         );
         let parsed = match self
@@ -1763,7 +1763,7 @@ impl SessionActor {
                         .and_then(|file_content| {
                             let pos = file_content.find(&sr.old_string)?;
                             let line = file_content[..pos].matches('\n').count() + 1;
-                            serde_json::json!({ "old_line" : line, "new_line" : line, })
+                            serde_json::json!({ "old_line": line, "new_line": line, })
                                 .as_object()
                                 .cloned()
                         })
@@ -2911,7 +2911,7 @@ impl SessionActor {
                         .content(vec![])
                         .locations(vec![])
                         .raw_input(Some(raw_input))
-                        .meta(serde_json::json!({ "backend" : true }).as_object().cloned()),
+                        .meta(serde_json::json!({ "backend": true }).as_object().cloned()),
                     ),
                     None,
                 )
@@ -3431,7 +3431,7 @@ mod wait_interrupt_tests {
     fn interruptible_wait_tool_only_when_timeout_positive() {
         assert!(is_interruptible_wait_tool(
             "get_command_or_subagent_output",
-            &serde_json::json!({ "task_ids" : ["t"], "timeout_ms" : 120_000 })
+            &serde_json::json!({ "task_ids": ["t"], "timeout_ms": 120_000 })
         ));
         assert!(!is_interruptible_wait_tool(
             "get_task_output",
@@ -3443,7 +3443,7 @@ mod wait_interrupt_tests {
         ));
         assert!(is_interruptible_wait_tool(
             "wait_commands_or_subagents",
-            &serde_json::json!({ "task_ids" : ["t"] })
+            &serde_json::json!({ "task_ids": ["t"] })
         ));
         assert!(!is_interruptible_wait_tool(
             "read_file",

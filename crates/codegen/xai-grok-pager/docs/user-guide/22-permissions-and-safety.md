@@ -551,3 +551,4 @@ Recommended combination for untrusted code:
 - [Agent mode](15-agent-mode.md) — ACP, stdio, and agent servers
 - [Sandbox](18-sandbox.md) — OS-level isolation profiles
 - [Configuration](05-configuration.md) — Native `config.toml` structure
+

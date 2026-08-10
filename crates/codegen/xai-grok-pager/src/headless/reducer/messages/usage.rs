@@ -49,25 +49,11 @@ impl MessagesReducer {
                  has no incompleteness marker)"
             );
         }
-        // This fork reports prompt-cache writes split by TTL, as a detail bucket
-        // already inside `input_tokens`. The Messages wire wants a single
-        // disjoint `cache_creation_input_tokens`, so fold the TTL buckets back
-        // together and take them out of `input_tokens`.
-        //
-        // `cache_creation_input_tokens` is read for forward compatibility and is
-        // always absent today: `project_result_usage` emits the TTL buckets
-        // instead. If an upstream sync ever makes the projection emit the
-        // aggregate *alongside* the TTL buckets, this sum would double-count it
-        // — that projection is the single place to keep the two mutually
-        // exclusive.
-        let cache_creation_input_tokens = field(u, "cache_creation_input_tokens")
-            .saturating_add(field(u, "cache_write_5m_input_tokens"))
-            .saturating_add(field(u, "cache_write_1h_input_tokens"));
         let usage = MessageUsage {
-            input_tokens: field(u, "input_tokens").saturating_sub(cache_creation_input_tokens),
+            input_tokens: field(u, "input_tokens"),
             output_tokens: field(u, "output_tokens"),
             cache_read_input_tokens: field(u, "cache_read_input_tokens"),
-            cache_creation_input_tokens,
+            cache_creation_input_tokens: field(u, "cache_creation_input_tokens"),
             server_tool_use: Some(ServerToolUse {
                 web_search_requests: self.web_search_requests,
             }),
@@ -115,18 +101,13 @@ pub(super) fn messages_model_usage(
         .map(|(model, row)| {
             let n = |k: &str| row.get(k).and_then(Value::as_u64).unwrap_or(0);
             let is_current = Some(model.as_str()) == current_model;
-            // Same TTL fold as the terminal usage: the per-model rows carry the
-            // fork's `cacheWrite*` detail buckets inside `inputTokens`.
-            let cache_creation_input_tokens = n("cacheCreationInputTokens")
-                .saturating_add(n("cacheWrite5mInputTokens"))
-                .saturating_add(n("cacheWrite1hInputTokens"));
             (
                 model.clone(),
                 to_line(&ModelUsage {
-                    input_tokens: n("inputTokens").saturating_sub(cache_creation_input_tokens),
+                    input_tokens: n("inputTokens"),
                     output_tokens: n("outputTokens"),
                     cache_read_input_tokens: n("cacheReadInputTokens"),
-                    cache_creation_input_tokens,
+                    cache_creation_input_tokens: n("cacheCreationInputTokens"),
                     web_search_requests: if is_current { web_search_requests } else { 0 },
                     cost_usd: row.get("costUSD").and_then(Value::as_f64).unwrap_or(0.0),
                     context_window: if is_current { context_window } else { None },

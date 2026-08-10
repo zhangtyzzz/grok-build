@@ -144,8 +144,7 @@ ACP/Messages token (`end_turn`, `max_tokens`, …).
   "usage": {
     "input_tokens": 7210,
     "cache_read_input_tokens": 41000,
-    "cache_write_5m_input_tokens": 800,
-    "cache_write_1h_input_tokens": 1200,
+    "cache_creation_input_tokens": 0,
     "output_tokens": 1893,
     "reasoning_tokens": 412,
     "total_tokens": 50103
@@ -155,8 +154,6 @@ ACP/Messages token (`end_turn`, `max_tokens`, …).
       "inputTokens": 7210,
       "outputTokens": 1893,
       "cacheReadInputTokens": 41000,
-      "cacheWrite5mInputTokens": 800,
-      "cacheWrite1hInputTokens": 1200,
       "modelCalls": 7,
       "costUSD": 0.01268905
     }
@@ -174,13 +171,8 @@ Usage notes:
 - **Token field policy (headless result / `end` / error spend):**
   - `usage.input_tokens` and `modelUsage.*.inputTokens` are **uncached only**.
   - `cache_read_input_tokens` / `cacheReadInputTokens` are cache hits.
-  - `cache_write_5m_input_tokens` / `cacheWrite5mInputTokens` and
-    `cache_write_1h_input_tokens` / `cacheWrite1hInputTokens` split cache
-    creation by TTL. These are subsets of input tokens, not values to add to
-    `total_tokens`, and zero buckets are omitted. Providers that only return an
-    aggregate cache-creation count cannot populate the TTL buckets.
-  - `total_tokens` is full input + output (includes cache):
-    `total_tokens = input_tokens + cache_read_input_tokens + output_tokens`.
+  - `total_tokens` is full input + output (includes both cache buckets):
+    `total_tokens = input_tokens + cache_read_input_tokens + cache_creation_input_tokens + output_tokens`.
   - ACP `_meta.usage.inputTokens` (PromptUsage) is still the **full** prompt
     sum; only the headless projector subtracts cache. Prefer headless fields
     for spend automation.

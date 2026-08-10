@@ -409,7 +409,7 @@ pub(crate) async fn spawn_session_actor(
                 });
             if transport.is_none() {
                 tracing::debug!(
-                    session_id = % session_info.id.0,
+                    session_id = %session_info.id.0,
                     "hitl permission live enabled but no remote transport available; using local prompt"
                 );
             }
@@ -1088,7 +1088,7 @@ pub(crate) async fn spawn_session_actor(
         agent.tool_bridge().toolset(),
         None,
     ) {
-        tracing::warn!(error = % e, "failed to bind local session toolset");
+        tracing::warn!(error = %e, "failed to bind local session toolset");
     }
     let system_prompt = agent.system_prompt().to_string();
     let mut prompt_context = agent.prompt_context().clone();
@@ -1264,7 +1264,7 @@ pub(crate) async fn spawn_session_actor(
                 project_trusted,
             );
             for e in &errors {
-                tracing::warn!(error = ? e, "hook loading error");
+                tracing::warn!(error = ?e, "hook loading error");
             }
             hook_discovery_errors = errors;
             (!registry.is_empty()).then(|| Arc::new(registry))
@@ -1994,7 +1994,7 @@ pub(crate) async fn spawn_session_actor(
         });
     } else {
         tracing::debug!(
-            session_id = % session_info.id.0,
+            session_id = %session_info.id.0,
             "No feedback client available, skipping sync loop"
         );
     }
@@ -2367,7 +2367,7 @@ pub(crate) async fn spawn_session_on_thread(
             let local = tokio::task::LocalSet::new();
             local.block_on(&rt, async move {
                 let _trace_span = parent_traceparent.as_ref().map(|tp| {
-                    let meta = serde_json::json!({ "traceparent" : tp })
+                    let meta = serde_json::json!({ "traceparent": tp })
                         .as_object()
                         .cloned()
                         .unwrap_or_default();

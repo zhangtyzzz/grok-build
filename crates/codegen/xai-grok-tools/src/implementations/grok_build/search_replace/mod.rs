@@ -1081,7 +1081,7 @@ mod tests {
     /// Harness configs still send this field; it must keep validating under `deny_unknown_fields`.
     #[test]
     fn harness_skip_read_before_edit_param_still_validates() {
-        let json = serde_json::json!({ "skip_read_before_edit" : true });
+        let json = serde_json::json!({ "skip_read_before_edit": true });
         crate::types::params_validation::validate_params_json::<SearchReplaceParams>(&json).expect(
             "harness skip_read_before_edit config must validate against SearchReplaceParams",
         );

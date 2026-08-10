@@ -117,7 +117,7 @@ async fn handle_scheduled_task_removed(
     removed: xai_grok_tools::notification::ScheduledTaskRemoved,
     acknowledgement: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) -> Result<(), String> {
-    tracing::info!(task_id = % removed.task_id, "Scheduled task removed");
+    tracing::info!(task_id = %removed.task_id, "Scheduled task removed");
     let result: Result<Box<serde_json::value::RawValue>, String> = async {
         let mut meta = None;
         stamp_scheduler_meta(config, &mut meta, &removed.generation, removed.revision);
@@ -470,7 +470,7 @@ async fn handle_notification(
                             .is_ok();
                         if copy_requested {
                             tracing::info!(
-                                task_id = % task_id,
+                                task_id = %task_id,
                                 "auto-wake: sending synthetic turn trace request"
                             );
                             let _ = trace_tx.send(crate::upload::turn::SyntheticTurnTraceRequest {
@@ -481,13 +481,13 @@ async fn handle_notification(
                             });
                         } else {
                             tracing::debug!(
-                                task_id = % task_id,
+                                task_id = %task_id,
                                 "auto-wake: session snapshot request failed, skipping trace request"
                             );
                         }
                     } else {
                         tracing::debug!(
-                            task_id = % task_id,
+                            task_id = %task_id,
                             "auto-wake: no synthetic trace consumer, skipping trace request"
                         );
                     }
@@ -607,10 +607,10 @@ async fn handle_notification(
             tracing::debug!(server = %s.server_name, command = %s.command, "LSP server starting");
         }
         ToolNotification::LspServerReady(s) => {
-            tracing::info!(server = % s.server_name, "LSP server ready");
+            tracing::info!(server = %s.server_name, "LSP server ready");
         }
         ToolNotification::LspServerCrashed(s) => {
-            tracing::warn!(server = % s.server_name, "LSP server crashed");
+            tracing::warn!(server = %s.server_name, "LSP server crashed");
         }
         ToolNotification::LspServerRetrying(s) => {
             tracing::warn!(
@@ -713,7 +713,7 @@ async fn handle_notification(
             }
             if config.task_completion_reservations.contains(&event.task_id) {
                 tracing::debug!(
-                    task_id = % event.task_id,
+                    task_id = %event.task_id,
                     "skipping model inject for monitor event: task already auto-woke via TaskCompleted"
                 );
                 return;
@@ -739,7 +739,7 @@ async fn handle_notification(
             }
         }
         ToolNotification::ScheduledTaskCreated(created) => {
-            tracing::info!(task_id = % created.task_id, "Scheduled task created");
+            tracing::info!(task_id = %created.task_id, "Scheduled task created");
             let mut meta = None;
             stamp_scheduler_meta(config, &mut meta, &created.generation, created.revision);
             let notification = crate::extensions::notification::SessionNotification {

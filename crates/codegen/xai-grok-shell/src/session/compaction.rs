@@ -206,7 +206,7 @@ impl SessionActor {
         {
             Ok(out) => Some(out),
             Err(e) => {
-                tracing::warn!(error = ? e, "two_pass: summarization sample failed");
+                tracing::warn!(error = ?e, "two_pass: summarization sample failed");
                 None
             }
         }
@@ -981,7 +981,7 @@ impl SessionActor {
         };
         if conv_len == 0 {
             tracing::error!(
-                session_id = % self.session_info.id.0,
+                session_id = %self.session_info.id.0,
                 "Compaction failed: conversation is empty (ChatStateActor may have died)"
             );
             return Err(
@@ -1568,7 +1568,7 @@ impl SessionActor {
                     )),
                     (existing, None) => {
                         tracing::warn!(
-                            session_id = % self.session_info.id.0,
+                            session_id = %self.session_info.id.0,
                             "compaction: plan mode active but template render failed"
                         );
                         existing
@@ -1994,7 +1994,7 @@ impl SessionActor {
             trigger_info.percentage,
         );
         if let Err(e) = self.run_compact_only(trigger_info).await {
-            tracing::error!(error = % e, "Model-switch compaction failed");
+            tracing::error!(error = %e, "Model-switch compaction failed");
             if Self::is_auth_compact_error(&e) {
                 return Err(self.surface_compact_auth_failure(e).await);
             }
@@ -2174,7 +2174,7 @@ impl SessionActor {
             .is_err()
         {
             tracing::warn!(
-                session_id = % self.session_info.id.0,
+                session_id = %self.session_info.id.0,
                 "Failed to send compaction request artifact to persistence channel"
             );
         }

@@ -42,7 +42,7 @@ review，并把请求交回 main；真正的执行由 session 自己的 subagent
 - `/plan` 使用同一 session 上下文，同时具备真正的只读运行时边界。
 - reviewer 不阻塞 commit tool，也不并发 resume 同一个 session。
 - reviewer 结果能进入当前 live session，并支持进程内幂等重试。
-- Messages adapter 支持 5m、1h 和 off cache policy，并保留 cache usage 明细。
+- Messages adapter 支持 5m、1h 和 off cache policy（放置逻辑跟随上游）。
 - 构建物可以复制到另一台同平台机器运行，不携带用户凭证和 session。
 
 ### 2.2 非目标
@@ -409,8 +409,16 @@ Messages 保留历史默认：`stable_prefix + 5m`。其他 adapter 忽略该字
 - `stable_prefix + 1h`：加
   `{"type":"ephemeral","ttl":"1h"}`。
 
-标记 system prefix 也覆盖 Anthropic prompt 顺序中更早的 tools。第一版只有
-一个 explicit breakpoint，不涉及混合 TTL 的排序问题。
+标记 system prefix 也覆盖 Anthropic prompt 顺序中更早的 tools，因此不需要
+单独的 tool-definition breakpoint。
+
+> **2026-08-10 修订。** breakpoint 的**放置**已由上游实现接管
+> （`xai-grok-sampling-types` 的 `apply_cache_breakpoints`：system prefix
+> 加当前和上一个 conversation tip），上游明确保留第四个 slot 给 gateway 的
+> automatic caching。本 fork 只保留 TTL 与 `off` 两项 policy，并且在上游
+> 放置完成之后再做一次改写，不再改 upstream 的放置函数签名。中途出现过的
+> tool-definition breakpoint 已删除：它既与本节原始设计冲突，也占用了上游
+> 预留的 slot。
 
 Anthropic 官方协议说明 5m 默认、`ttl: "1h"`、最多四个 breakpoint，以及
 `cache_creation.ephemeral_5m_input_tokens` /
@@ -419,16 +427,20 @@ Anthropic 官方协议说明 5m 默认、`ttl: "1h"`、最多四个 breakpoint�
 
 ### 9.3 Usage
 
-Normalized usage 保留：
+Normalized usage 沿用上游的字段：
 
 - prompt tokens；
 - completion tokens；
 - cache-read input tokens；
-- cache-write 5m input tokens；
-- cache-write 1h input tokens。
+- cache-creation prompt tokens（aggregate）。
 
-两个 write bucket 是 prompt token 的明细，不重复计入 total。老 provider
-只返回 aggregate `cache_creation_input_tokens` 时仍兼容，bucket 为 0。
+> **2026-08-10 修订。** 原方案把 cache-write 拆成 5m / 1h 两个 bucket 并
+> 替换了上游的 aggregate 字段。实测该做法在只返回 aggregate
+> `cache_creation_input_tokens` 的 provider 上会把 cache-write 记成 0（上游
+> 原本能报出真实值），并且改掉了 headless result 里被上游标注为 frozen 的
+> 外部兼容字段名。因此回退到上游的单一 aggregate；1h TTL 仍可配置，只是不再
+> 单独统计两个 bucket。需要 per-TTL 明细时，应作为**新增**字段提给上游，
+> 而不是替换既有字段。
 
 ## 10. 独立构建与跨机器复用
 

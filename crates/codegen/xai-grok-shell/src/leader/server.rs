@@ -923,7 +923,7 @@ fn patch_initialize_response_model(
     if needs_patch {
         json["result"]["meta"]["modelState"]["currentModelId"] =
             serde_json::Value::String(model.clone());
-        debug!(patched_model = % model, "Patched initialize response currentModelId");
+        debug!(patched_model = %model, "Patched initialize response currentModelId");
         return true;
     }
     false
@@ -1307,7 +1307,7 @@ async fn handle_stop_cpu_profile(
     let result = result.map_err(|join_error| ControlError {
         code: ControlErrorCode::InternalError,
         message: "CPU profile stop task failed".to_string(),
-        details: Some(serde_json::json!({ "error" : join_error.to_string() })),
+        details: Some(serde_json::json!({ "error": join_error.to_string() })),
     })??;
     Ok(ControlPayload::CpuProfileStopped {
         pid,
@@ -1356,7 +1356,7 @@ async fn finalize_cpu_profile_on_shutdown(control_state: LeaderServerControlStat
             info!(
                 path = %result.svg_path.display(),
                 started_at = %result.started_at,
-                stopped_at = % result.stopped_at,
+                stopped_at = %result.stopped_at,
                 "Finalized active CPU profile during leader shutdown"
             );
         }
@@ -1632,7 +1632,7 @@ pub async fn run_leader_server(
                         control_state.clone(),
                     );
                 }
-                Err(e) => error!(error = % e, "Accept failed"),
+                Err(e) => error!(error = %e, "Accept failed"),
             },
             LeaderServerPoll::Event(event) => match event {
                 ServerEvent::Registered(id, mode, capabilities, client_type) => {
@@ -1690,7 +1690,7 @@ pub async fn run_leader_server(
                         xai_grok_telemetry::unified_log::info(
                             "leader.client.disconnected",
                             None,
-                            Some(serde_json::json!({ "client_id" : id.0 })),
+                            Some(serde_json::json!({ "client_id": id.0 })),
                         );
                     }
                     pending_load_by_req.retain(|_, (c, _)| *c != id);
@@ -2359,7 +2359,7 @@ fn spawn_client_handler(
         )
         .await;
         if let Err(e) = &result {
-            debug!(client_id = client_id.0, error = % e, "Client session ended");
+            debug!(client_id = client_id.0, error = %e, "Client session ended");
         }
         let _ = event_tx.send(ServerEvent::Disconnected(client_id)).await;
     });
@@ -2378,7 +2378,7 @@ async fn run_client_session(
         match tokio::time::timeout(REGISTRATION_TIMEOUT, read_message(&mut reader)).await {
             Ok(Ok(msg)) => msg,
             Ok(Err(e)) => {
-                warn!(client_id = client_id.0, error = % e, "Registration failed");
+                warn!(client_id = client_id.0, error = %e, "Registration failed");
                 return Err(e);
             }
             Err(_) => {
@@ -2556,7 +2556,7 @@ where
             Ok(ClientSessionAction::Continue)
         }
         Err(e) => {
-            warn!(client_id = client_id.0, error = % e, "Protocol error");
+            warn!(client_id = client_id.0, error = %e, "Protocol error");
             Ok(ClientSessionAction::Break)
         }
     }
@@ -2666,7 +2666,7 @@ pub async fn spawn_leader_server(socket_path: PathBuf) -> Result<ServerHandle, S
         )
         .await
         {
-            error!(error = % e, "Leader server error");
+            error!(error = %e, "Leader server error");
         }
     });
     Ok(ServerHandle {
@@ -2751,7 +2751,7 @@ mod tests {
     /// pass-through traffic.
     #[test]
     fn outbound_payload_verbatim_when_unmutated() {
-        let original = r#"{ "b" : 1,    "a": 2 }"#.to_string();
+        let original = r#"{ "b": 1,    "a": 2 }"#.to_string();
         let json = pv(&original);
         let out = select_outbound_payload(Some(&json), false, original.clone());
         assert_eq!(
@@ -2763,7 +2763,7 @@ mod tests {
     /// (semantically equal, but no longer the original odd formatting).
     #[test]
     fn outbound_payload_reserialized_when_mutated() {
-        let original = r#"{ "b" : 1,    "a": 2 }"#.to_string();
+        let original = r#"{ "b": 1,    "a": 2 }"#.to_string();
         let json = pv(&original);
         let out = select_outbound_payload(Some(&json), true, original.clone());
         assert_ne!(

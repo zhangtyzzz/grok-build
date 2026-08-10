@@ -738,7 +738,7 @@ fn resolve_agent_definition_acp_profile_wins_when_model_agent_type_is_default() 
     }
     let tmp = tempfile::tempdir().unwrap();
     let acp_profile = xai_grok_agent::AgentDefinition::from_json(&serde_json::json!(
-        { "name" : "custom-devbox-profile", "description" :
+        { "name": "custom-devbox-profile", "description" :
         "Custom devbox profile", "systemPrompt" :
         "You are a custom-configured devbox agent.", }
     ))
@@ -880,8 +880,8 @@ fn resolve_agent_definition_agent_profile_with_model_override() {
 }
 #[test]
 fn read_session_or_init_meta_str_prefers_session_meta() {
-    let session = serde_json::json!({ "rules" : "from-session" });
-    let init = serde_json::json!({ "rules" : "from-init" });
+    let session = serde_json::json!({ "rules": "from-session" });
+    let init = serde_json::json!({ "rules": "from-init" });
     assert_eq!(
         read_session_or_init_meta_str(session.as_object(), init.as_object(), "rules"),
         Some("from-session"),
@@ -889,8 +889,8 @@ fn read_session_or_init_meta_str_prefers_session_meta() {
 }
 #[test]
 fn read_session_or_init_meta_str_falls_back_to_init_meta() {
-    let session = serde_json::json!({ "other" : "x" });
-    let init = serde_json::json!({ "rules" : "from-init" });
+    let session = serde_json::json!({ "other": "x" });
+    let init = serde_json::json!({ "rules": "from-init" });
     assert_eq!(
         read_session_or_init_meta_str(session.as_object(), init.as_object(), "rules"),
         Some("from-init"),
@@ -923,7 +923,7 @@ fn parse_session_plugin_dirs_filters_and_dedupes() {
 #[test]
 fn read_session_or_init_meta_str_returns_none_when_absent() {
     assert_eq!(read_session_or_init_meta_str(None, None, "rules"), None,);
-    let session = serde_json::json!({ "other" : "x" });
+    let session = serde_json::json!({ "other": "x" });
     assert_eq!(
         read_session_or_init_meta_str(session.as_object(), None, "rules"),
         None,
@@ -931,8 +931,8 @@ fn read_session_or_init_meta_str_returns_none_when_absent() {
 }
 #[test]
 fn read_session_or_init_meta_str_ignores_non_string_values() {
-    let session = serde_json::json!({ "rules" : 42 });
-    let init = serde_json::json!({ "rules" : "from-init" });
+    let session = serde_json::json!({ "rules": 42 });
+    let init = serde_json::json!({ "rules": "from-init" });
     assert_eq!(
         read_session_or_init_meta_str(session.as_object(), init.as_object(), "rules"),
         Some("from-init"),
@@ -966,8 +966,8 @@ fn startup_hints_from_meta_unparseable_falls_through_then_defaults() {
 }
 #[test]
 fn system_prompt_override_from_meta_prefers_session_and_rejects_empty() {
-    let session = serde_json::json!({ "systemPromptOverride" : "from session" });
-    let init = serde_json::json!({ "systemPromptOverride" : "from init" });
+    let session = serde_json::json!({ "systemPromptOverride": "from session" });
+    let init = serde_json::json!({ "systemPromptOverride": "from init" });
     assert_eq!(
         system_prompt_override_from_meta(session.as_object(), init.as_object()),
         Some("from session")
@@ -976,7 +976,7 @@ fn system_prompt_override_from_meta_prefers_session_and_rejects_empty() {
         system_prompt_override_from_meta(None, init.as_object()),
         Some("from init")
     );
-    let empty = serde_json::json!({ "systemPromptOverride" : "" });
+    let empty = serde_json::json!({ "systemPromptOverride": "" });
     assert_eq!(
         system_prompt_override_from_meta(empty.as_object(), None),
         None
@@ -987,8 +987,8 @@ fn system_prompt_override_from_meta_prefers_session_and_rejects_empty() {
 fn enqueue_replace_system_prompt_override_sends_when_present() {
     use crate::session::SessionCommand;
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let session = serde_json::json!({ "systemPromptOverride" : "from session" });
-    let init = serde_json::json!({ "systemPromptOverride" : "from init" });
+    let session = serde_json::json!({ "systemPromptOverride": "from session" });
+    let init = serde_json::json!({ "systemPromptOverride": "from init" });
     enqueue_replace_system_prompt_override(&tx, session.as_object(), init.as_object());
     match rx.try_recv() {
         Ok(SessionCommand::ReplaceSystemPrompt { system_prompt }) => {
@@ -1002,7 +1002,7 @@ fn enqueue_replace_system_prompt_override_noop_when_absent_or_empty() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     enqueue_replace_system_prompt_override(
         &tx,
-        serde_json::json!({ "systemPromptOverride" : "" }).as_object(),
+        serde_json::json!({ "systemPromptOverride": "" }).as_object(),
         None,
     );
     enqueue_replace_system_prompt_override(&tx, serde_json::json!({}).as_object(), None);
@@ -1503,7 +1503,7 @@ fn parse_code_nav_capability_present_and_true() {
     let mut meta = serde_json::Map::new();
     meta.insert(
         "x.ai/codeNavigation".to_string(),
-        serde_json::json!({ "enabled" : true }),
+        serde_json::json!({ "enabled": true }),
     );
     let init = acp::InitializeRequest::new(acp::ProtocolVersion::V1).client_capabilities(
         acp::ClientCapabilities::new()
@@ -1527,7 +1527,7 @@ fn parse_code_nav_capability_false_returns_false() {
     let mut meta = serde_json::Map::new();
     meta.insert(
         "x.ai/codeNavigation".to_string(),
-        serde_json::json!({ "enabled" : false }),
+        serde_json::json!({ "enabled": false }),
     );
     let init = acp::InitializeRequest::new(acp::ProtocolVersion::V1).client_capabilities(
         acp::ClientCapabilities::new()
@@ -1855,7 +1855,7 @@ fn build_minimal_agent_for_tests() -> MvpAgent {
 fn session_usage_request(session_id: &str) -> acp::ExtRequest {
     acp::ExtRequest::new(
         "x.ai/session/usage",
-        serde_json::value::to_raw_value(&serde_json::json!({ "sessionId" : session_id }))
+        serde_json::value::to_raw_value(&serde_json::json!({ "sessionId": session_id }))
             .unwrap()
             .into(),
     )
@@ -2550,10 +2550,10 @@ fn orphaned_tasks_filters_rewind_dead_branches() {
 }
 #[test]
 fn allow_access_from_remote_settings() {
-    let json = serde_json::json!({ "allow_access" : true });
+    let json = serde_json::json!({ "allow_access": true });
     let rs: crate::util::config::RemoteSettings = serde_json::from_value(json).unwrap();
     assert_eq!(rs.allow_access, Some(true));
-    let json = serde_json::json!({ "allow_access" : false });
+    let json = serde_json::json!({ "allow_access": false });
     let rs: crate::util::config::RemoteSettings = serde_json::from_value(json).unwrap();
     assert_eq!(rs.allow_access, Some(false));
     let json = serde_json::json!({});
@@ -2562,7 +2562,7 @@ fn allow_access_from_remote_settings() {
 }
 #[test]
 fn on_demand_enabled_from_remote_settings() {
-    let json = serde_json::json!({ "on_demand_enabled" : false });
+    let json = serde_json::json!({ "on_demand_enabled": false });
     let rs: crate::util::config::RemoteSettings = serde_json::from_value(json).unwrap();
     assert_eq!(rs.on_demand_enabled, Some(false));
     let json = serde_json::json!({});
@@ -3168,22 +3168,22 @@ fn parse_session_kind_matrix() {
     let cases: &[(&str, serde_json::Value, SessionKind)] = &[
         (
             "chat",
-            json!({ "x.ai/session" : { "kind" : "chat" } }),
+            json!({ "x.ai/session" : { "kind": "chat" } }),
             SessionKind::Chat,
         ),
         (
             "build",
-            json!({ "x.ai/session" : { "kind" : "build" } }),
+            json!({ "x.ai/session" : { "kind": "build" } }),
             SessionKind::Build,
         ),
         (
             "chat_malformed_sibling",
-            json!({ "x.ai/session" : { "kind" : "chat", "facets" : "not-a-map" } }),
+            json!({ "x.ai/session" : { "kind": "chat", "facets": "not-a-map" } }),
             SessionKind::Chat,
         ),
         (
             "unknown_kind",
-            json!({ "x.ai/session" : { "kind" : "frob" } }),
+            json!({ "x.ai/session" : { "kind": "frob" } }),
             SessionKind::Build,
         ),
         ("absent", json!({}), SessionKind::Build),
@@ -3203,7 +3203,7 @@ fn reject_chat_kind_without_feature_errors_without_chat_feature() {
     assert!(reject_chat_kind_without_feature(None).is_ok());
     assert!(
         reject_chat_kind_without_feature(
-            json!({ "x.ai/session" : { "kind" : "build" } }).as_object()
+            json!({ "x.ai/session" : { "kind": "build" } }).as_object()
         )
         .is_ok()
     );
@@ -3651,7 +3651,7 @@ fn ext_method_rewind_uses_local_dispatch_without_bridge() {
     let _env = crate::env::EnvVarGuard::remove(crate::env::GROK_DISABLE_CUSTOM_BRIDGE_ENV);
     run_local_for_bridge_test(|| async {
         let agent = build_minimal_agent_for_tests();
-        let params = serde_json::json!({ "sessionId" : "sess-local" });
+        let params = serde_json::json!({ "sessionId": "sess-local" });
         let err = agent
             .ext_method(acp::ExtRequest::new(
                 "x.ai/rewind/points",
@@ -3800,7 +3800,7 @@ async fn drive_disconnect(agent: &MvpAgent, sid: &acp::SessionId) {
 async fn drive_disconnect_many(agent: &MvpAgent, sids: &[&acp::SessionId]) {
     use acp::Agent as _;
     let ids: Vec<&str> = sids.iter().map(|s| s.0.as_ref()).collect();
-    let params = serde_json::json!({ "sessionIds" : ids });
+    let params = serde_json::json!({ "sessionIds": ids });
     let raw = serde_json::value::to_raw_value(&params).unwrap();
     agent
         .ext_notification(acp::ExtNotification::new(
@@ -3815,7 +3815,7 @@ async fn drive_disconnect_many(agent: &MvpAgent, sids: &[&acp::SessionId]) {
 /// exercising the exact production path that finalizes the replica.
 async fn drive_close(agent: &MvpAgent, session_id: &str) -> Result<acp::ExtResponse, acp::Error> {
     use acp::Agent as _;
-    let params = serde_json::json!({ "sessionId" : session_id });
+    let params = serde_json::json!({ "sessionId": session_id });
     let raw = serde_json::value::to_raw_value(&params).unwrap();
     agent
         .ext_method(acp::ExtRequest::new(
@@ -5186,7 +5186,7 @@ async fn answer_folder_trust_request(
     assert_eq!(args.request.method.as_ref(), "x.ai/folder_trust/request");
     let params: serde_json::Value = serde_json::from_str(args.request.params.get()).unwrap();
     let resp: acp::ExtResponse = acp::ExtResponse::new(std::sync::Arc::from(
-        serde_json::value::to_raw_value(&serde_json::json!({ "outcome" : outcome })).unwrap(),
+        serde_json::value::to_raw_value(&serde_json::json!({ "outcome": outcome })).unwrap(),
     ));
     let _ = args.response_tx.send(Ok(resp));
     params
