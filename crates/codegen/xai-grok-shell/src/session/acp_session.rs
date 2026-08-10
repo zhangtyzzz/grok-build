@@ -1491,7 +1491,7 @@ mod managed_gateway_descriptor_tests {
             .register_mcp_tools(
                 "server__tool".to_string(),
                 FixtureMcpTool,
-                Some(serde_json::json!({ "type" : "object" })),
+                Some(serde_json::json!({ "type": "object" })),
             )
             .await
             .expect("local fixture registration succeeds");
@@ -1512,7 +1512,7 @@ mod managed_gateway_descriptor_tests {
                             tool_name: "Collision".to_string(),
                             call_id: "gateway.collision".to_string(),
                             description: "Gateway collision".to_string(),
-                            json_schema: serde_json::json!({ "type" : "object" }),
+                            json_schema: serde_json::json!({ "type": "object" }),
                         },
                         crate::session::managed_mcp::GatewayTool {
                             connector_id: "gateway".to_string(),
@@ -1521,7 +1521,7 @@ mod managed_gateway_descriptor_tests {
                             tool_name: "Search".to_string(),
                             call_id: "gateway.search".to_string(),
                             description: "Gateway search".to_string(),
-                            json_schema: serde_json::json!({ "type" : "object" }),
+                            json_schema: serde_json::json!({ "type": "object" }),
                         },
                     ],
                     total_tools: 2,
@@ -1568,7 +1568,7 @@ mod managed_gateway_descriptor_tests {
                             tool_name: "List".to_string(),
                             call_id: "linear.list_issues".to_string(),
                             description: "List issues".to_string(),
-                            json_schema: serde_json::json!({ "type" : "object" }),
+                            json_schema: serde_json::json!({ "type": "object" }),
                         },
                         crate::session::managed_mcp::GatewayTool {
                             connector_id: "linear".to_string(),
@@ -1577,7 +1577,7 @@ mod managed_gateway_descriptor_tests {
                             tool_name: "Create".to_string(),
                             call_id: "linear.create_issue".to_string(),
                             description: "Create issue".to_string(),
-                            json_schema: serde_json::json!({ "type" : "object" }),
+                            json_schema: serde_json::json!({ "type": "object" }),
                         },
                         crate::session::managed_mcp::GatewayTool {
                             connector_id: "slack".to_string(),
@@ -1586,7 +1586,7 @@ mod managed_gateway_descriptor_tests {
                             tool_name: "Search".to_string(),
                             call_id: "slack.search".to_string(),
                             description: "Search Slack".to_string(),
-                            json_schema: serde_json::json!({ "type" : "object" }),
+                            json_schema: serde_json::json!({ "type": "object" }),
                         },
                     ],
                     total_tools: 3,
@@ -1994,7 +1994,7 @@ mod managed_gateway_tool_tests {
             .register_mcp_tools(
                 "server__tool".to_string(),
                 FixtureMcpTool,
-                Some(serde_json::json!({ "type" : "object" })),
+                Some(serde_json::json!({ "type": "object" })),
             )
             .await
             .expect("local fixture registration succeeds");
@@ -2015,7 +2015,7 @@ mod managed_gateway_tool_tests {
                             tool_name: "Collision".to_string(),
                             call_id: "gateway.collision".to_string(),
                             description: "Gateway collision".to_string(),
-                            json_schema: serde_json::json!({ "type" : "object" }),
+                            json_schema: serde_json::json!({ "type": "object" }),
                         },
                         crate::session::managed_mcp::GatewayTool {
                             connector_id: "gateway".to_string(),
@@ -2024,7 +2024,7 @@ mod managed_gateway_tool_tests {
                             tool_name: "Search".to_string(),
                             call_id: "gateway.search".to_string(),
                             description: "Gateway search".to_string(),
-                            json_schema: serde_json::json!({ "type" : "object" }),
+                            json_schema: serde_json::json!({ "type": "object" }),
                         },
                     ],
                     total_tools: 2,
@@ -2066,7 +2066,7 @@ mod managed_gateway_tool_tests {
                             tool_name: "List".to_string(),
                             call_id: "linear.list_issues".to_string(),
                             description: "List issues".to_string(),
-                            json_schema: serde_json::json!({ "type" : "object" }),
+                            json_schema: serde_json::json!({ "type": "object" }),
                         },
                         crate::session::managed_mcp::GatewayTool {
                             connector_id: "linear".to_string(),
@@ -2075,7 +2075,7 @@ mod managed_gateway_tool_tests {
                             tool_name: "Create".to_string(),
                             call_id: "linear.create_issue".to_string(),
                             description: "Create issue".to_string(),
-                            json_schema: serde_json::json!({ "type" : "object" }),
+                            json_schema: serde_json::json!({ "type": "object" }),
                         },
                         crate::session::managed_mcp::GatewayTool {
                             connector_id: "slack".to_string(),
@@ -2084,7 +2084,7 @@ mod managed_gateway_tool_tests {
                             tool_name: "Search".to_string(),
                             call_id: "slack.search".to_string(),
                             description: "Search Slack".to_string(),
-                            json_schema: serde_json::json!({ "type" : "object" }),
+                            json_schema: serde_json::json!({ "type": "object" }),
                         },
                     ],
                     total_tools: 3,

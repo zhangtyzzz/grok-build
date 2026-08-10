@@ -1155,7 +1155,7 @@ impl SessionActor {
                             "kind": error.kind.as_str(),
                             "status_code": error.status_code,
                             "is_session_based": gate.is_session_based,
-                                "model_byok" : gate.model_byok.as_str(),
+                                "model_byok": gate.model_byok.as_str(),
                             "endpoint_is_first_party": gate.endpoint_is_first_party,
                         })),
                     );
@@ -1466,15 +1466,15 @@ impl SessionActor {
                             self.chat_state_handle.update_credentials(cleared);
                         }
                         tracing::warn!(
-                            error = % e, hard_expired, model = % sampling_config.model,
+                            error = %e, hard_expired, model = %sampling_config.model,
                             "auth: preflight get_valid_token failed"
                         );
                         xai_grok_telemetry::unified_log::warn(
                             "auth.preflight.refresh_failed",
                             Some(self.session_info.id.0.as_ref()),
                             Some(serde_json::json!(
-                                { "error" : format!("{e}"), "hard_expired" : hard_expired,
-                                "model" : sampling_config.model, }
+                                { "error": format!("{e}"), "hard_expired": hard_expired,
+                                "model": sampling_config.model, }
                             )),
                         );
                         return;
@@ -1566,7 +1566,7 @@ impl SessionActor {
             current_base_url,
         ) else {
             tracing::warn!(
-                model = % current_model_id, available = ? config.config_models.keys()
+                model = %current_model_id, available = ?config.config_models.keys()
                 .collect::< Vec < _ >> (),
                 model_ref = ?current_model_ref,
                 base_url = %current_base_url,

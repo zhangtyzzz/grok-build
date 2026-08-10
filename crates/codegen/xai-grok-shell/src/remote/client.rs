@@ -975,7 +975,7 @@ pub(crate) fn parse_remote_model_value(
                 Ok(cfg) => Some(cfg),
                 Err(e) => {
                     tracing::warn!(
-                        error = % e,
+                        error = %e,
                         "Failed to deserialize laziness_detector block from remote model; falling back to default"
                     );
                     None
@@ -1463,7 +1463,7 @@ mod tests {
     async fn fetch_subagent_bundle_http_failure() {
         let (proxy_base_url, _seen_headers, server) = start_bundle_server(
             axum::http::StatusCode::UNAUTHORIZED,
-            serde_json::json!({ "error" : "unauthorized" }),
+            serde_json::json!({ "error": "unauthorized" }),
         )
         .await;
         let am = test_auth_manager();
@@ -1480,7 +1480,7 @@ mod tests {
     async fn fetch_subagent_bundle_parse_failure() {
         let (proxy_base_url, _seen_headers, server) = start_bundle_server(
             axum::http::StatusCode::OK,
-            serde_json::json!({ "version" : 42 }),
+            serde_json::json!({ "version": 42 }),
         )
         .await;
         let am = test_auth_manager();
@@ -1536,7 +1536,7 @@ mod tests {
         let result = parse_remote_model_value(&value, "https://default.url").unwrap();
         assert!(result.supports_reasoning_effort);
         assert_eq!(result.reasoning_effort, Some(ReasoningEffort::Xhigh));
-        let value = serde_json::json!({ "model" : "x", "context_window" : 256_000 });
+        let value = serde_json::json!({ "model": "x", "context_window": 256_000 });
         let result = parse_remote_model_value(&value, "https://default.url").unwrap();
         assert!(!result.supports_reasoning_effort);
         assert!(result.reasoning_effort.is_none());
@@ -1572,7 +1572,7 @@ mod tests {
             assert_eq!(result.reasoning_efforts.len(), 1);
             assert_eq!(result.reasoning_efforts[0].value, ReasoningEffort::High);
         }
-        let value = serde_json::json!({ "model" : "x", "context_window" : 256_000 });
+        let value = serde_json::json!({ "model": "x", "context_window": 256_000 });
         let result = parse_remote_model_value(&value, "https://default.url").unwrap();
         assert!(result.reasoning_efforts.is_empty());
     }
@@ -1840,7 +1840,7 @@ mod tests {
         });
         let result = parse_remote_model_value(&value, "https://default.url").unwrap();
         assert!(result.show_model_fingerprint);
-        let value = serde_json::json!({ "model" : "x", "context_window" : 256_000 });
+        let value = serde_json::json!({ "model": "x", "context_window": 256_000 });
         let result = parse_remote_model_value(&value, "https://default.url").unwrap();
         assert!(!result.show_model_fingerprint);
     }
@@ -2167,7 +2167,7 @@ mod tests {
             archive_status: StatusCode::NOT_FOUND,
             archive_bytes: Vec::new(),
             legacy_status: StatusCode::UNAUTHORIZED,
-            legacy_body: serde_json::json!({ "error" : "unauthorized" }),
+            legacy_body: serde_json::json!({ "error": "unauthorized" }),
         })
         .await;
         let am = test_auth_manager();
@@ -2193,7 +2193,7 @@ mod tests {
         );
         let request = reqwest::Client::new()
             .put("http://localhost/sessions/test")
-            .json(&serde_json::json!({ "test" : true }))
+            .json(&serde_json::json!({ "test": true }))
             .headers(auth_headers)
             .build()
             .unwrap();

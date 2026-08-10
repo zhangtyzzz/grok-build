@@ -738,7 +738,7 @@ fn resolve_agent_definition_acp_profile_wins_when_model_agent_type_is_default() 
     }
     let tmp = tempfile::tempdir().unwrap();
     let acp_profile = xai_grok_agent::AgentDefinition::from_json(&serde_json::json!(
-        { "name" : "custom-devbox-profile", "description" :
+        { "name": "custom-devbox-profile", "description" :
         "Custom devbox profile", "systemPrompt" :
         "You are a custom-configured devbox agent.", }
     ))
@@ -3168,22 +3168,22 @@ fn parse_session_kind_matrix() {
     let cases: &[(&str, serde_json::Value, SessionKind)] = &[
         (
             "chat",
-            json!({ "x.ai/session" : { "kind" : "chat" } }),
+            json!({ "x.ai/session" : { "kind": "chat" } }),
             SessionKind::Chat,
         ),
         (
             "build",
-            json!({ "x.ai/session" : { "kind" : "build" } }),
+            json!({ "x.ai/session" : { "kind": "build" } }),
             SessionKind::Build,
         ),
         (
             "chat_malformed_sibling",
-            json!({ "x.ai/session" : { "kind" : "chat", "facets" : "not-a-map" } }),
+            json!({ "x.ai/session" : { "kind": "chat", "facets": "not-a-map" } }),
             SessionKind::Chat,
         ),
         (
             "unknown_kind",
-            json!({ "x.ai/session" : { "kind" : "frob" } }),
+            json!({ "x.ai/session" : { "kind": "frob" } }),
             SessionKind::Build,
         ),
         ("absent", json!({}), SessionKind::Build),
@@ -3203,7 +3203,7 @@ fn reject_chat_kind_without_feature_errors_without_chat_feature() {
     assert!(reject_chat_kind_without_feature(None).is_ok());
     assert!(
         reject_chat_kind_without_feature(
-            json!({ "x.ai/session" : { "kind" : "build" } }).as_object()
+            json!({ "x.ai/session" : { "kind": "build" } }).as_object()
         )
         .is_ok()
     );

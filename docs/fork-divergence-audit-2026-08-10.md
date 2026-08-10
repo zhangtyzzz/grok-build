@@ -388,3 +388,123 @@ cargo test -p xai-grok-shell                                 # 6115 passed，1 f
 一句话：本轮把「每天都可能踩到的高频冲突点」搬走了，把「体量大但永不冲突」的部分留下了；
 要继续压低每日成本，下一步的杠杆是 §7.5 那批未逐项审计的测试修补，以及把 §4/§1.2 这类通用
 修复推给上游。
+
+---
+
+# 第二轮：逐项补审（2026-08-10）
+
+第一轮 §7.5 把若干区域挂在「未逐项审计」。本节把它们做完，标准与前文一致：一手读上游实现、
+依据可追溯、逐项给出结论。判定手法沿用第一轮验证过的那套 —— **把补丁还原成上游版本再跑对应
+测试**，让代码而不是推测来回答「还需不需要」。
+
+## 10. `xai-grok-telemetry`（6 个文件 +42/−2）
+
+| 项 | 结论 | 依据 |
+|---|---|---|
+| `privacy-hardening` feature + `PRIVACY_HARDENED` 常量 + 4 处后端入口门禁（`client::init`、`client::init_if_needed`、`external::init`、`otel_layer::build_tracer_provider`、`sentry::init`）+ 1 个 feature 门测试 | **保留** | 上游 `xai-grok-telemetry/Cargo.toml` 的 `[features]` 只有 `default` / `default-bazel` / `memory-log`，无此 feature（diff 上下文即上游原文）。这 6 个文件构成一个完整且最小的熔断开关：每处门禁 3~4 行，落在"网络能力后端"的唯一入口上，编译期决定、运行时无法放宽 —— 正是对外分发二进制需要的性质 |
+
+无删除项。这个区域的实现方式没有可挑剔处：它没有改写任何上游逻辑，只在入口处提前返回。
+
+## 11. `crates/build/xai-proto-build`（+81/−12）
+
+| 项 | 结论 | 依据 |
+|---|---|---|
+| 用临时目录替代 `--dependency_out=/dev/stdout --descriptor_set_out=/dev/null`，并按实际 target 前缀解析依赖输出；附带 Windows 路径分隔符处理与 3 个单元测试（`09aab64b`） | **保留** | 上游 `crates/build/xai-proto-build/src/lib.rs:132-133,164-166` 至今仍写死 `/dev/stdout` 与 `/dev/null`，在 Windows 上不存在这两个设备文件。我们的发布目标含 `x86_64-pc-windows-msvc` / `aarch64-pc-windows-msvc`（`scripts/dist/targets.json`），且 `.github/workflows/ci.yml:230` 有专门的 `Windows protobuf build` job 常态验证这条路径 |
+
+这是纯可移植性修复、与 fork 的业务无关，**属于最适合提给上游的一类**，已列入 §14 清单。
+
+## 12. `xai-grok-tools`（13 个文件）
+
+| 项 | 涉及文件 | 结论 | 依据 |
+|---|---|---|---|
+| plan 文件 symlink / TOCTOU 防护 | `computer/protected_plan_file.rs`（新增 519 行）、`types/resources.rs` 的 `ProtectedPlanFilePath` + `guard_protected_plan_file_system`、`computer/mod.rs`，接入 `enter_plan_mode` / `exit_plan_mode` / `search_replace` / `opencode/write` / `grok_build_hashline/edit` | **保留** | 上游 `exit_plan_mode/mod.rs` 内 grep `symlink\|nofollow\|canonical\|protected` 无任何命中，上游无等价防护。Plan Mode 对唯一一个文件自动放行写入，该文件即安全边界。已有针对性测试 `protected_plan_hashline_write_rejects_final_symlink`（植入指向 secret 的 symlink 后断言写入被拒） |
+| 内嵌搜索工具的发布方式改为 hard link（`3753e56f`） | `computer/local/embedded_search_tools.rs` | **保留** | 上游 `extract_bundled` 用 `fs::rename` 发布，会无条件替换目标 inode；我们改用 `hard_link`，遇到已存在的赢家就保留它。测试 `publishing_candidate_does_not_replace_existing_winner` 直接断言赢家 inode 不变 —— 即"正在被执行的二进制永远不会被换掉"这个不变量。顺带把手搓的临时文件名换成 `tempfile`，是净简化 |
+| bash 状态转储保留 allexport 但不导出内部变量（`f87dcb43` / `5636471e`） | `computer/local/shell_state.rs` | **保留** | 上游 `dump_bash_state` 的过滤器是 `grep -vE '^set [-+]o (nounset\|errexit\|pipefail)$'`，不含 `allexport`，也不在转储期间关掉它。用户若开着 `set -a`，转储自身的大块 `grok_snap_*` 变量会被导出，后续 execve 因环境过大失败（bash 报 126）。我们的版本在转储前关闭、转储末尾按用户原值恢复 |
+| 内嵌工具版本常量上调（rg 15.1.0 / bfs 4.1.4 / ugrep 7.8.2）+ `GROK_TOOLS_BUNDLE_*_VERSION` 覆盖与校验（`fd52ce42`） | `build.rs`、`Cargo.toml`（`dunce` build-dep、`libc` 从 linux-only 放宽到 unix） | **保留** | 三个常量与我们发布流水线的 pin 完全一致：`scripts/dist/tool-bundles.json` 为 ripgrep 15.1.0、bfs 4.1.4、ugrep 7.8.2。`_VERSION` 覆盖是 `scripts/dist/prepare-release-tools.sh` 注入 pinned 工具时使用的入口，上游没有这套分发流水线所以不需要它 |
+| `reminders/task_completion.rs` 的 `is_reported()` 只读访问器 | 同上 | **保留**（但见 §7.2） | 2 行只读访问器本身无害；它服务的那处断言所掩盖的行为分歧仍未定位，那条单独留在 §7.2 |
+
+**顺带确认的一件事（影响本地验证口径）：** `xai-grok-tools` 的 grep / 终端相关测试**在本机裸跑必然失败**
+（本轮实测 74 个失败，退出码 `-1`），原因是被测代码要启动外部搜索工具子进程，而本机没有
+`ugrep` / `bfs`，构建时也没有 `GROK_TOOLS_BUNDLE_*`。已用 `git stash` 对照确认：把本轮全部改动
+移除后同样失败，且 `grok_build/grep/mod.rs` 是纯上游文件（不在我们的差异里）。CI 的
+`Terminal, tools, and CLI` job 先跑 `scripts/dist/prepare-release-tools.sh` 准备 pinned 工具，所以
+CI 上是绿的。**这不是 fork 引入的问题，也不需要打补丁 —— 只是本地跑 tools 测试前必须先准备工具。**
+
+## 13. `.github/workflows` 的工具链 pin —— 本轮发现并已修复
+
+这是本轮新发现的一处**我们自己的过期修补**，第一轮没有覆盖到。
+
+| 项 | 结论 | 依据 |
+|---|---|---|
+| 三个 workflow 的 5 处 `rustup toolchain install 1.92.0` + `rustup default 1.92.0`，以及 8 处以 `1.92.0` 为组成部分的缓存键 | **改为跟随上游**（已改） | `rust-toolchain.toml` 是**纯上游文件**（不在我们的差异里），上游已在 `ed6d5436`（2026-08-04）把 channel 从 1.93.0 提到 1.94.0；而 rustup 的 toolchain 文件优先级高于 `rustup default`。上一次 CI 运行的日志直接印证：<br>`info: note that the toolchain '1.94.0-x86_64-unknown-linux-gnu' is currently in use (overridden by .../rust-toolchain.toml)`<br>即每个 job 都下载了一个装完就不用的工具链，那个名为 "Install pinned Rust toolchain" 的步骤装的是错的版本 |
+
+**已改成**：每个 job 在 checkout 之后从 `rust-toolchain.toml` 解析一次 channel 写入 `RUST_CHANNEL`，
+安装与全部缓存键都用它，并删掉被 toolchain 文件覆盖、本就无效的 `rustup default`。这样上游下次
+提工具链版本时，我们的 workflow **不需要任何改动** —— 这正是每日同步成本的一个来源被消除。
+
+副作用：缓存键取值改变，本次之后第一次运行会重新填充 Cargo 与 release-build 缓存。
+
+**这一条也修正了 §7.1 的证据口径**：我为 smartstring 做的编译验证用的是 1.94.0，而 CI 实际使用的
+正是 1.94.0（不是 workflow 里写的 1.92.0），所以 §7.1 的结论成立。
+
+## 14. 宏体格式噪音的第二批清理
+
+第一轮清了 3 个文件；本轮做了一次全仓扫描，在我们改过的上游文件里又发现 138 处
+`"key" : value` / `= % e` / `= ? x` 这类 rustfmt 不会产出、且 `cargo fmt --check` 查不出来
+（rustfmt 不进入宏体）的写法。
+
+判据严格化：只有当某条**新增行**做格式归一化之后**恰好等于同一文件里被删除的那条上游行**时，
+才判定为"我们把上游文本写坏了"并还原。据此还原 **15 个文件 94 行**。其余（`acp_session.rs` 12 处、
+`types/resources.rs` 4 处、`session_compact.rs` 2 处等）匹配不到上游对应行，说明位于我们自己新增的
+代码里，本轮**不动** —— 它们是风格问题不是回归，改了反而增加 diff。
+
+## 15. `xai-grok-update`（5 个文件 +282/−41）
+
+| 项 | 结论 | 依据 |
+|---|---|---|
+| 把更新源从 x.ai / GCS 改成我们自己的 GitHub Releases：`GH_RELEASE_REPO`、channel pointer、版本化 asset base（`release_asset_base_url`）、alpha 走 Releases API 选最大 SemVer | **保留** | 上游 `version.rs` 至今是 `GH_RELEASE_REPO = "xai-org-shared/grok-build"`、`CLI_BASE_URL_PRIMARY = "https://x.ai/cli"` 加 GCS 兜底。**这条不是可选项**：不改的话我们的自动更新会把用户的 privacy-hardened 二进制替换成 xAI 的官方构建，等于把整个 fork 的分发与 privacy 收紧全部绕过 |
+| 下载产物的 SHA256SUMS 校验（`checksum_from_manifest` / `sha256_file` / `verify_github_release_checksum`，`sha2` 依赖） | **保留** | 上游 gh-release 下载路径没有任何校验步骤。这条是纯安全增强，与 fork 的 URL 改动可分离，**建议单独提给上游** |
+| `tests/test_subprocess.rs`、`tests/test_install_sh.rs` 的仓库名/URL 断言随之更新 | **保留** | 跟随上面两条，属于必要配套 |
+
+## 16. 同步后测试修补：逐项判定
+
+方法：把补丁还原成上游版本，跑对应测试，让结果而不是推测来定性。下表每条都写了实测结果。
+
+| 提交 | 涉及 | 实测 | 结论 |
+|---|---|---|---|
+| `ea242bf7` auth-retry 大栈包装 | `acp_session_tests/turn/auth_retry_budget_tests.rs`（+140/−104） | 还原上游后**当场复现**：`thread '...fail_closed_401_is_uncharged_and_turn_survives' has overflowed its stack` / `fatal runtime error: stack overflow, aborting`，SIGABRT **整个 shell 测试二进制**，其余 6000+ 测试全部无法报告 | **保留** |
+| `b54cdbb0` chat-history 大栈包装 | `acp_session_tests/turn/chat_history_integrity_tests.rs`（+25/−2） | 同上批次一起还原，同样触发进程级 abort；上游该文件确认**没有**大栈模式（`git show upstream/main:... \| grep stack_size` 无命中） | **保留** |
+| `b54cdbb0` allexport | `xai-grok-tools/computer/local/shell_state.rs` | 见 §12，上游过滤器不含 `allexport` | **保留** |
+| `4c87aa55` doctor 不依赖宿主音频 | `pager/src/doctor_cmd/tests.rs`（+15/−2） | 还原上游后本机（macOS）**通过**，但这不构成依据：`apply_voice_probe` 在 `input_device_info()` 失败时追加一条 Issue，而 Linux 上录音器是 PATH 上的 `pw-record`/`parec`/`arecord` 子进程（`xai-grok-voice/src/audio/capture_linux.rs`），CI 镜像不保证安装；上游断言的是精确 `issue_count() == 1`，任何缺这三个二进制的宿主都会多出一条。macOS 走 CoreAudio 所以本机不复现 | **保留**（并建议提上游，见 §17） |
+| `6146028a` prompt history 竞态 | `pager/src/app/app_view.rs`（+2/−1） | 还原上游后用编译好的测试二进制直接跑 **60 次全过**，本机复现不出 flake。但判定依据是语义不是稳定性：该测试的 "needs_animation 门控" 意图在同一函数里用三条独立的 `needs_animation()` 断言覆盖了，循环体自己的断言消息是 "tick() must poll the history daemon and deliver results" —— 只关心投递。上游把 `tick()` 的返回值（含义是"需要动画"）和"结果到达"用 `&&` 耦合在一起属于附带耦合 | **保留**（2 行，语义更准，代价可忽略） |
+| `5511079c` prompt wiring 栈溢出 / `25705ffd` 收窄内存持久化测试 | `acp_session_tests/cancel_running_task_tests.rs`（+147/−56，其中 21 行是机械字段初始化） | 语义改动是把 `prompt_task.await.expect(...)` 换成 `abort()` + 断言已取消，理由写在代码注释里：被测契约止于 pre-inference 持久化屏障，不应耦合 sampler 去连 `http://localhost` 的错误路径。这消除了一个环境依赖（宿主上若有进程监听 localhost，上游写法的行为会变），且没有削弱该测试声明的契约 | **保留** |
+| `cd71bf73` 终端清理稳定化 | `terminal/local_terminal.rs`（测试内超时 300ms→1s）、`terminal/pty_session.rs`、`xai-tty-utils/src/lib.rs`（`HANGUP_GRACE` 200ms→1s） | 测试内超时放宽属于合理去 flake（被测行为是"超时后的清理"，不是"shell 300ms 内启动"）。但 `HANGUP_GRACE` 是**生产常量**，为测试稳定性把每次终端拆除都拖慢 800ms | **保留，但记入 §17 待办**：正确形态是让该常量可注入，生产保持 200ms、测试用更长值。当前值本身也站得住（在 leader 转发 SIGHUP 之前杀掉它会漏下独立进程组里的子进程），所以本轮不动 |
+| `9ddf85bf` chat state 测试初始化 | `xai-chat-state/src/commands.rs`（+79/−0，主体是多 provider 的两个命令） | 该提交的部分已被后续多 provider 工作吸收，`commands.rs` 现存差异就是 §3 判定保留的 `ReplaceSamplingConfigAndCredentials` / `UpdateCredentialsIfSamplingConfigMatches` | **保留**（并入 §3） |
+| `3929b2d8` session registry gateway 标记 | `agent/mvp_agent/session_registry.rs`（+8/−0） | `rg mark_require_gateway` 全仓**只有定义没有调用者**；上游 `mod.rs:711` 有 `require_gateway` 字段并在 `counts()` 里统计，但上游也**没有**任何写入点。我们加了一个谁都不调的 setter，字段该 inert 还是 inert | **删除**（本轮已删，纯死代码） |
+| `c114eb79` 移除 sessions notify | 该提交删了 `extensions/session_notify.rs` 等 | **不是对上游的分歧**：`git cat-file -e upstream/main:.../extensions/session_notify.rs` → 不存在，上游 `extensions/mod.rs` 也不声明它。那是我们自己先前加的 fork 功能，后来自己撤掉，净差异归零，当前 diff 里根本没有它 | **无需动作** |
+
+**这一节最值得记住的一条方法论：** 判定这类补丁必须问两个问题 —— ①还原上游后**是什么**在失败：
+是断言被改松（§7.2 那种，掩盖行为分歧），还是生产行为确实不同 / 进程直接崩（`ea242bf7` 那种）；
+②上游到底**有没有**这段代码（`c114eb79` 看着像删上游代码，实际上游从来没有过）。只看提交长相
+会两头都判错。
+
+## 17. 待上报上游的清单
+
+以下都是与 fork 业务无关、上游同样受益的通用修复或上游自身的问题。它们目前作为 fork 差异
+长期存在，**推给上游是唯一能真正消除这部分同步成本的办法**。
+
+| # | 内容 | 位置 | 性质 |
+|---|---|---|---|
+| 1 | protoc 依赖追踪的可移植性：`--dependency_out=/dev/stdout` / `--descriptor_set_out=/dev/null` 在 Windows 上不存在 | `crates/build/xai-proto-build/src/lib.rs` | 纯可移植性缺陷 |
+| 2 | 缓存断点不应落在空 Text / 空 ToolResult 上（API 以 “text content blocks must be non-empty” 拒绝） | `xai-grok-sampling-types` `mark_message_cache_breakpoint` | 上游逻辑的真实缺陷 |
+| 3 | `plan.md` 的 symlink / TOCTOU 防护（Plan Mode 自动放行写入的那个文件即安全边界） | `xai-grok-tools/computer/protected_plan_file.rs` | 安全加固 |
+| 4 | bash 状态转储在用户开启 `set -a` 时导出内部大变量，导致后续 execve 因环境过大失败（bash 报 126） | `xai-grok-tools/computer/local/shell_state.rs` | 真实 bug |
+| 5 | 内嵌工具发布不应替换正在被执行的二进制（`rename` → `hard_link`） | `xai-grok-tools/computer/local/embedded_search_tools.rs` | 健壮性 |
+| 6 | 下载产物缺少 SHA256SUMS 校验 | `xai-grok-update/src/auto_update.rs` | 安全增强 |
+| 7 | 插件提供的 hooks 在会话启动时未合入 hook registry，只有显式 reload 后才生效 | `xai-grok-shell/.../spawn.rs` + `hooks_plugins.rs` | 行为缺陷 |
+| 8 | 全量 turn-loop 测试在 debug 构建下超出 libtest 默认线程栈，直接 SIGABRT 掉整个测试二进制 | `auth_retry_budget_tests.rs` / `chat_history_integrity_tests.rs` | 上游测试不可运行（本轮已复现） |
+| 9 | `claude_import` 的 marker 测试读取真实 `~/.claude/settings.json`，在任何存在该文件且带 `env` 段的机器上失败（违反 `AGENTS.md` 的 hermetic 要求） | `xai-grok-shell/src/claude_import.rs`（**纯上游文件**，我们没打补丁） | 上游测试非 hermetic |
+| 10 | doctor 报告断言精确 `issue_count()`，在缺 `pw-record`/`parec`/`arecord` 的宿主上会因多一条音频 Issue 而失败 | `pager/src/doctor_cmd/tests.rs` | 上游测试非 hermetic |
+
+第 9 条按你的判断**不打补丁**：再加一个 fork 侧测试修补正是本轮要减少的东西，CI 上没有
+`~/.claude` 所以不会红。

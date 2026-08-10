@@ -926,7 +926,7 @@ impl ToolsConfig {
                     }
                     Err(e) => {
                         tracing::warn!(
-                            error = % e,
+                            error = %e,
                             "tools.zdr_video_output_s3 failed to parse; ignoring ZDR video output config"
                         );
                         None

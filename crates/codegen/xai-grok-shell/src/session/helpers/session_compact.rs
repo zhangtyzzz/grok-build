@@ -1849,7 +1849,7 @@ mod reasoning_compaction_regression_tests {
         let tools = vec![ToolSpec {
             name: "read_file".to_string(),
             description: Some("Reads a file".to_string()),
-            parameters: json!({ "type" : "object", "properties" : {} }),
+            parameters: json!({ "type": "object", "properties": {} }),
         }];
         let client = Client::new(config.clone()).unwrap();
         generate_session_compact(
@@ -1997,7 +1997,7 @@ mod reasoning_compaction_regression_tests {
         let tools = vec![ToolSpec {
             name: "read_file".to_string(),
             description: Some("Reads a file".to_string()),
-            parameters: json!({ "type" : "object", "properties" : {} }),
+            parameters: json!({ "type": "object", "properties": {} }),
         }];
         let hosted = vec![HostedTool::WebSearch { options: None }];
         let client = Client::new(config.clone()).unwrap();

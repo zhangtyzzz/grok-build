@@ -2751,7 +2751,7 @@ mod tests {
     /// pass-through traffic.
     #[test]
     fn outbound_payload_verbatim_when_unmutated() {
-        let original = r#"{ "b" : 1,    "a": 2 }"#.to_string();
+        let original = r#"{ "b": 1,    "a": 2 }"#.to_string();
         let json = pv(&original);
         let out = select_outbound_payload(Some(&json), false, original.clone());
         assert_eq!(
@@ -2763,7 +2763,7 @@ mod tests {
     /// (semantically equal, but no longer the original odd formatting).
     #[test]
     fn outbound_payload_reserialized_when_mutated() {
-        let original = r#"{ "b" : 1,    "a": 2 }"#.to_string();
+        let original = r#"{ "b": 1,    "a": 2 }"#.to_string();
         let json = pv(&original);
         let out = select_outbound_payload(Some(&json), true, original.clone());
         assert_ne!(
