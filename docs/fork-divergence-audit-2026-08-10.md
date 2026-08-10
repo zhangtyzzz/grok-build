@@ -330,7 +330,9 @@ ok
 
 ---
 
-## 8. 本轮实际改了什么
+## 8. 第一轮实际改了什么
+
+> 两轮合计的改动清单与最终数字见 §19。本节保留第一轮结束时的记录。
 
 | 提交 | 内容 |
 |---|---|
@@ -358,7 +360,9 @@ cargo test -p xai-grok-shell                                 # 6115 passed，1 f
 
 ---
 
-## 9. 两个数
+## 9. 两个数（第一轮结束时）
+
+> 第二轮之后的最终数字见 §19。
 
 ### 9.1 这一轮之后我们相对上游还剩多少差异
 
@@ -395,9 +399,8 @@ cargo test -p xai-grok-shell                                 # 6115 passed，1 f
 - 如果 §7.1（smartstring）与 §7.4（孤立脚本）后续落地，文件数会再减约 22 个，但因为它们
   同步成本本来就是 0，**每日成本不会因此再降** —— 收益是仓库体积和审计面，不是同步成本。
 
-一句话：本轮把「每天都可能踩到的高频冲突点」搬走了，把「体量大但永不冲突」的部分留下了；
-要继续压低每日成本，下一步的杠杆是 §7.5 那批未逐项审计的测试修补，以及把 §4/§1.2 这类通用
-修复推给上游。
+一句话：第一轮把「每天都可能踩到的高频冲突点」搬走了，把「体量大但永不冲突」的部分留下了。
+第二轮继续做完了逐项审计并又发现一处过期修补（§13），最终数字见 §19。
 
 ---
 
@@ -518,3 +521,273 @@ CI 上是绿的。**这不是 fork 引入的问题，也不需要打补丁 —�
 
 第 9 条按你的判断**不打补丁**：再加一个 fork 侧测试修补正是本轮要减少的东西，CI 上没有
 `~/.claude` 所以不会红。
+
+---
+
+## 18. 本地打版本与产物验证（2026-08-10，aarch64-apple-darwin）
+
+CI 的 `Distribution E2E` 只跑 `scripts/dist/test.sh`（用结构合法的合成可执行映像做确定性打包
+校验），**不构建也不运行真实二进制**。本节是在本地把完整链路走通并把产物跑起来的记录。
+未打 tag、未改版本号、未触发任何 release 工作流。
+
+### 18.1 build
+
+```
+$ bash scripts/dist.sh build --target aarch64-apple-darwin --version 0.2.125 --allow-unbundled-tools
+dist: warning: building without release tool bundle(s): GROK_TOOLS_BUNDLE_RG_PATH ... GROK_TOOLS_BUNDLE_UGREP_VERSION
+dist: building grok-build 0.2.125 for aarch64-apple-darwin
+    Finished `release-dist` profile [optimized + debuginfo] target(s) in 17m 15s
+dist: wrote .../release-dist/xai-grok-pager.build-attestation.json
+.../target/aarch64-apple-darwin/release-dist/xai-grok-pager
+```
+
+`--allow-unbundled-tools` 是脚本自身文档指定的本地诊断开关（未提供 pinned 的 rg/bfs/ugrep）。
+
+**过程中撞到并确认了 attestation 的真实约束：** 第一次构建后我提交了一次文档改动，随后打包
+直接被拒：
+
+```
+Error: build attestation: source revision does not match the packaging checkout
+```
+
+这说明 attestation 确实把产物绑定到构建时的源码版本，不是装饰。**修法不是绕过**（存在
+`--allow-unattested` 诊断开关，但用了就等于没验证这条链），而是在稳定的 HEAD 上重新构建：
+
+```
+$ git rev-parse --short HEAD    # 8eecda30，工作树 0 处改动
+$ bash scripts/dist.sh build --target aarch64-apple-darwin --version 0.2.125 --allow-unbundled-tools
+    Finished `release-dist` profile [optimized + debuginfo] target(s) in 6m 26s
+dist: wrote .../xai-grok-pager.build-attestation.json
+```
+
+### 18.2 package / verify / checksums
+
+```
+$ bash scripts/dist.sh package --target aarch64-apple-darwin --version 0.2.125 \
+    --allow-unbundled-tools --output-dir /tmp/grok-dist-out
+verified grok-build 0.2.125 for aarch64-apple-darwin: 13 payload files
+dist: wrote /tmp/grok-dist-out/SHA256SUMS
+dist: created /tmp/grok-dist-out/grok-build-0.2.125-aarch64-apple-darwin.tar.gz
+
+$ bash scripts/dist.sh verify --archive /tmp/grok-dist-out/grok-build-0.2.125-aarch64-apple-darwin.tar.gz
+verified grok-build 0.2.125 for aarch64-apple-darwin: 13 payload files
+
+$ bash scripts/dist.sh checksums --output-dir /tmp/grok-dist-out
+dist: wrote /tmp/grok-dist-out/SHA256SUMS
+
+$ cat /tmp/grok-dist-out/SHA256SUMS
+a0c907ede80c453cc5e6a215326534156d957f6c03acb329bec5f8970b0b8609  grok-build-0.2.125-aarch64-apple-darwin.tar.gz
+```
+
+归档 54,426,276 字节；解包后 14 个文件，独立校验全部通过：
+
+```
+$ shasum -a 256 -c MANIFEST.sha256
+bin/grok: OK
+build-attestation.json: OK
+build-manifest.json: OK
+BUNDLED-TOOLS-NOTICES.md: OK
+LICENSE: OK
+profiles/starter/{agents,hooks,plugins,skills}/.gitkeep: OK
+profiles/starter/config.toml: OK
+profiles/starter/{hooks/README.md,README.md}: OK
+SOURCE_REV: OK
+THIRD-PARTY-NOTICES: OK
+```
+
+`build-manifest.json` 关键字段：
+
+```
+.source.gitCommit      8eecda305dd2b7f492af4dbde759528d252a8e25   # == 构建时 HEAD
+.source.sourceRev      a61c32b12a2b400f212221cd8762e05f9b36828d   # == 仓库 SOURCE_REV
+.source.dirty          False
+.build.profile         release-dist
+.build.features        ["default","jemalloc","release-dist","sandbox-enforce"]
+.build.rustc           rustc 1.94.0 (4a4ef493e 2026-03-02)
+.releaseReady          False        # 正确标记为诊断构建（未捆绑 pinned 工具）
+.artifact.sha256       4c1c1e1b6d56d74e9579a4e9544d8be8d9635a5fcea5c1959335c6a80a824b49
+```
+
+`.build.rustc` 是 **1.94.0**，再次印证 §13：workflow 里硬编码的 1.92.0 从来没被真正使用。
+
+### 18.3 把产物跑起来
+
+```
+$ bin/grok --version
+grok 0.2.125 (8eecda30)
+
+$ file bin/grok
+Mach-O 64-bit executable arm64
+```
+
+版本串里的 commit 与构建时 HEAD 一致。真实使用（`GROK_HOME` 指向临时目录以免污染本机）：
+
+```
+$ grok doctor
+Grok Doctor
+Environment
+  · terminal                     Ghostty
+  · multiplexer                  cmux
+Clipboard
+  · native                       local (pbcopy)
+  · status                       confirmed
+Voice
+  · microphone                   none detected (mic device lookup did not start within 5s)
+Findings
+  ! voice.no-input-device        Voice dictation is unavailable: ...
+1 issue, 0 recommendations
+```
+
+顺带实证了 §16 对 `4c87aa55` 的判断：doctor 确实会因为找不到麦克风而**多出一条 Issue**，
+所以上游那条精确 `issue_count() == 1` 的断言在缺音频工具的宿主上必然失败。
+
+```
+$ grok inspect
+  Environment
+  └ Version: 0.2.125 [unknown]
+  └ Privacy hardened: yes
+  └ CWD: /Users/tianyi/opensourceProjects/grok-build
+  └ Git root: ...
+  └ Project trusted: no
+  Project Instructions (1) / Permissions (2 loaded) / Skills (22) / Agents (3) / Plugins (2)
+
+$ grok models
+You are not authenticated.
+Default model: grok-4.5
+Available models:
+  * grok-4.5 (default)
+
+$ grok sessions list
+No sessions found.
+
+$ grok du
+Disk usage for $GROK_HOME
+    476.0 KB  docs
+     36.0 KB  sessions
+    684.0 KB  total
+```
+
+**`Privacy hardened: yes` 是本节最有价值的一条：** 它证明 `release-dist` 构建确实启用了
+`privacy-hardening`，即 §3 / §10 判定"保留"的那套熔断开关在真实分发产物里是生效的 ——
+这一点此前只由 `Cargo.toml` 的 feature 声明支撑，现在有了产物级证据。
+
+### 18.4 在真实产物上验证 5m / 1h / off 配置
+
+写一份 provider 级 `ttl = "1h"` 加 model 级 `mode = "off"` 覆盖的 `config.toml`：
+
+```
+$ grok models
+Available models:
+  * grok-4.5 (default)
+  - claude-1h
+  - claude-nocache
+```
+
+两个模型都被接受。为确认这不是"未知键被静默忽略"，再故意写一个非法 TTL：
+
+```
+$ # prompt_cache = { mode = "stable_prefix", ttl = "42h" }
+$ grok models
+Error: Failed to create agent config: unknown variant `42h`, expected `5m` or `1h`
+in `provider.anthropic.prompt_cache.ttl`
+```
+
+配置层是严格的、错误信息带完整路径。所以上面 `1h` 被接受确实意味着这颗**打包出来的二进制**
+端到端理解一小时缓存策略。
+
+### 18.5 这一节暴露的一件事
+
+`scripts/dist.sh build` 与 `package` 之间**不能有任何提交**，否则 attestation 校验必然失败。
+这是设计意图（产物绑定源码版本），但脚本用法里没写明，`docs/release-distribution.md` 也只
+提到 `--allow-unattested` 这个诊断出口。已在 §17 之外记一条文档待办：在 `dist.sh` 的 usage
+里明确"build 与 package 必须在同一个 commit 上"，避免下次有人误用 `--allow-unattested` 把
+校验绕过去。
+
+---
+
+## 19. 两轮合计：改了什么，以及两个数
+
+### 19.1 全部改动
+
+| 提交 | 内容 |
+|---|---|
+| `b96300ed` | 还原 13 个上游文件的零价值改动（10 处行尾空行 + 3 个宏体缩进） |
+| `8595f481` | 跟随上游的 Messages 缓存实现：删 tool-definition 断点、删 TTL 双桶 usage、TTL policy 改为上游放置之后的后处理、保留空块守卫；还原 `turn.rs`/`updates.rs` 被写坏的宏体；修订 RFC 与两篇用户文档 |
+| `ae7e0cb6` | 加入本评估报告 |
+| `ba5afb1b` | 记录 plan-mode gate 测试属于真实自有行为，避免后人误删 |
+| `ec4bda42` | 1h prompt cache 通路补断言：请求体里**每一个**断点都必须带 `ttl:"1h"`；新增 `off` 的集成断言 |
+| `65ec6a04` | CI/release workflow 改为从 `rust-toolchain.toml` 解析工具链，删掉无效的 `rustup default 1.92.0` 与 8 处硬编码缓存键 |
+| `23f05ad7` | 删掉死代码 `SessionRegistry::mark_require_gateway`；完成宏体格式清理的第二批（44 行） |
+| `8eecda30` | 报告补完逐项结论（§10–§17） |
+| 本次 | 报告补入本地打版本验证（§18）与最终数字（§19） |
+
+### 19.2 验证
+
+按 owning crate 收窄：
+
+```
+cargo fmt --all -- --check                          # clean
+cargo test -p xai-grok-sampling-types               # 306 passed
+cargo test -p xai-grok-sampler                      # 全绿（含 1h/off 走完整 HTTP/SSE 的集成测试）
+cargo test -p xai-chat-state                        # 352 passed
+cargo test -p xai-grok-shell                        # 6113 / 6116 passed
+cargo check -p xai-grok-shell -p xai-grok-pager -p xai-grok-tools --all-targets   # clean
+```
+
+`xai-grok-shell` 的 3 个失败**全部是宿主相关的上游测试**，单独跑都通过，且都不在本分支的改动
+范围内：`claude_import` 的 marker 测试读真实 `~/.claude/settings.json`（§7.6）；
+`provider_zero_timeout_clamps_to_one_second` 与
+`capture_changes_diff_lazy_baseline_with_existing_history` 在全量并行下对时序敏感。
+
+`xai-grok-tools` 的 74 个失败同样与本分支无关：本机没有 `ugrep`/`bfs`，被测代码要起外部搜索
+工具子进程；已用 `git stash` 对照确认（详见 §12 末段）。CI 的对应 job 会先准备 pinned 工具。
+
+发布链路本地实测见 §18：build → package（attestation 校验通过）→ verify → checksums → 解包 →
+`grok --version` / `doctor` / `inspect` / `models` / `sessions` / `du` 全部真实运行，
+`Privacy hardened: yes`。
+
+### 19.3 数字一：还剩多少差异
+
+代码差异（不含本评估报告自身）：
+
+| 类别 | 审计前 | 两轮之后 | 变化 |
+|---|---|---|---|
+| **修改上游已有文件**（同步冲突面） | 164 个，+8795/−1773 | **135 个，+7933/−1481** | **−29 个文件；新增行 −862，删除行 −292** |
+| 　└ 测试类 | 38 个，+2051/−290 | 32 个，+1658/−238 | −6 个文件（新增的 1h/off 断言使行数略回升） |
+| 　└ 非测试 | 126 个，+6744/−1483 | 103 个，+6275/−1243 | −23 个文件 |
+| 新增自有文件（上游无该路径） | 58 个，+11195 | 58 个，+11242 | +47 行 |
+| 代码合计 | 222 个，+19990/−1773 | **193 个，+19175/−1481** | −29 个文件 |
+
+按「是否产生同步成本」拆：
+
+- **零同步成本：58 个文件、约 11240 行（59%）** —— `.github/`、`scripts/`、`packaging/`、
+  `docs/`、`AGENTS.md`、`third_party/smartstring`。上游不存在这些路径，永远不冲突。
+- **有同步成本：135 个文件、约 9410 行（41%）** —— 主体是多 provider 运行时（shell 74 个
+  文件）、privacy-hardening 门禁、两个安装脚本与 updater 的分发改向、32 个测试文件。
+
+### 19.4 数字二：后续每天同步的成本预计怎么变
+
+**冲突面文件数 164 → 135（−18%），冲突面行数 10568 → 9414（−11%）。若按每日冲突量与被改
+上游文件数近似成正比估算，预期每日冲突处理量下降 15%~20%。**
+
+但真正的收益在**概率**而不是行数，具体有四处：
+
+1. **缓存放置逻辑不再是我们的。** 原先我们改写了上游 `apply_cache_breakpoints` /
+   `mark_message_cache_breakpoint` 的**函数签名**，而上游刚在 `dd04f397` 把这两个函数整体重写
+   过 —— 属于活跃演进区，上游每动一次必冲突。现在除 12 行空块守卫外与上游一致，policy 全在
+   附加层，这块冲突概率降到接近零，并有一条逐字节比对的测试守住。
+2. **usage 字段名回到上游。** TTL 双桶原本让 4 个 crate 的字段都与上游不同名，任何上游 usage
+   改动都会波及三处以上；现在同名。
+3. **工具链不再硬编码。** 上游每次提 `rust-toolchain.toml`（近期已提过两次：1.92→1.93→1.94），
+   过去都要手改 5 处安装步骤与 8 处缓存键，且不改也不报错、只是静默下载一个用不上的工具链。
+   现在为零。
+4. **宏体噪音清零。** 138 处 rustfmt 查不出、diff 里却真实存在的格式差异已全部处理，其中 94 处
+   本就是被写坏的上游原文 —— 这类差异每次同步都要人工确认一遍"是不是我故意改的"。
+
+反向的、压不掉的部分：剩余 41% 冲突面的主体是多 provider 运行时，那是 fork 的立项理由。
+它的同步成本只能靠**把能提上游的提上游**来降 —— §17 列了 10 条候选，其中第 1、4、5、7 条
+（protoc 可移植性、allexport、工具发布、插件 hooks）与 fork 业务完全无关，最容易被上游接受；
+第 8、9、10 条是上游测试自身的问题，提上去还能顺带消掉我们的测试侧补丁。
+
+§7.1（smartstring）与 §7.4（孤立脚本）若后续落地，会再减约 22 个文件，但它们同步成本本来
+就是 0，**每日成本不会因此下降** —— 收益是仓库体积与审计面。
