@@ -276,23 +276,33 @@ task_completion_wake_is_admitted_without_cancel_barrier
 和 `docs/release-distribution.md:283` 那段一起删；若在用，把它挪到仓库外，或改成 workflow
 并去掉 `/Applications/ChatGPT.app` 这类硬编码。
 
-### 7.5 未逐项审计的区域（本轮覆盖不全，如实说明）
+### 7.5 曾经未逐项审计的区域 —— 已在第二轮补完
 
-本轮原计划用 5 个并行子 agent 分区取证，但它们全部因为环境里没有对应模型配置而启动即
-失败（`PROXY_005 No model config found`），一份结论都没产出。因此下列区域**只做了区域级
-判断，没有逐项取证**，报告不为它们给出逐项结论：
+第一轮原计划用 5 个并行子 agent 分区取证，它们全部因为环境里没有对应模型配置而启动即失败
+（`PROXY_005 No model config found`），一份结论都没产出，所以第一轮把下列区域挂成了"未逐项
+审计"。**第二轮已全部补完**，逐项结论见：
 
-- `xai-grok-shell` 剩余的多 provider 实现细节（75 个文件里，除 §1、§2、§3 已定论的部分）；
-- `xai-grok-tools` 除 `protected_plan_file.rs` 外的 12 个文件（`embedded_search_tools.rs`、
-  `shell_state.rs`、几个 tool implementation 的改动，对应 `fd52ce42` / `3753e56f`）；
-- `xai-grok-update`（5 个文件 +282/−41）、`xai-grok-telemetry`（6 个文件 +42/−2）、
-  `crates/build/xai-proto-build`（`09aab64b`）、`xai-grok-tools/build.rs`；
-- 其余「同步后测试修补」提交：`c114eb79`、`3929b2d8`、`ea242bf7`、`5511079c`、`cd71bf73`、
-  `b54cdbb0`、`5636471e`/`f87dcb43`、`4c87aa55`、`6146028a`、`9ddf85bf`、`25705ffd`。
+| 曾挂起的区域 | 现在在哪 |
+|---|---|
+| `xai-grok-telemetry`（6 个文件） | §10 |
+| `crates/build/xai-proto-build`（`09aab64b`） | §11 |
+| `xai-grok-tools` 其余 12 个文件（含 `build.rs`、`embedded_search_tools.rs`、`shell_state.rs`、`fd52ce42` / `3753e56f`） | §12 |
+| `xai-grok-update`（5 个文件） | §15 |
+| 「同步后测试修补」那批提交（`c114eb79`、`3929b2d8`、`ea242bf7`、`5511079c`、`cd71bf73`、`b54cdbb0`、`4c87aa55`、`6146028a`、`9ddf85bf`、`25705ffd`） | §16，逐条附实测结果 |
+| `5636471e` / `f87dcb43`（allexport） | §12 |
+| `xai-grok-shell` 剩余多 provider 实现细节 | §3 保留结论不变；其中被判死代码的一项已删（§16 `3929b2d8`） |
 
-**后面该怎么动：** 这些项适合用本轮验证过的方法逐个判定 —— **把补丁还原成上游版本，跑对应
-测试**。这个方法在本轮已经产出两个明确结论（§7.2 证明补丁掩盖了真实分歧；§7.3 证明补丁与
-生产代码耦合），比读代码猜测可靠。建议按 owning crate 分批，每批一个提交。
+第二轮还额外发现并修掉了第一轮完全没覆盖到的一处过期修补：CI/release workflow 硬编码
+Rust 1.92.0（§13）。
+
+**仍然判不了的只剩两项**，单列在 §7.2 与 §7.3，理由都不是"没时间看"而是"证据不足以定论"：
+
+- §7.2 `auto_wake_suppression_tests.rs`：能确定它掩盖了一处真实行为分歧（还原上游断言后两个
+  测试稳定失败），但**定不了根因在哪个 fork 改动**，因此也定不了该恢复上游行为还是把分歧
+  合法化；
+- §7.3 `search_bootstrap.rs` 的 `#[cfg(test)] claim_hold` 钩子：判定它是否仍必要需要证明上游那版
+  single-flight 测试**不再 flaky**，而 flaky 结论需要在 CI 上重复跑几十次，本轮预算不够；
+  且它与生产文件成对耦合（只还原测试文件会直接编译失败）。
 
 **已顺带核实一项，避免后人误删：** `plan_mode_edit_gate_tests.rs`（`+2/−2`，把期望从
 `ToolLoop::Continue` 改成 `ToolLoop::PermissionReject`）以及与之配套的
