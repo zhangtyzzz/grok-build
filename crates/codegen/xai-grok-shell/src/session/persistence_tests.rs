@@ -483,25 +483,7 @@ async fn manual_rename_next_flush_does_not_revert_backend_title() {
             .all(|t| t.title_is_manual == Some(true)),
         "every save of the manual title must stamp title_is_manual: {titles:?}"
     );
-    let upsert_path = format!("/sessions/{SESSION_ID}");
-    let upserted_title = server.requests().into_iter().rev().find_map(|r| {
-        (r.method == "PUT" && r.path == upsert_path)
-            .then(|| {
-                r.body
-                    .as_ref()?
-                    .get("session")?
-                    .get("title")?
-                    .as_str()
-                    .map(str::to_owned)
-            })
-            .flatten()
-    });
-    assert_eq!(
-        upserted_title.as_deref(),
-        Some(NEW_TITLE),
-        "SetTitle must upsert the session-row title, not only the metadata blob; requests={:?}",
-        request_path_summary(&server)
-    );
+    wait_for_upserted_session_title(&server, SESSION_ID, NEW_TITLE).await;
     actor.stop().await;
 }
 
@@ -554,6 +536,39 @@ fn request_path_summary(server: &xai_grok_test_support::MockInferenceServer) -> 
         .iter()
         .map(|r| format!("{} {}", r.method, r.path))
         .collect()
+}
+
+async fn wait_for_upserted_session_title(
+    server: &xai_grok_test_support::MockInferenceServer,
+    session_id: &str,
+    expected: &str,
+) {
+    let path = format!("/sessions/{session_id}");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let upserted_title = server.requests().into_iter().rev().find_map(|r| {
+            (r.method == "PUT" && r.path == path)
+                .then(|| {
+                    r.body
+                        .as_ref()?
+                        .get("session")?
+                        .get("title")?
+                        .as_str()
+                        .map(str::to_owned)
+                })
+                .flatten()
+        });
+        if upserted_title.as_deref() == Some(expected) {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for session-row title {expected:?}; requests={:?}",
+                request_path_summary(server)
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 }
 
 async fn wait_for_save_session_titles(
@@ -948,25 +963,7 @@ async fn reset_title_to_auto_then_generated_title_is_adopted() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
-    let upsert_path = format!("/sessions/{SESSION_ID}");
-    let upserted_title = server.requests().into_iter().rev().find_map(|r| {
-        (r.method == "PUT" && r.path == upsert_path)
-            .then(|| {
-                r.body
-                    .as_ref()?
-                    .get("session")?
-                    .get("title")?
-                    .as_str()
-                    .map(str::to_owned)
-            })
-            .flatten()
-    });
-    assert_eq!(
-        upserted_title.as_deref(),
-        Some(""),
-        "ClearTitle must upsert the session-row title empty, not only the metadata blob; requests={:?}",
-        request_path_summary(&server)
-    );
+    wait_for_upserted_session_title(&server, SESSION_ID, "").await;
 
     let post_reset: crate::session::persistence::Summary =
         serde_json::from_slice(&std::fs::read(&summary_path).unwrap()).unwrap();
