@@ -907,6 +907,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(pty_session)]
     async fn long_running_command_emits_balanced_started_then_ended_pair() {
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -942,6 +943,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    #[serial_test::serial(pty_session)]
     async fn close_pty_kills_a_background_grandchild() {
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -987,6 +989,7 @@ mod tests {
     /// tests that follow.
     #[cfg(unix)]
     #[tokio::test]
+    #[serial_test::serial(pty_session)]
     async fn scope_teardown_kills_a_background_grandchild() {
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -1032,6 +1035,7 @@ mod tests {
 
     /// Covers the failure paths in [`create_pty`], which reap by returning.
     #[tokio::test]
+    #[serial_test::serial(pty_session)]
     async fn dropping_an_unregistered_shell_reaps_it() {
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -1107,6 +1111,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(pty_session)]
     async fn idle_shell_emits_no_busy_notifications() {
         tokio::task::LocalSet::new()
             .run_until(async {
