@@ -162,6 +162,19 @@ case "$(uname -m)" in
     *)                    echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
+# Rosetta lies: in a translated shell on Apple Silicon, uname -m reports
+# x86_64. Install the native arm64 build (faster startup, no translation).
+# sysctl lives in /usr/sbin, which pruned PATHs often drop — resolve the
+# binary first (PATH, then absolute) so the probe cannot quietly keep
+# x86_64. A probe that runs and finds no key is a genuine Intel Mac.
+if [ "$os" = "macos" ] && [ "$arch" = "x86_64" ]; then
+    sysctl_bin="$(command -v sysctl || echo /usr/sbin/sysctl)"
+    if [ "$("$sysctl_bin" -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+        echo "Apple Silicon detected (Rosetta shell); installing the native arm64 build." >&2
+        arch="aarch64"
+    fi
+fi
+
 RELEASE_REPO="zhangtyzzz/grok-build"
 LATEST_RELEASE_BASE="https://github.com/${RELEASE_REPO}/releases/latest/download"
 TAGGED_RELEASE_BASE="https://github.com/${RELEASE_REPO}/releases/download"
