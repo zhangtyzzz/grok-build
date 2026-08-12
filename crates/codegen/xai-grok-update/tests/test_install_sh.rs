@@ -388,7 +388,11 @@ fn write_fake_macos_x86_host(dir: &Path, host: FakeHost) {
 fn install_urls_on_fake_host(script: &str, host: FakeHost) -> Option<String> {
     let script_file = script_path(script)?;
     let fakedir = tempfile::tempdir().unwrap();
-    write_fake_curl(fakedir.path());
+    let platform = match host {
+        FakeHost::AppleSiliconRosetta => "macos-aarch64",
+        FakeHost::IntelMac => "macos-x86_64",
+    };
+    write_fake_curl(fakedir.path(), platform);
     write_fake_macos_x86_host(fakedir.path(), host);
     let url_log = fakedir.path().join("urls.log");
 
