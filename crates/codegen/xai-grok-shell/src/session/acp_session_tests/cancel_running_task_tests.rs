@@ -12,6 +12,18 @@ impl AsyncTerminalRunner for DummyTerminal {
         Err(TerminalError::Other("dummy terminal".into()))
     }
 }
+
+/// Run turn-loop tests with the same stack budget as production session threads.
+fn run_on_session_sized_thread(name: &'static str, body: impl FnOnce() + Send + 'static) {
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(body)
+        .expect("spawn session-sized test thread")
+        .join()
+        .expect("session-sized test thread panicked");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn persist_ack_waits_for_disk_flush_before_success() {
     let local = tokio::task::LocalSet::new();
@@ -483,11 +495,15 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
         })
         .await;
 }
-#[tokio::test(flavor = "current_thread")]
-async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
+#[test]
+fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history() {
+    run_on_session_sized_thread("disabled-memory-injection", || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build disabled-memory test runtime");
+        let local = tokio::task::LocalSet::new();
+        runtime.block_on(local.run_until(async {
             let session_dir = tempfile::tempdir().expect("tempdir");
             let session_info = crate::session::info::Info {
                 id: acp::SessionId::new("persist-memory-disabled"),
@@ -838,8 +854,8 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                     .injection_count
                     .load(std::sync::atomic::Ordering::Relaxed)
             );
-        })
-        .await;
+        }));
+    });
 }
 /// Hard teardown (`kill_background_tasks = true`, the subagent-shutdown path)
 /// aborts the running turn AND drains every queued prompt, responding
@@ -1446,11 +1462,15 @@ async fn maybe_apply_interrupt_envelope_skips_verbatim() {
 /// preceding `<system-reminder>`. Synchronizes on the persist-ack (fires
 /// after the user item is pushed, before the model call), then aborts the
 /// turn so the dead-URL model call can't hang.
-#[tokio::test(flavor = "current_thread")]
-async fn handle_prompt_frames_interrupt_on_user_message() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
+#[test]
+fn handle_prompt_frames_interrupt_on_user_message() {
+    run_on_session_sized_thread("interrupt-envelope", || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build interrupt-envelope test runtime");
+        let local = tokio::task::LocalSet::new();
+        runtime.block_on(local.run_until(async {
             let actor = actor_with_persistence_drain().await;
             actor.events.set_pending_interrupt_reminder();
             let query = "follow-up after interrupt";
@@ -1491,16 +1511,20 @@ async fn handle_prompt_frames_interrupt_on_user_message() {
             assert_eq!(text, frame_user_turn(INTERRUPT_NOTE, &expected_assembled));
             assert!(!actor.events.take_pending_interrupt_reminder());
             prompt_task.abort();
-        })
-        .await;
+        }));
+    });
 }
 /// Integration: a verbatim user turn must stay byte-identical to the caller
 /// text even when the interrupt one-shot is armed.
-#[tokio::test(flavor = "current_thread")]
-async fn handle_prompt_verbatim_skips_interrupt_envelope() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
+#[test]
+fn handle_prompt_verbatim_skips_interrupt_envelope() {
+    run_on_session_sized_thread("verbatim-interrupt-envelope", || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build verbatim-envelope test runtime");
+        let local = tokio::task::LocalSet::new();
+        runtime.block_on(local.run_until(async {
             let actor = actor_with_persistence_drain().await;
             actor.events.set_pending_interrupt_reminder();
             let query = "caller-owned follow-up";
@@ -1540,81 +1564,79 @@ async fn handle_prompt_verbatim_skips_interrupt_envelope() {
             assert!(!user.text_content().contains(INTERRUPT_NOTE));
             assert!(!actor.events.take_pending_interrupt_reminder());
             prompt_task.abort();
-        })
-        .await;
+        }));
+    });
 }
 /// Send-now must use the full interjection envelope (prefix + already-wrapped
 /// `<user_query>` + unfinished-task trailer), not the note prefix alone.
 #[test]
 fn handle_prompt_send_now_frames_interjection_envelope() {
-    std::thread::Builder::new()
-        .name("send-now-interjection-envelope".to_string())
-        .stack_size(8 * 1024 * 1024)
-        .spawn(|| {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("build send-now envelope test runtime");
-            let local = tokio::task::LocalSet::new();
-            runtime.block_on(local.run_until(async {
-                let actor = actor_with_persistence_drain().await;
-                let query = "create /tmp/A";
-                let prompt_blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(
-                    query.to_string(),
-                ))];
-                let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-                let actor_for_prompt = actor.clone();
-                let prompt_task = tokio::task::spawn_local(async move {
-                    actor_for_prompt
-                        .handle_prompt(
-                            "send-now-envelope-test",
-                            prompt_blocks,
-                            PromptMode::Agent,
-                            None,
-                            None,
-                            None,
-                            None,
-                            false,
-                            true,
-                            None,
-                            Some(ack_tx),
-                            None,
-                        )
-                        .await
-                });
-                assert!(ack_rx.await.is_ok(), "persist ack should resolve");
-                let conv = actor.chat_state_handle.get_conversation().await;
-                let user = conv
-                    .iter()
-                    .find(|item| {
-                        matches!(item, ConversationItem::User(u) if u.synthetic_reason.is_none())
-                            && item.text_content().contains(query)
-                    })
-                    .expect("the send-now user message must be in the conversation");
-                let expected_assembled = format!("<user_query>\n{query}\n</user_query>");
-                assert_eq!(
-                    user.text_content(),
-                    frame_user_turn(
-                        xai_interjection_core::INTERJECTION_NOTE,
-                        &expected_assembled
+    run_on_session_sized_thread("send-now-interjection-envelope", || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build send-now envelope test runtime");
+        let local = tokio::task::LocalSet::new();
+        runtime.block_on(local.run_until(async {
+            let actor = actor_with_persistence_drain().await;
+            let query = "create /tmp/A";
+            let prompt_blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(
+                query.to_string(),
+            ))];
+            let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+            let actor_for_prompt = actor.clone();
+            let prompt_task = tokio::task::spawn_local(async move {
+                actor_for_prompt
+                    .handle_prompt(
+                        "send-now-envelope-test",
+                        prompt_blocks,
+                        PromptMode::Agent,
+                        None,
+                        None,
+                        None,
+                        None,
+                        false,
+                        true,
+                        None,
+                        Some(ack_tx),
+                        None,
                     )
-                );
-                prompt_task.abort();
-            }));
-        })
-        .expect("spawn send-now envelope test thread")
-        .join()
-        .expect("send-now envelope test thread panicked");
+                    .await
+            });
+            assert!(ack_rx.await.is_ok(), "persist ack should resolve");
+            let conv = actor.chat_state_handle.get_conversation().await;
+            let user = conv
+                .iter()
+                .find(|item| {
+                    matches!(item, ConversationItem::User(u) if u.synthetic_reason.is_none())
+                        && item.text_content().contains(query)
+                })
+                .expect("the send-now user message must be in the conversation");
+            let expected_assembled = format!("<user_query>\n{query}\n</user_query>");
+            assert_eq!(
+                user.text_content(),
+                frame_user_turn(
+                    xai_interjection_core::INTERJECTION_NOTE,
+                    &expected_assembled
+                )
+            );
+            prompt_task.abort();
+        }));
+    });
 }
 /// Integration: a synthetic-origin turn (here `scheduler-fired-*`) driven
 /// between the abort and the user's resend must NOT consume the one-shot or
 /// inject the reminder — it has to survive to the next *genuine* user turn.
 /// Guards the `PromptOrigin::User` gate on the injection call.
-#[tokio::test(flavor = "current_thread")]
-async fn handle_prompt_synthetic_origin_preserves_interrupt_reminder() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
+#[test]
+fn handle_prompt_synthetic_origin_preserves_interrupt_reminder() {
+    run_on_session_sized_thread("synthetic-interrupt-envelope", || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build synthetic-envelope test runtime");
+        let local = tokio::task::LocalSet::new();
+        runtime.block_on(local.run_until(async {
             let actor = actor_with_persistence_drain().await;
             actor.events.set_pending_interrupt_reminder();
             let prompt_blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(
@@ -1653,8 +1675,8 @@ async fn handle_prompt_synthetic_origin_preserves_interrupt_reminder() {
                 "a synthetic-origin turn must not inject the interrupt envelope"
             );
             prompt_task.abort();
-        })
-        .await;
+        }));
+    });
 }
 #[tokio::test(flavor = "current_thread")]
 async fn cancel_running_task_interactive_preserves_queued_work() {
