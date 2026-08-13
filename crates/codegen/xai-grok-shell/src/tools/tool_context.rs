@@ -228,6 +228,9 @@ pub struct ToolContext {
     /// contexts without one (subagents, defaults). Spawn sites enroll children
     /// into it; enrolled children are killed when the session closes.
     pub process_scope: Option<ProcessScope>,
+    /// Same Arc as `SessionRegistry`'s retained heal lock so the actor tick
+    /// and tray `list_running` cannot double-emit `SubagentFinished`.
+    pub(crate) live_orphan_heal_lock: Arc<tokio::sync::Mutex<()>>,
 }
 impl ToolContext {
     pub(crate) fn clamp_task_model_request(
@@ -313,6 +316,7 @@ impl ToolContext {
             sampler_retry_only_before_output: false,
             session_cmd_tx: None,
             process_scope: None,
+            live_orphan_heal_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
     pub(crate) fn with_file_state_handle(mut self, handle: FileStateHandle) -> Self {
@@ -404,6 +408,7 @@ mod tests {
                 sampler_retry_only_before_output: false,
                 session_cmd_tx: None,
                 process_scope: None,
+                live_orphan_heal_lock: Arc::new(tokio::sync::Mutex::new(())),
             }
         }
     }

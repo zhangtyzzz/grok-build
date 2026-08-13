@@ -101,6 +101,10 @@ jobs:
 
       - name: Run shell tests
         run: cargo test --locked -p xai-grok-shell --lib
+        env:
+          # Shell turn futures are sized for the production session thread,
+          # whose stack budget is 8 MiB. Match it for libtest worker threads.
+          RUST_MIN_STACK: "8388608"
 
       - name: Run focused clippy
         run: |
