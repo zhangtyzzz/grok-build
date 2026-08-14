@@ -1559,6 +1559,7 @@ async fn promote_queued_as_interjections_stops_at_send_now() {
 /// Product gate: with Steer off, a held plain row must not promote at a
 /// safe point (queue stays; no interjection in conversation).
 #[tokio::test]
+#[serial_test::serial(follow_up_steer_cache)]
 async fn drain_at_safe_point_with_steer_off_does_not_promote_held_row() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1592,6 +1593,7 @@ async fn drain_at_safe_point_with_steer_off_does_not_promote_held_row() {
 /// Product gate: with Steer on, a held plain row promotes and drains into a
 /// synthetic interjection user item.
 #[tokio::test]
+#[serial_test::serial(follow_up_steer_cache)]
 async fn drain_at_safe_point_with_steer_on_promotes_and_drains_held_row() {
     let local = tokio::task::LocalSet::new();
     local

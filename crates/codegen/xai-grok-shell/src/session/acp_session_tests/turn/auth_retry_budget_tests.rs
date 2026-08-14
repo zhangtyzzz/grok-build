@@ -241,9 +241,8 @@ const SESSION_TEST_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
 
 /// Drive one turn-loop test body on a thread with a session-sized stack.
 ///
-/// `start_paused` auto-advances tokio's clock so the retry backoff ladder
-/// resolves instantly; the `LocalSet` is what lets the body use
-/// `spawn_local` (see [`drain_gateway`]).
+/// `start_paused` is available to tests whose entire turn is Tokio-only; the
+/// `LocalSet` is what lets the body use `spawn_local` (see [`drain_gateway`]).
 fn run_on_session_sized_thread<F>(name: &'static str, start_paused: bool, body: fn() -> F)
 where
     F: std::future::Future<Output = ()> + 'static,
@@ -330,12 +329,14 @@ async fn fail_closed_401_is_uncharged_and_turn_survives_impl() {
 /// Real credential rejections must still terminate: when every request
 /// carries a bearer the server rejects, the escalating budget exhausts after
 /// `MAX_RETRIES` and the failure names authenticated rejections — not a
-/// generic budget message. The paused clock auto-advances the backoff ladder.
+/// generic budget message. This test uses a real clock because turn finalization
+/// launches a git subprocess, which cannot make progress while Tokio's paused
+/// clock auto-advances the outer timeout.
 #[test]
 fn authenticated_401s_still_exhaust_after_three_retries() {
     run_on_session_sized_thread(
         "auth-retry-budget-exhaust",
-        true,
+        false,
         authenticated_401s_still_exhaust_after_three_retries_impl,
     );
 }
