@@ -684,6 +684,7 @@ mod tests {
         ConfigModelOverride {
             provider: Some("provider-a".into()),
             model: Some("m".into()),
+            model_family: None,
             base_url: Some("https://example.com".into()),
             name: Some("Model M".into()),
             description: Some("desc".into()),

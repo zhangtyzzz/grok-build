@@ -319,7 +319,11 @@ fn persist_ack_waits_for_disk_flush_before_success() {
                 recap_epoch: std::cell::Cell::new(0),
                 turn_summary_task: std::cell::RefCell::new(None),
                 turn_summary_generation: std::cell::Cell::new(0),
+                title_refresh_task: std::cell::RefCell::new(None),
+                title_refresh_generation: std::cell::Cell::new(0),
+                next_title_refresh_idx: std::cell::Cell::new(0),
                 turn_summary_enabled: false,
+                title_refresh_enabled: false,
                 session_turn_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 streaming_turn_capture: parking_lot::Mutex::new(StreamingTurnCapture::default()),
                 turn_stream_drained: parking_lot::Mutex::new(None),
@@ -627,7 +631,8 @@ fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history() {
                 search_config: crate::config::MemorySearchConfig::default(),
                 watcher: None,
                 stale_claim_secs: 60,
-                search_source: "tool",
+                search_source: crate::session::memory::MemorySearchSource::Tool,
+                observation_sink: crate::session::memory::noop_memory_observation_sink(),
                 embedding_credentials: crate::session::memory::EndpointScopedCredentials::none(),
             };
             let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<SessionEvent>();
@@ -820,7 +825,11 @@ fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history() {
                 recap_epoch: std::cell::Cell::new(0),
                 turn_summary_task: std::cell::RefCell::new(None),
                 turn_summary_generation: std::cell::Cell::new(0),
+                title_refresh_task: std::cell::RefCell::new(None),
+                title_refresh_generation: std::cell::Cell::new(0),
+                next_title_refresh_idx: std::cell::Cell::new(0),
                 turn_summary_enabled: false,
+                title_refresh_enabled: false,
                 session_turn_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 streaming_turn_capture: parking_lot::Mutex::new(StreamingTurnCapture::default()),
                 turn_stream_drained: parking_lot::Mutex::new(None),
@@ -1130,7 +1139,11 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 recap_epoch: std::cell::Cell::new(0),
                 turn_summary_task: std::cell::RefCell::new(None),
                 turn_summary_generation: std::cell::Cell::new(0),
+                title_refresh_task: std::cell::RefCell::new(None),
+                title_refresh_generation: std::cell::Cell::new(0),
+                next_title_refresh_idx: std::cell::Cell::new(0),
                 turn_summary_enabled: false,
+                title_refresh_enabled: false,
                 session_turn_active: std::sync::Arc::new(
                     std::sync::atomic::AtomicBool::new(false),
                 ),
@@ -1172,13 +1185,16 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                         screen_mode: None,
                         verbatim: false,
                         json_schema: None,
-                        origin: crate::session::PromptOrigin::User,
+                        input_origin: InputOrigin::new(
+                            crate::session::PromptOrigin::User,
+                        ),
                         task_wake_fallback: None,
                         tool_overrides_update: None,
                         respond_to: tx,
                         persist_ack: None,
                         parsed_prompt_tx: None,
                         queue_meta: None,
+                        queue_mutation_policy: QueueMutationPolicy::hidden(),
                         send_now: false,
                     });
             }
@@ -1709,7 +1725,7 @@ async fn cancel_running_task_interactive_preserves_queued_work() {
             screen_mode: None,
             verbatim: false,
             json_schema: None,
-            origin: crate::session::PromptOrigin::User,
+            input_origin: InputOrigin::new(crate::session::PromptOrigin::User),
             task_wake_fallback: None,
             tool_overrides_update: None,
             respond_to,
@@ -1724,6 +1740,7 @@ async fn cancel_running_task_interactive_preserves_queued_work() {
                 text: String::new(),
                 combined_texts: None,
             }),
+            queue_mutation_policy: QueueMutationPolicy::editable(),
             send_now: false,
         };
         (item, rx)
@@ -2267,7 +2284,7 @@ async fn cancel_resolves_front_when_running_task_is_none() {
             screen_mode: None,
             verbatim: false,
             json_schema: None,
-            origin: crate::session::PromptOrigin::User,
+            input_origin: InputOrigin::new(crate::session::PromptOrigin::User),
             task_wake_fallback: None,
             tool_overrides_update: None,
             respond_to,
@@ -2282,6 +2299,7 @@ async fn cancel_resolves_front_when_running_task_is_none() {
                 text: String::new(),
                 combined_texts: None,
             }),
+            queue_mutation_policy: QueueMutationPolicy::editable(),
             send_now: false,
         };
         (item, rx)
@@ -2682,7 +2700,11 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 recap_epoch: std::cell::Cell::new(0),
                 turn_summary_task: std::cell::RefCell::new(None),
                 turn_summary_generation: std::cell::Cell::new(0),
+                title_refresh_task: std::cell::RefCell::new(None),
+                title_refresh_generation: std::cell::Cell::new(0),
+                next_title_refresh_idx: std::cell::Cell::new(0),
                 turn_summary_enabled: false,
+                title_refresh_enabled: false,
                 session_turn_active: std::sync::Arc::new(
                     std::sync::atomic::AtomicBool::new(false),
                 ),
@@ -2847,7 +2869,7 @@ async fn cancel_keeps_remaining_queued_prompts_visible_to_clients() {
             screen_mode: None,
             verbatim: false,
             json_schema: None,
-            origin: crate::session::PromptOrigin::User,
+            input_origin: InputOrigin::new(crate::session::PromptOrigin::User),
             task_wake_fallback: None,
             tool_overrides_update: None,
             respond_to,
@@ -2862,6 +2884,7 @@ async fn cancel_keeps_remaining_queued_prompts_visible_to_clients() {
                 text: String::new(),
                 combined_texts: None,
             }),
+            queue_mutation_policy: QueueMutationPolicy::editable(),
             send_now: false,
         }
     }

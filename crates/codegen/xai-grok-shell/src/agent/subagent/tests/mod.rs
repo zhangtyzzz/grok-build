@@ -1822,6 +1822,7 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
             user_selectable: true,
             id: None,
             model_ref: None,
+            model_family: None,
             model: model_id.to_string(),
             base_url: String::new(),
             name: None,
