@@ -533,6 +533,9 @@ pub(super) async fn run_session(
                                 s.resume_plan_approval(completion_tx).await;
                             });
                         }
+                        SessionCommand::TitleRenamed { manual } => {
+                            session.on_title_renamed(manual);
+                        }
                         SessionCommand::GetToolOverrides { respond_to } => {
                             let _ = respond_to.send(session.effective_tool_overrides());
                         }
@@ -614,6 +617,7 @@ pub(super) async fn run_session(
                                 .queue_input(QueueInputRequest {
                                     prompt_blocks,
                                     prompt_id,
+                                    input_origin: InputOrigin::new(origin),
                                     prompt_mode,
                                     trace_gcs_config,
                                     artifact_tracker,
@@ -1007,11 +1011,8 @@ pub(super) async fn run_session(
                             session.handle_hold_edit(id).await;
                         }
                         SessionCommand::ReleaseEdit { id } => {
-                            {
-                                let mut state = session.state.lock().await;
-                                state.edit_holds.remove(&id);
-                            }
-                            // Unblocks a front that was parked under edit hold.
+                            session.handle_release_edit(&id).await;
+                            // Unblocks an editable front that was parked under edit hold.
                             SessionActor::maybe_start_running_task(session.clone(), completion_tx.clone()).await;
                         }
                         SessionCommand::InterjectQueuedPrompt { id, expected_version, owner, new_text } => {
@@ -2042,13 +2043,14 @@ pub(super) async fn run_session(
                                     screen_mode: None,
                                     verbatim: true,
                                     json_schema: None,
-                                    origin: super::PromptOrigin::GoalSummary,
+                                    input_origin: InputOrigin::new(super::PromptOrigin::GoalSummary),
                                     task_wake_fallback: None,
                                     tool_overrides_update: None,
                                     respond_to,
                                     persist_ack: None,
                                     parsed_prompt_tx: None,
                                     queue_meta: None,
+                                    queue_mutation_policy: QueueMutationPolicy::hidden(),
                                     send_now: false,
                                 });
                             }
@@ -2078,7 +2080,10 @@ pub(super) async fn run_session(
                             {
                                 let mut state = session.state.lock().await;
                                 let workflow_wake_queued = state.pending_inputs.iter().any(|item| {
-                                    matches!(item.origin, super::PromptOrigin::WorkflowCompleted { .. })
+                                    matches!(
+                                        item.input_origin.as_prompt_origin(),
+                                        super::PromptOrigin::WorkflowCompleted { .. }
+                                    )
                                 });
                                 if workflow_wake_queued {
                                     continue;
@@ -2093,15 +2098,16 @@ pub(super) async fn run_session(
                                     screen_mode: None,
                                     verbatim: true,
                                     json_schema: None,
-                                    origin: super::PromptOrigin::WorkflowCompleted {
+                                    input_origin: InputOrigin::new(super::PromptOrigin::WorkflowCompleted {
                                         completion_id: format!("{run_id}-{revision}"),
-                                    },
+                                    }),
                                     task_wake_fallback: None,
                                     tool_overrides_update: None,
                                     respond_to,
                                     persist_ack: None,
                                     parsed_prompt_tx: None,
                                     queue_meta: None,
+                                    queue_mutation_policy: QueueMutationPolicy::hidden(),
                                     send_now: false,
                                 });
                             }
@@ -2176,6 +2182,7 @@ pub(super) async fn run_session(
                             // Session is ending: do not leave a side-call
                             // holding an Arc into this actor.
                             session.abort_turn_summary();
+                            session.abort_title_refresh();
                             // This arm returns; an unanswered turn would race
                             // teardown and report `EndTurn` for unfinished work.
                             if kind == crate::session::ShutdownKind::CancelRunningTurn {
@@ -2303,6 +2310,9 @@ pub(super) async fn run_session(
                     // work the user aborted.
                     if turn_ran && turn_succeeded && owned_completion {
                         session.restart_turn_summary(completed_prompt_id);
+                        // Early-session auto-title refresh (turns 3 and 6),
+                        // then frozen. Same success gating as the turn summary.
+                        session.maybe_refresh_title();
                     }
                 }
         }
