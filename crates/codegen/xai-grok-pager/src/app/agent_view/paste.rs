@@ -2007,6 +2007,10 @@ pub(super) mod paste_key_tests {
         let placement = tool_media_placement(path.clone());
         assert!(agent.build_inline_media_escapes(&placement).is_none());
         assert!(agent.inline_media_load_failed.contains_key(&path));
+        // Some CI filesystems expose ctime at one-second granularity. Cross a
+        // full tick so this fixture actually exercises the ctime change it
+        // claims to test instead of intermittently reproducing the old stamp.
+        std::thread::sleep(std::time::Duration::from_secs(1));
         std::fs::write(&path, &png).unwrap();
         pin_mtime(&path);
         assert!(
