@@ -1,23 +1,22 @@
-//! The registry is the source of truth and the operator tables are
-//! hand-maintained mirrors with no compile-time tripwire of their own. This test
-//! is theirs.
+//! The registry is the source of truth and the operator table is a
+//! hand-maintained mirror with no compile-time tripwire of its own. This test is
+//! its.
 
 use xai_grok_shell::agent::config::FEATURES;
 
-const ENTERPRISE: &str = include_str!("../docs/internal/25-enterprise.md");
-const ENV_VARS: &str = include_str!("../docs/internal/22-environment-variables.md");
+const CONFIGURATION: &str = include_str!("../docs/user-guide/05-configuration.md");
 
 #[test]
 fn every_registered_feature_reaches_the_operator() {
     for spec in FEATURES {
         assert!(
-            ENTERPRISE.contains(&format!("`{}`", spec.key)),
-            "{} has no row in the 25-enterprise.md pinning table",
+            CONFIGURATION.contains(&format!("`{}`", spec.key)),
+            "{} has no row in the 05-configuration.md feature table",
             spec.key,
         );
         assert!(
-            ENV_VARS.contains(&format!("`{}`", spec.env)),
-            "{} is undocumented in 22-environment-variables.md",
+            CONFIGURATION.contains(&format!("`{}`", spec.env)),
+            "{} is undocumented in 05-configuration.md",
             spec.env,
         );
     }

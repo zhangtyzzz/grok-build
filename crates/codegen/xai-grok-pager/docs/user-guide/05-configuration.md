@@ -27,7 +27,7 @@ A harness or ACP client that launches `grok agent stdio` can inject settings wit
 - **`GROK_CONFIG`**: an inline JSON object overlay.
 - **`GROK_CONFIG_PATH`**: an *additional* file overlay (not a replacement for `config.toml`), a JSON or TOML file read by its extension (`.json` → JSON, else TOML). `GROK_CONFIG` wins if both are set. An empty `GROK_CONFIG` is treated as unset, and a malformed one logs a warning and falls through to `GROK_CONFIG_PATH`.
 
-The overlay is **deep-merged** on top of your `config.toml` (it overrides only the keys it sets), placed above the user/managed layers but **below** `requirements.toml` / MDM so an enterprise pin still wins. A malformed blob is ignored with a warning. This mirrors `CODEX_CONFIG` from the `codex-acp` adapter (a JSON object merged into the session config); Grok is ACP-native, so the overlay lives in the agent itself. It only affects settings read from the merged config, and it is **not** a permission-escalation path. The overlay is confined, fail-closed, to an **allowlist** of soft settings (`models`, `features`, a narrowed `toolset`, and a `shell_environment_policy` limited to its filter fields, which select among env names the launcher already controls and cannot inject an env value into tool subprocesses); every other table is dropped at the choke point, so the overlay cannot spawn commands, set auth policy, redirect network traffic, elevate trust, or add a discovery source. Even on the allowlisted settings, a specific set of security gates read the raw disk layers rather than the overlay. The `ConfigLayers::env_overlay` rustdoc is the canonical list of what the overlay can and cannot reach and which gates read it overlay-free; see also the [internal environment-variables reference](../internal/22-environment-variables.md). Use `GROK_DEFAULT_SELECTED_PERMISSION` for headless permission control. For example, to set the default reasoning effort:
+The overlay is **deep-merged** on top of your `config.toml` (it overrides only the keys it sets), placed above the user/managed layers but **below** `requirements.toml` / MDM so an enterprise pin still wins. A malformed blob is ignored with a warning. This mirrors `CODEX_CONFIG` from the `codex-acp` adapter (a JSON object merged into the session config); Grok is ACP-native, so the overlay lives in the agent itself. It only affects settings read from the merged config, and it is **not** a permission-escalation path. The overlay is confined, fail-closed, to an **allowlist** of soft settings (`models`, `features`, a narrowed `toolset`, and a `shell_environment_policy` limited to its filter fields, which select among env names the launcher already controls and cannot inject an env value into tool subprocesses); every other table is dropped at the choke point, so the overlay cannot spawn commands, set auth policy, redirect network traffic, elevate trust, or add a discovery source. Even on the allowlisted settings, a specific set of security gates read the raw disk layers rather than the overlay. The `ConfigLayers::env_overlay` rustdoc is the canonical list of what the overlay can and cannot reach and which gates read it overlay-free; see also the [registered feature switches](#registered-boolean-feature-switches). Use `GROK_DEFAULT_SELECTED_PERMISSION` for headless permission control. For example, to set the default reasoning effort:
 
 ```bash
 GROK_CONFIG='{"models": {"default_reasoning_effort": "high"}}' grok agent stdio
@@ -104,11 +104,35 @@ respect_gitignore = false              # default: false; set true to make every 
 # Any other over-cap (including a second 2× burst) keeps the first K.
 # Defaults: image 8, video 4.
 # Env vars GROK_MAX_PARALLEL_IMAGE_GEN_CALLS / GROK_MAX_PARALLEL_VIDEO_GEN_CALLS
-# override these values (see environment-variables doc).
+# override these values.
 # [tools.media_gen]
 # max_parallel_image_gen_calls = 8
 # max_parallel_video_gen_calls = 4
 ```
+
+#### Registered boolean feature switches
+
+These switches resolve in this order: a requirement pin, the environment
+variable, `config.toml`, remote settings where supported, then the default. A
+requirement pin therefore cannot be loosened by a user or process environment.
+
+| `[features]` key | Environment variable | Default |
+|------------------|----------------------|---------|
+| `session_search` | `GROK_SESSION_SEARCH` | on |
+| `lsp_tools` | `GROK_LSP_TOOLS` | off |
+| `web_fetch` | `GROK_WEB_FETCH` | off |
+| `session_recap` | `GROK_SESSION_RECAP` | on |
+| `ask_user_question` | `GROK_ASK_USER_QUESTION` | on |
+| `voice_mode` | `GROK_VOICE_MODE` | on |
+| `write_file` | `GROK_WRITE_FILE` | on |
+| `feedback` | `GROK_FEEDBACK_ENABLED` | on |
+| `turn_summary` | `GROK_TURN_SUMMARY` | on |
+| `cancel_rewind` | `GROK_CANCEL_REWIND` | on |
+| `compaction_verbatim_input` | `GROK_COMPACTION_VERBATIM_INPUT` | on |
+| `two_pass_compaction` | `GROK_TWO_PASS_COMPACTION` | off |
+| `backend_tools` | `GROK_BACKEND_SEARCH` | on |
+| `auto_wake` | `GROK_AUTO_WAKE` | on |
+| `subagent_worktree_snapshot` | `GROK_SUBAGENT_WORKTREE_SNAPSHOT` | off |
 
 #### Input mode
 
