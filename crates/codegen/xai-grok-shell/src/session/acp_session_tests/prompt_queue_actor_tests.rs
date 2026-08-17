@@ -1907,6 +1907,7 @@ async fn promote_queued_as_interjections_stops_when_protected_is_next() {
 /// Steer-on safe-point drain must not treat a protected pin as promotable held
 /// work (pair with direct promote tests above).
 #[tokio::test]
+#[serial_test::serial(follow_up_steer_cache)]
 async fn drain_at_safe_point_with_steer_on_leaves_protected_row_queued() {
     let local = tokio::task::LocalSet::new();
     local
