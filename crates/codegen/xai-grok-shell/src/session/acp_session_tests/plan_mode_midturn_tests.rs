@@ -570,6 +570,7 @@ async fn pending_scope_recovers_and_manual_model_switch_wins_on_exit() {
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
             actor.models_manager = plan_models_manager("planner");
             mark_executor_locator(&actor).await;
+            let actor = std::sync::Arc::new(actor);
             assert!(actor.plan_mode.lock().activate_from_tool());
 
             let base = crate::session::plan_mode::PlanModelLocator {
@@ -617,6 +618,7 @@ async fn pending_scope_recovers_and_manual_model_switch_wins_on_exit() {
                 actor.handle_set_session_model(
                     manual_sampling,
                     manual_entry.info.use_concise,
+                    false,
                     false,
                     true,
                     85,

@@ -128,13 +128,14 @@ async fn resident_session_reselects_route_before_each_request_and_fails_closed()
             let (mut actor, _event_rx) =
                 create_test_actor_ex(0, 256_000, 85, gateway_tx, persistence_tx).await;
             actor.models_manager = route_manager();
+            let actor = std::sync::Arc::new(actor);
 
             let (entry, initial) = actor
                 .models_manager
                 .sampling_config_for_model_ref("route:main")
                 .expect("secondary route candidate");
             let selected = actor
-                .handle_set_session_model(initial, entry.info.use_concise, false, true, 80)
+                .handle_set_session_model(initial, entry.info.use_concise, false, false, true, 80)
                 .await
                 .expect("route model switch");
             assert_eq!(selected.0.as_ref(), "route:main");
@@ -308,6 +309,7 @@ async fn auth_none_provider_never_emits_session_authorization_for_direct_or_rout
             actor.auth_manager = Some(auth_manager);
             actor.auth_method_id = test_auth_method_id("oidc");
             actor.models_manager = auth_none_manager(&base_url);
+            let actor = std::sync::Arc::new(actor);
 
             actor
                 .chat_state_handle
@@ -322,7 +324,7 @@ async fn auth_none_provider_never_emits_session_authorization_for_direct_or_rout
                 .expect("direct auth-none model");
             assert!(direct_entry.opts_out_of_ambient_credentials());
             actor
-                .handle_set_session_model(direct_sampling, false, false, true, 85)
+                .handle_set_session_model(direct_sampling, false, false, false, true, 85)
                 .await
                 .expect("switch to direct auth-none provider");
             let direct_client = actor
@@ -351,7 +353,7 @@ async fn auth_none_provider_never_emits_session_authorization_for_direct_or_rout
                 .sampling_config_for_model_ref("route:anon")
                 .expect("auth-none route");
             actor
-                .handle_set_session_model(route_sampling, false, false, true, 85)
+                .handle_set_session_model(route_sampling, false, false, false, true, 85)
                 .await
                 .expect("switch to auth-none route");
             let route_client = actor
