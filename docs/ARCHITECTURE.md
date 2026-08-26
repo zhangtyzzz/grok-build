@@ -260,6 +260,10 @@ focused host capabilities used through those boundaries.
 - Session persistence, search, replay, and usage accounting live under
   `xai-grok-shell/src/session/`; cross-session semantic memory is a separate
   concern in `xai-grok-memory`.
+- Session restoration loads summary, conversation, and mode state while the
+  storage adapter supplies paths for streaming update replay and lazy rewind
+  loading. Persisted session-kind metadata distinguishes headless and subagent
+  sessions; listing policies decide which kinds appear in each surface.
 - Local host effects must continue to pass through trust, permissions, and the
   configured sandbox. Presentation code should not perform those effects
   directly.
