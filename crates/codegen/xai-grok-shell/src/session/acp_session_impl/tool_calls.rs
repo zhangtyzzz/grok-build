@@ -3385,7 +3385,9 @@ mod plan_mode_edit_gate_tests {
     #[test]
     fn commands_are_rejected_but_reads_remain_available() {
         use xai_grok_tools::implementations::BashToolInput;
-        use xai_grok_tools::implementations::grok_build::workflow::WorkflowToolInput;
+        use xai_grok_tools::implementations::grok_build::workflow::{
+            WorkflowSource, WorkflowToolInput,
+        };
         let t = active_tracker();
         assert_eq!(
             gate(
@@ -3405,11 +3407,10 @@ mod plan_mode_edit_gate_tests {
                 &t,
                 &ToolInput::Workflow(WorkflowToolInput {
                     agent_budget: None,
-                    name: Some("review".into()),
-                    script: None,
-                    script_path: None,
+                    source: WorkflowSource::Name {
+                        name: "review".into(),
+                    },
                     args: None,
-                    resume_from_run_id: None,
                     validate_only: false,
                 })
             ),
