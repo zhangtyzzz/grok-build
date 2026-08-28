@@ -620,6 +620,7 @@ pub fn consumed_completion_ids(output: &ToolOutput) -> Vec<&str> {
         | ToolOutput::EnterPlanMode(_)
         | ToolOutput::ExitPlanMode(_)
         | ToolOutput::AskUserQuestion(_)
+        | ToolOutput::SendSubagentMessage(_)
         | ToolOutput::Monitor(_)
         | ToolOutput::SchedulerCreate(_)
         | ToolOutput::SchedulerDelete(_)
