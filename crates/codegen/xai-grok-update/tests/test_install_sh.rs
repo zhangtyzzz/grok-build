@@ -450,7 +450,7 @@ const GOOD_PROXY_URLS: &[&str] = &[
 
 fn run_with_proxy_url(script: &Path, proxy_url: &str) -> (bool, String, bool) {
     let fakedir = tempfile::tempdir().unwrap();
-    write_fake_curl(fakedir.path());
+    write_fake_curl(fakedir.path(), &host_platform());
     let url_log = fakedir.path().join("urls.log");
     let home = tempfile::tempdir().unwrap();
     let path_env = format!("{}:/usr/bin:/bin", fakedir.path().display());
@@ -490,15 +490,12 @@ fn install_scripts_refuse_bad_proxy_url_for_deployment_key() {
         eprintln!("skipping: install.sh not found relative to crate; run under cargo");
         return;
     };
-    let desktop = desktop_install_sh_path()
-        .expect("desktop install.sh must resolve when pager install.sh is present");
-
-    let mut scripts: Vec<(&str, PathBuf)> = vec![
-        ("install.sh", pager_install),
-        ("desktop install.sh", desktop),
-    ];
+    let mut scripts: Vec<(&str, PathBuf)> = vec![("install.sh", pager_install)];
     if let Some(enterprise) = script_path("install-enterprise.sh") {
-        scripts.insert(1, ("install-enterprise.sh", enterprise));
+        scripts.push(("install-enterprise.sh", enterprise));
+    }
+    if let Some(desktop) = desktop_install_sh_path() {
+        scripts.push(("desktop install.sh", desktop));
     }
 
     for (label, script_file) in &scripts {
@@ -523,15 +520,12 @@ fn install_scripts_allow_custom_https_proxy_url() {
         eprintln!("skipping: install.sh not found relative to crate; run under cargo");
         return;
     };
-    let desktop = desktop_install_sh_path()
-        .expect("desktop install.sh must resolve when pager install.sh is present");
-
-    let mut scripts: Vec<(&str, PathBuf)> = vec![
-        ("install.sh", pager_install),
-        ("desktop install.sh", desktop),
-    ];
+    let mut scripts: Vec<(&str, PathBuf)> = vec![("install.sh", pager_install)];
     if let Some(enterprise) = script_path("install-enterprise.sh") {
-        scripts.insert(1, ("install-enterprise.sh", enterprise));
+        scripts.push(("install-enterprise.sh", enterprise));
+    }
+    if let Some(desktop) = desktop_install_sh_path() {
+        scripts.push(("desktop install.sh", desktop));
     }
     for (label, script_file) in &scripts {
         for proxy_url in GOOD_PROXY_URLS {
