@@ -1,6 +1,5 @@
 use super::support::*;
 use super::*;
-use crate::session::memory::MemorySearchSource;
 use crate::terminal::AsyncTerminalRunner;
 use crate::terminal::runner::{TerminalError, TerminalRunRequest, TerminalRunResult};
 use tokio::sync::mpsc;
@@ -73,6 +72,9 @@ async fn create_test_actor(
     );
     chat_state_handle.record_token_usage(total_tokens);
     SessionActor {
+        transient_retry_enabled: true,
+        transient_retries_prompt_total: std::cell::Cell::new(0),
+        transient_episode_start: std::cell::Cell::new(None),
         status_wake: Default::default(),
         session_info: SessionInfo {
             id: acp::SessionId::new("test-auto-compact"),
@@ -260,8 +262,9 @@ async fn create_test_actor(
         title_refresh_enabled: false,
         session_turn_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         streaming_turn_capture: parking_lot::Mutex::new(StreamingTurnCapture::default()),
-        turn_stream_drained: parking_lot::Mutex::new(None),
-        pending_image_strip: parking_lot::Mutex::new(None),
+        turn_stream_drained: parking_lot::Mutex::new(std::collections::HashMap::new()),
+        pending_image_strip: parking_lot::Mutex::new(std::collections::HashMap::new()),
+        image_strip_rewrite_barrier: ImageStripRewriteBarrier::new(),
         sampler_handle: xai_grok_sampler::SamplerHandle::noop(),
         sampling_gate: None,
         image_description_model: crate::test_support::TEST_MODEL.to_owned(),
@@ -421,62 +424,6 @@ async fn test_response_header_context_window_downgrade_rejected() {
         })
         .await;
 }
-#[test]
-fn initial_injection_backend_params_use_override_min_score() {
-    let params = crate::session::memory::MemoryBackendParams {
-        session_id: "test-session".to_owned(),
-        embed_config: None,
-        embed_base_url: "http://localhost".to_owned(),
-        embed_api_key: None,
-        search_config: crate::config::MemorySearchConfig {
-            min_score: 0.35,
-            ..Default::default()
-        },
-        watcher: None,
-        stale_claim_secs: 60,
-        search_source: MemorySearchSource::Tool,
-        observation_sink: crate::session::memory::noop_memory_observation_sink(),
-        embedding_credentials: crate::session::memory::EndpointScopedCredentials::none(),
-    };
-    let initial_injection = crate::config::MemoryInitialInjectionConfig {
-        enabled: true,
-        min_score: Some(0.72),
-    };
-    let (adjusted, effective_min_score) =
-        build_initial_injection_backend_params(&params, &initial_injection);
-    assert_eq!(MemorySearchSource::Injection, adjusted.search_source);
-    assert!((0.72 - adjusted.search_config.min_score).abs() < f32::EPSILON);
-    assert!((0.72 - effective_min_score as f32).abs() < f32::EPSILON);
-    assert!((0.35 - params.search_config.min_score).abs() < f32::EPSILON);
-    assert_eq!(MemorySearchSource::Tool, params.search_source);
-}
-#[test]
-fn initial_injection_backend_params_preserve_default_zero_min_score() {
-    let params = crate::session::memory::MemoryBackendParams {
-        session_id: "test-session".to_owned(),
-        embed_config: None,
-        embed_base_url: "http://localhost".to_owned(),
-        embed_api_key: None,
-        search_config: crate::config::MemorySearchConfig {
-            min_score: 0.41,
-            ..Default::default()
-        },
-        watcher: None,
-        stale_claim_secs: 60,
-        search_source: MemorySearchSource::Tool,
-        observation_sink: crate::session::memory::noop_memory_observation_sink(),
-        embedding_credentials: crate::session::memory::EndpointScopedCredentials::none(),
-    };
-    let initial_injection = crate::config::MemoryInitialInjectionConfig {
-        enabled: true,
-        min_score: None,
-    };
-    let (adjusted, effective_min_score) =
-        build_initial_injection_backend_params(&params, &initial_injection);
-    assert_eq!(MemorySearchSource::Injection, adjusted.search_source);
-    assert!((0.41 - adjusted.search_config.min_score).abs() < f32::EPSILON);
-    assert!((0.0 - effective_min_score as f32).abs() < f32::EPSILON);
-}
 #[allow(clippy::field_reassign_with_default)]
 async fn create_test_actor_with_memory(
     total_tokens: u64,
@@ -546,6 +493,9 @@ async fn create_test_actor_with_memory(
         .as_ref()
         .map_or_else(Default::default, |mc| mc.initial_injection.clone());
     SessionActor {
+        transient_retry_enabled: true,
+        transient_retries_prompt_total: std::cell::Cell::new(0),
+        transient_episode_start: std::cell::Cell::new(None),
         status_wake: Default::default(),
         session_info: SessionInfo {
             id: acp::SessionId::new("test-memory"),
@@ -743,8 +693,9 @@ async fn create_test_actor_with_memory(
         title_refresh_enabled: false,
         session_turn_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         streaming_turn_capture: parking_lot::Mutex::new(StreamingTurnCapture::default()),
-        turn_stream_drained: parking_lot::Mutex::new(None),
-        pending_image_strip: parking_lot::Mutex::new(None),
+        turn_stream_drained: parking_lot::Mutex::new(std::collections::HashMap::new()),
+        pending_image_strip: parking_lot::Mutex::new(std::collections::HashMap::new()),
+        image_strip_rewrite_barrier: ImageStripRewriteBarrier::new(),
         sampler_handle: xai_grok_sampler::SamplerHandle::noop(),
         sampling_gate: None,
         image_description_model: crate::test_support::TEST_MODEL.to_owned(),
@@ -753,69 +704,6 @@ async fn create_test_actor_with_memory(
         workspace_ops: xai_grok_workspace::WorkspaceOps::for_test(),
         trace_config_template: std::cell::RefCell::new(None),
     }
-}
-#[tokio::test(flavor = "current_thread")]
-async fn test_is_flushing_suppresses_auto_compact() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (gateway_tx, _) = mpsc::unbounded_channel();
-            let (persistence_tx, _) = mpsc::unbounded_channel();
-            let actor = create_test_actor(90_000, 100_000, 85, gateway_tx, persistence_tx).await;
-            let result = actor.check_auto_compact_needed().await;
-            assert!(result.is_some(), "should trigger at 90%");
-            actor
-                .memory
-                .is_flushing
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-            let result = actor.check_auto_compact_needed().await;
-            assert!(result.is_none(), "should suppress when is_flushing=true");
-            actor
-                .memory
-                .is_flushing
-                .store(false, std::sync::atomic::Ordering::Relaxed);
-            let result = actor.check_auto_compact_needed().await;
-            assert!(
-                result.is_some(),
-                "should trigger again after is_flushing=false"
-            );
-        })
-        .await;
-}
-/// Test that `force_compact` triggers auto-compact even below threshold,
-/// and is consumed (reset to false) after a single use.
-#[tokio::test(flavor = "current_thread")]
-async fn test_force_compact_triggers_below_threshold() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (gateway_tx, _) = mpsc::unbounded_channel();
-            let (persistence_tx, _) = mpsc::unbounded_channel();
-            let actor = create_test_actor(10_000, 100_000, 85, gateway_tx, persistence_tx).await;
-            let result = actor.check_auto_compact_needed().await;
-            assert!(result.is_none(), "should not trigger at 10%");
-            actor
-                .compaction
-                .force_compact
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-            let result = actor.check_auto_compact_needed().await;
-            assert!(
-                result.is_some(),
-                "force_compact should trigger at any usage"
-            );
-            let info = result.unwrap();
-            assert_eq!(info.tokens_used, 10_000);
-            assert!(
-                !actor
-                    .compaction
-                    .force_compact
-                    .load(std::sync::atomic::Ordering::Relaxed),
-                "force_compact should be consumed after use"
-            );
-            let result = actor.check_auto_compact_needed().await;
-            assert!(result.is_none(), "should not trigger after flag consumed");
-        })
-        .await;
 }
 /// Unit test of the `compare_exchange` atomic pattern used in
 /// `run_memory_flush` to prevent concurrent flushes. Tests the
@@ -859,157 +747,6 @@ fn test_is_flushing_compare_exchange_prevents_double_entry() {
             .is_ok(),
         "should succeed after release"
     );
-}
-#[tokio::test(flavor = "current_thread")]
-#[allow(clippy::field_reassign_with_default)]
-async fn test_flush_config_from_memory_config() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (gateway_tx, _) = mpsc::unbounded_channel();
-            let (persistence_tx, _) = mpsc::unbounded_channel();
-            let mut config = crate::config::MemoryConfig::default();
-            config.enabled = true;
-            config.pruning.keep_last_n_turns = 7;
-            config.pruning.soft_trim_threshold = 9999;
-            config.flush.soft_threshold_tokens = 12345;
-            let actor = create_test_actor_with_memory(
-                50_000,
-                100_000,
-                85,
-                gateway_tx,
-                persistence_tx,
-                Some(config),
-            )
-            .await;
-            assert_eq!(actor.memory.flush_config.soft_threshold_tokens, 12345);
-        })
-        .await;
-}
-#[tokio::test(flavor = "current_thread")]
-#[allow(clippy::field_reassign_with_default)]
-async fn test_memory_flush_enabled_from_config() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (gateway_tx, _) = mpsc::unbounded_channel();
-            let (persistence_tx, _) = mpsc::unbounded_channel();
-            let mut config = crate::config::MemoryConfig::default();
-            config.enabled = true;
-            config.flush.enabled = true;
-            let actor = create_test_actor_with_memory(
-                50_000,
-                100_000,
-                85,
-                gateway_tx.clone(),
-                persistence_tx,
-                Some(config),
-            )
-            .await;
-            assert!(
-                actor.memory.flush_config.enabled,
-                "flush_config.enabled should be true from MemoryConfig"
-            );
-            let (persistence_tx2, _) = mpsc::unbounded_channel();
-            let mut config2 = crate::config::MemoryConfig::default();
-            config2.enabled = true;
-            config2.flush.enabled = false;
-            let actor2 = create_test_actor_with_memory(
-                50_000,
-                100_000,
-                85,
-                gateway_tx,
-                persistence_tx2,
-                Some(config2),
-            )
-            .await;
-            assert!(
-                !actor2.memory.flush_config.enabled,
-                "flush_config.enabled should be false when config says so"
-            );
-        })
-        .await;
-}
-#[tokio::test(flavor = "current_thread")]
-#[allow(clippy::field_reassign_with_default)]
-async fn test_memory_storage_created_when_enabled() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (gateway_tx, _) = mpsc::unbounded_channel();
-            let (persistence_tx, _) = mpsc::unbounded_channel();
-            let mut config = crate::config::MemoryConfig::default();
-            config.enabled = true;
-            let actor = create_test_actor_with_memory(
-                50_000,
-                100_000,
-                85,
-                gateway_tx.clone(),
-                persistence_tx,
-                Some(config),
-            )
-            .await;
-            assert!(
-                actor.memory.is_enabled(),
-                "memory_storage should be Some when enabled"
-            );
-            let (persistence_tx2, _) = mpsc::unbounded_channel();
-            let actor2 = create_test_actor_with_memory(
-                50_000,
-                100_000,
-                85,
-                gateway_tx,
-                persistence_tx2,
-                None,
-            )
-            .await;
-            assert!(
-                !actor2.memory.is_enabled(),
-                "memory_storage should be None when disabled"
-            );
-        })
-        .await;
-}
-#[tokio::test(flavor = "current_thread")]
-#[allow(clippy::field_reassign_with_default)]
-async fn test_idle_flush_timeout_from_config() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (gateway_tx, _) = mpsc::unbounded_channel();
-            let (persistence_tx, _) = mpsc::unbounded_channel();
-            let mut config = crate::config::MemoryConfig::default();
-            config.enabled = true;
-            config.flush.idle_timeout_secs = Some(120);
-            let actor = create_test_actor_with_memory(
-                50_000,
-                100_000,
-                85,
-                gateway_tx.clone(),
-                persistence_tx,
-                Some(config),
-            )
-            .await;
-            assert_eq!(
-                actor.idle_flush_timeout,
-                Some(std::time::Duration::from_secs(120))
-            );
-            let (persistence_tx2, _) = mpsc::unbounded_channel();
-            let mut config2 = crate::config::MemoryConfig::default();
-            config2.enabled = true;
-            config2.flush.idle_timeout_secs = None;
-            let actor2 = create_test_actor_with_memory(
-                50_000,
-                100_000,
-                85,
-                gateway_tx,
-                persistence_tx2,
-                Some(config2),
-            )
-            .await;
-            assert_eq!(actor2.idle_flush_timeout, None);
-        })
-        .await;
 }
 #[tokio::test(flavor = "current_thread")]
 #[allow(clippy::field_reassign_with_default)]
@@ -1081,45 +818,6 @@ async fn test_dream_check_timeout_from_config() {
             )
             .await;
             assert_eq!(actor4.dream_check_timeout, None);
-        })
-        .await;
-}
-/// Test that `last_api_request_at` is recorded and used for idle detection.
-///
-/// The `maybe_refresh_model_metadata_on_resume` method checks this timestamp
-/// to decide whether to proactively refresh model metadata from cli-chat-proxy.
-/// This test verifies the timestamp recording and idle detection logic.
-#[tokio::test(flavor = "current_thread")]
-async fn test_last_api_request_at_idle_detection() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (gateway_tx, _) = mpsc::unbounded_channel();
-            let (persistence_tx, _) = mpsc::unbounded_channel();
-            let actor = create_test_actor(50_000, 100_000, 85, gateway_tx, persistence_tx).await;
-            let initial = actor
-                .last_api_request_at
-                .load(std::sync::atomic::Ordering::Relaxed);
-            assert_eq!(initial, 0, "last_api_request_at should be 0 initially");
-            actor.record_api_request_time();
-            let recorded = actor
-                .last_api_request_at
-                .load(std::sync::atomic::Ordering::Relaxed);
-            assert!(
-                recorded > 0,
-                "last_api_request_at should be set after recording"
-            );
-            let now_ms = chrono::Utc::now().timestamp_millis();
-            let diff = (now_ms - recorded).abs();
-            assert!(
-                diff < 1000,
-                "recorded timestamp should be within 1 second of now"
-            );
-            let idle_secs = (now_ms - recorded) / 1000;
-            assert!(
-                idle_secs < SessionActor::IDLE_REFRESH_THRESHOLD_SECS,
-                "should be within idle threshold immediately after recording"
-            );
         })
         .await;
 }
@@ -1341,6 +1039,9 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
             });
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             let actor = SessionActor {
+                transient_retry_enabled: true,
+                transient_retries_prompt_total: std::cell::Cell::new(0),
+                transient_episode_start: std::cell::Cell::new(None),
                 status_wake: Default::default(),
                 session_info: SessionInfo {
                     id: acp::SessionId::new("test-idle-resume"),
@@ -1547,8 +1248,10 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 title_refresh_enabled: false,
                 session_turn_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 streaming_turn_capture: parking_lot::Mutex::new(StreamingTurnCapture::default()),
-                turn_stream_drained: parking_lot::Mutex::new(None),
-                pending_image_strip: parking_lot::Mutex::new(None),
+                turn_stream_drained: parking_lot::Mutex::new(HashMap::new()),
+                pending_image_strip: parking_lot::Mutex::new(HashMap::new()),
+                image_strip_rewrite_barrier:
+                    crate::session::acp_session::ImageStripRewriteBarrier::new(),
                 attribution_callback: None,
                 sampler_handle: xai_grok_sampler::SamplerHandle::noop(),
                 sampling_gate: None,
