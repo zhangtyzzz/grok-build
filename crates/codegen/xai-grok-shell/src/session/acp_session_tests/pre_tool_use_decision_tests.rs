@@ -528,7 +528,7 @@ async fn pre_tool_use_ask_under_plan_mode_block_forces_no_prompt() {
 
             let result = prepare_call(&actor, search_replace_call("call_plan_blocked_ask")).await;
             assert!(
-                matches!(result, Err(ToolLoop::Continue)),
+                matches!(result, Err(ToolLoop::PermissionReject { .. })),
                 "a plan-blocked edit must stay blocked despite the ask hook, got {result:?}"
             );
             assert_eq!(

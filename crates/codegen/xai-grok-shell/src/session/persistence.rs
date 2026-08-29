@@ -2908,9 +2908,8 @@ mod durable_plan_persistence_tests {
         assert!(!error.is_empty());
     }
 
-    #[cfg(unix)]
     #[tokio::test]
-    async fn sync_failure_is_returned_to_the_barrier() {
+    async fn unrelated_buffered_sync_failure_does_not_block_atomic_plan_ack() {
         let temp = tempfile::tempdir().unwrap();
         let session_dir = temp.path().join("session");
         let (_info, handle) = actor_for(&session_dir).await;
@@ -2920,11 +2919,11 @@ mod durable_plan_persistence_tests {
         }
         std::fs::create_dir(updates).unwrap();
 
-        let tracker = PlanModeTracker::new(session_dir);
-        let error = persist_plan(&handle, tracker.snapshot())
+        let tracker = PlanModeTracker::new(session_dir.clone());
+        persist_plan(&handle, tracker.snapshot())
             .await
-            .expect_err("syncing a directory through a writable file handle must fail");
-        assert!(!error.is_empty());
+            .expect("the atomic plan-mode write does not depend on buffered update-file syncing");
+        assert!(session_dir.join("plan_mode.json").is_file());
     }
 }
 
