@@ -58,7 +58,15 @@ fn install(
     }
 
     std::fs::create_dir_all(dir)?;
-    // Stage in the destination directory and rename atomically, so an
+    // Discard a stale or planted entry before racing to publish the verified
+    // bytes. The eventual publish is create-only, so concurrent installers do
+    // not replace an executable that another process may already be running.
+    match std::fs::remove_file(&dest) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+    // Stage in the destination directory and publish with an atomic hard link, so an
     // interrupted or concurrent first use never publishes a partial binary.
     let mut staged = tempfile::NamedTempFile::new_in(dir)?;
     staged.write_all(&decoded)?;
@@ -69,8 +77,23 @@ fn install(
             .as_file()
             .set_permissions(std::fs::Permissions::from_mode(0o755))?;
     }
-    staged.persist(&dest).map_err(|e| e.error)?;
+    staged.as_file().sync_all()?;
+    let staged = staged.into_temp_path();
+    publish_completed_candidate(staged.as_ref(), &dest)?;
+    if !is_verified(&dest, expected_sha256) {
+        return Err(InstallError::Integrity(format!(
+            "published bundled {versioned_name} failed verification"
+        )));
+    }
     Ok(dest)
+}
+
+pub(crate) fn publish_completed_candidate(candidate: &Path, dest: &Path) -> std::io::Result<()> {
+    match std::fs::hard_link(candidate, dest) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && dest.is_file() => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 fn is_verified(path: &Path, expected_sha256: &str) -> bool {

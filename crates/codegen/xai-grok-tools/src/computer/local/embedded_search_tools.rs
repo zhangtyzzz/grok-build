@@ -518,7 +518,7 @@ mod tests {
         std::fs::write(&candidate, b"loser").unwrap();
         let winner_inode = std::fs::metadata(&dest).unwrap().ino();
 
-        publish_completed_candidate(&candidate, &dest).unwrap();
+        crate::util::vendor::publish_completed_candidate(&candidate, &dest).unwrap();
 
         assert_eq!(std::fs::read(&dest).unwrap(), b"winner");
         assert_eq!(std::fs::metadata(&dest).unwrap().ino(), winner_inode);

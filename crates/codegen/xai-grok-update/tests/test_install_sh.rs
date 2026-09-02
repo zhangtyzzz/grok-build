@@ -510,7 +510,7 @@ fn install_sh_rejects_hostile_grok_channel() {
         return;
     };
     let fakedir = tempfile::tempdir().unwrap();
-    write_fake_curl(fakedir.path());
+    write_fake_curl(fakedir.path(), &host_platform());
     let url_log = fakedir.path().join("urls.log");
     let home = tempfile::tempdir().unwrap();
     let path_env = format!("{}:/usr/bin:/bin", fakedir.path().display());
