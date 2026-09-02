@@ -1,5 +1,4 @@
-//! Notification bridge: translates `xai-grok-tools` `ToolNotification` events
-//! into `xai-grok-shell`'s native systems (ACP gateway, hunk tracker, file state tracker).
+//! Translates `xai-grok-tools` `ToolNotification` events into `xai-grok-shell`'s native systems (ACP gateway, hunk tracker, file state tracker).
 use crate::session::commands::SessionCommand;
 use crate::session::commands::{NotificationPriority, NotificationSource};
 use crate::session::persistence::{DurableAppendError, PersistenceHandle, PersistenceMsg};
@@ -15,11 +14,9 @@ use xai_grok_tools::types::output::{BashOutput, ToolOutput};
 use xai_grok_workspace::session::file_state::FileStateTracker;
 use xai_hunk_tracker::HunkTrackerHandle;
 const TASK_WAKE_ADMISSION_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
-/// Configuration for the notification bridge.
 pub(crate) struct NotificationBridgeConfig {
     /// ACP gateway for sending streaming updates to TUI
     pub gateway: GatewaySender,
-    /// ACP session ID
     pub session_id: acp::SessionId,
     /// Hunk tracker for recording agent writes
     pub hunk_tracker_handle: HunkTrackerHandle,
@@ -34,9 +31,8 @@ pub(crate) struct NotificationBridgeConfig {
     pub gateway_enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Persistence handle for FIFO ordinary writes and durable tombstone barriers.
     pub persistence: PersistenceHandle,
-    /// When true, send incremental `output_delta` instead of full `output`
-    /// in bash streaming updates. The client must opt in via the
-    /// `x.ai/incrementalBashOutput` capability.
+    /// When true, send incremental `output_delta` instead of full `output` in bash streaming updates.
+    /// The client must opt in via the `x.ai/incrementalBashOutput` capability.
     pub incremental_bash_output: bool,
     /// Session command channel for actor-owned plan transitions, monitor
     /// events, and task-completed injections.
@@ -45,9 +41,8 @@ pub(crate) struct NotificationBridgeConfig {
         xai_grok_tools::reminders::task_completion::TaskCompletionReservations,
     pub task_wake_suppressed: xai_grok_tools::reminders::task_completion::TaskWakeSuppressed,
     /// Channel for requesting trace uploads for synthetic auto-wake turns.
-    /// Wrapped in `Arc<Mutex<..>>` because the coordinator creates the channel
-    /// after the notification bridge is spawned — the bridge reads the latest
-    /// value on each notification.
+    /// Wrapped in `Arc<Mutex<..>>` because the coordinator creates the channel after the notification bridge is spawned.
+    /// The bridge reads the latest value on each notification.
     pub(crate) synthetic_trace_tx: Arc<
         std::sync::Mutex<
             Option<
@@ -55,34 +50,27 @@ pub(crate) struct NotificationBridgeConfig {
             >,
         >,
     >,
-    /// Resolved name of the `BackgroundTaskAction` tool. Written exactly
-    /// once after the agent's toolset is finalized; read many times
-    /// thereafter from the notification bridge and the session actor's
-    /// between-turn drain. `None` means no such tool is registered in this
-    /// toolset, which is a valid resolved state.
+    /// Resolved name of the `BackgroundTaskAction` tool.
+    /// Written exactly once after the agent's toolset is finalized.
+    /// Read many times thereafter from the notification bridge and the session actor's between-turn drain.
+    /// `None` means no such tool is registered in this toolset, which is a valid resolved state.
     pub task_output_tool_name: Arc<std::sync::OnceLock<Option<String>>>,
-    /// Resolved name of the `Read` tool, used by `format_bash_completion`'s
-    /// disk-pointer footer so the model can recover full bash output from
-    /// `task.output_file` even when no polling tool is available. Same
-    /// write-once-read-many lifecycle as `task_output_tool_name`.
+    /// Resolved name of the `Read` tool, used by `format_bash_completion`'s footer.
+    /// The footer points the model at `task.output_file` so it can recover full bash output even when no polling tool is available.
+    /// Written once and then only read, like `task_output_tool_name`.
     pub read_tool_name: Arc<std::sync::OnceLock<Option<String>>>,
-    /// When `false`, bash task completions fall back to the idle-gated
-    /// `InjectNotification` path instead of immediate synthetic prompts.
+    /// When `false`, bash task completions fall back to the idle-gated `InjectNotification` path instead of immediate synthetic prompts.
     pub auto_wake_enabled: bool,
     /// When `true`, suppress the bash auto-wake synthetic prompt. Shared `Arc`
     /// written at one chokepoint — see
     /// `SessionActor::set_goal_loop_active_resource` for the rationale.
     pub goal_loop_active: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
-/// Snapshot a shared `OnceLock` tool-name slot as a borrowed `&str`.
-/// Returns `None` if the slot is still unset (toolset not yet finalized)
-/// or if the resolved value is `None` (no such tool registered in this
-/// toolset.
+/// Returns `None` if the slot is unset (toolset not yet finalized) or if the resolved value is `None` (no such tool registered in this toolset).
 pub(crate) fn resolved_tool_name(slot: &std::sync::OnceLock<Option<String>>) -> Option<&str> {
     slot.get().and_then(|v| v.as_deref())
 }
-/// Stamp a bridge-emitted notification's meta before it forks into
-/// persistence + broadcast — see `util::event_id::ensure_event_id_meta`.
+/// Stamp a bridge-emitted notification's meta before it forks into persistence and broadcast; see `util::event_id::ensure_event_id_meta`.
 fn stamp_event_id(config: &NotificationBridgeConfig, meta: &mut Option<acp::Meta>) {
     crate::util::event_id::ensure_event_id_meta(&config.session_id.0, meta);
 }
@@ -166,8 +154,6 @@ async fn handle_scheduled_task_removed(
         }
     }
 }
-/// Create a `ToolNotificationHandle` and spawn a bridge task that
-/// translates notifications into shell-native systems.
 pub(crate) fn spawn_notification_bridge(
     config: NotificationBridgeConfig,
 ) -> ToolNotificationHandle {

@@ -1,6 +1,5 @@
-//! Cross-process bootstrap lifecycle for the session search index: a lease
-//! claim in the index's own `meta` table lets one process run [`reindex_all`]
-//! while waiters adopt its completed-bootstrap marker.
+//! Cross-process bootstrap gate for the session search index.
+//! A lease claim in the index's own `meta` table lets one process run [`reindex_all`] while waiters adopt its completed-bootstrap marker.
 
 use std::collections::HashSet;
 use std::io;
@@ -46,19 +45,15 @@ const TIMING: BootstrapTiming = BootstrapTiming {
     #[cfg(test)]
     claim_hold: Duration::ZERO,
 };
-// The refresh must fire several times within a lease, and a waiter must
-// poll at least once within the peer wait.
-// (`try_bootstrap_with_lease` zeroes the peer wait on purpose: one claim
-// attempt, no wait loop.)
+// The refresh must fire several times within a lease, and a waiter must poll at least once within the peer wait
+// (`try_bootstrap_with_lease` zeroes the peer wait on purpose: one claim attempt, no wait loop.)
 const _: () = assert!(TIMING.refresh.as_millis() < TIMING.lease.as_millis());
 const _: () = assert!(TIMING.poll.as_millis() < TIMING.peer_wait.as_millis());
 
 #[derive(Default)]
 pub(crate) struct BootstrapProgress {
-    /// Bit 0 is the `bootstrapping` flag; the upper bits count armings.
-    /// One atomic, so a finished job can clear the flag with a single
-    /// compare-exchange only when nothing newer (a heal re-enqueue, a
-    /// concurrent search) armed it.
+    /// Bit 0 is the `bootstrapping` flag; the upper bits hold a generation bumped on every set.
+    /// They share one atomic so a single compare-exchange clears the flag only when nothing newer (a heal re-enqueue, a concurrent search) set it.
     state: AtomicU64,
     pub indexed: AtomicU64,
     pub total: AtomicU64,
@@ -90,7 +85,7 @@ impl BootstrapProgress {
         }
     }
 
-    /// Clear the flag, unless a newer arming owns it.
+    /// Clear the flag, unless a newer `begin_bootstrapping` owns it.
     fn end_bootstrapping(&self, generation: u64) {
         let _ = self.state.compare_exchange(
             generation << 1 | 1,
@@ -101,9 +96,8 @@ impl BootstrapProgress {
     }
 }
 
-/// Holds the `bootstrapping` flag high for the duration of a bootstrap job
-/// and clears it on every exit, including unwind, unless a newer set has
-/// taken ownership since.
+/// Keeps the `bootstrapping` flag set for the duration of a bootstrap job.
+/// The drop clears it on every exit, including unwind, unless a newer `begin_bootstrapping` has taken ownership since.
 pub(crate) struct BootstrappingGuard {
     progress: Arc<BootstrapProgress>,
     generation: u64,
@@ -126,11 +120,9 @@ impl Drop for BootstrappingGuard {
 
 static CLAIM_LOG: HealAwareLogCounter = HealAwareLogCounter::new(4);
 
-/// Run [`reindex_all`] at most once at a time across concurrent grok
-/// processes. A launch's first claim always reindexes, even when a completed
-/// marker exists; waiters adopt any completed marker, stale ones included
-/// (the claimant refreshes the index either way), and give up after the
-/// bounded wait.
+/// Run [`reindex_all`] at most once at a time across concurrent grok processes.
+/// A launch's first claim always reindexes, even when a completed marker exists.
+/// Waiters adopt any completed marker, stale ones included (the claimant refreshes the index either way), and give up after the bounded wait.
 pub(crate) async fn bootstrap_with_lease(
     root_dir: &Path,
     source: &dyn SessionSource,
@@ -148,10 +140,9 @@ pub(crate) async fn bootstrap_with_lease(
     .await
 }
 
-/// Single claim attempt: rebuilds when the lease is free and no completed
-/// marker exists, adopts the marker otherwise, and returns at once when a
-/// peer holds the lease. Rechecks use this so a rebuild that outlives the
-/// peer wait cannot re-block the worker on every later search.
+/// Single claim attempt: rebuilds when the lease is free and no completed marker exists, adopts the marker otherwise.
+/// A peer holding the lease makes it return at once.
+/// Rechecks use this so a rebuild that outlives the peer wait cannot re-block the worker on every later search.
 pub(crate) async fn try_bootstrap_with_lease(
     root_dir: &Path,
     source: &dyn SessionSource,
@@ -178,8 +169,7 @@ pub(crate) enum BootstrapOutcome {
     RunAgain,
 }
 
-/// How the caller entered the gate; the entry points document what each
-/// role owes.
+/// How the caller entered the gate; the entry points document what each role owes.
 #[derive(Clone, Copy, PartialEq)]
 enum BootstrapRole {
     Launch,
@@ -253,8 +243,7 @@ async fn bootstrap_with_lease_inner(
         peer_seen = true;
 
         if Instant::now() >= deadline {
-            // Debug on the recheck path, which runs per search while a
-            // peer rebuilds.
+            // Debug on the recheck path, which runs per search while a peer rebuilds
             if role == BootstrapRole::Recheck {
                 tracing::debug!("peer process is bootstrapping the shared session search index");
             } else {
@@ -376,9 +365,7 @@ async fn release_bootstrap_claim(db_path: &Path, token: &ClaimToken) {
     }
 }
 
-/// `Some(true)` marker present, `Some(false)` genuinely absent (bootstrap
-/// needed), `None` transient read failure, which must not be mistaken for
-/// absence.
+/// `Some(true)` marker present, `Some(false)` absent (bootstrap needed), `None` a transient read failure that must not be mistaken for absence.
 pub(crate) async fn has_completed_bootstrap_marker(root_dir: &Path) -> Option<bool> {
     let db_path = search_db_path(root_dir);
     with_search_index_blocking(&db_path, |index| {
@@ -403,8 +390,7 @@ pub(crate) fn try_read_last_bootstrap_at(db_path: &Path) -> io::Result<Option<i6
     Ok(value.and_then(|v| v.parse::<i64>().ok()))
 }
 
-/// Fenced marker write: returns `false` (no write) when the claim under
-/// `token` was lost, so a stale claimant never asserts completion.
+/// Fenced marker write: returns `false` (no write) when the claim under `token` was lost, so a stale claimant never asserts completion.
 fn write_last_bootstrap_at_if_claim_owner(db_path: &Path, token: &str) -> io::Result<bool> {
     let now = chrono::Utc::now().timestamp();
     with_search_index(db_path, |index| {
@@ -425,10 +411,9 @@ fn clear_last_bootstrap_at(db_path: &Path) -> io::Result<()> {
     with_search_index(db_path, |index| index.delete_meta(META_KEY_LAST_BOOTSTRAP))
 }
 
-/// One shared connection per reindex instead of an open per session;
-/// re-opens when the cache epoch changes (a heal renames the DB file), falls
-/// back to the healing open on unusable-DB errors. A peer's heal is invisible
-/// to the local epoch; the fenced marker write covers that case.
+/// One shared connection per reindex instead of an open per session.
+/// It re-opens when the cache epoch changes (a heal renames the DB file) and falls back to the healing open on unusable-DB errors.
+/// A peer's heal is invisible to the local epoch; the fenced marker write covers that case.
 struct SharedIndex(parking_lot::Mutex<Option<(u64, SessionSearchIndex)>>);
 
 impl SharedIndex {
@@ -480,8 +465,7 @@ async fn reindex_all(
     progress.bytes_read.store(0, Ordering::Relaxed);
 
     let start = Instant::now();
-    // The SessionSource reference cannot be shared across tasks, so each row
-    // carries its own transcript path taken during enumeration.
+    // The SessionSource reference cannot be shared across tasks, so each row carries its own transcript path taken during enumeration
     let sessions: Vec<IndexableSession> = source.list_sessions().await?;
     progress
         .total
@@ -524,8 +508,8 @@ async fn reindex_all(
                 .await
                 .expect("semaphore is never closed");
 
-            // A successor owns the index once the claim is lost. These upserts are idempotent,
-            // not fenced, so stopping just avoids contending with it.
+            // A successor owns the index once the claim is lost
+            // These upserts are idempotent, not fenced, so stopping just avoids contending with it
             if claim_lost.load(Ordering::Acquire) {
                 return;
             }
@@ -543,8 +527,7 @@ async fn reindex_all(
                     max_size = max_file_size,
                     "skipping large session during bootstrap"
                 );
-                // Insert a title-only placeholder so title search still works;
-                // insert-if-absent so an existing (fuller) row is never touched.
+                // Insert a title-only placeholder so title search still works; insert-if-absent so an existing (fuller) row is never touched
                 let doc = build_session_doc(&session, String::new());
                 let db_path = search_db_path(&root);
                 let shared = shared.clone();
@@ -628,9 +611,8 @@ async fn reindex_all(
 
     if claim_lost.load(Ordering::Acquire) {
         tracing::warn!("bootstrap claim lost; abandoning reindex without a completion marker");
-        // A local heal quarantines the claim row with the file, which the
-        // fenced refresh cannot tell from a takeover; only the takeover has
-        // a successor that finishes the job.
+        // A local heal quarantines the claim row with the file, which the fenced refresh cannot tell from a takeover
+        // Only the takeover has a successor that finishes the job
         return Ok(if epoch.changed() {
             BootstrapOutcome::RunAgain
         } else {
@@ -638,9 +620,9 @@ async fn reindex_all(
         });
     }
 
-    // Prune sessions deleted on disk. Fenced: `expected_ids` is a startup
-    // snapshot, so a claimant that lost its lease must not delete rows a
-    // successor indexed since; the refresh doubles as the ownership check.
+    // Prune sessions deleted on disk
+    // Fenced: `expected_ids` is a startup snapshot, so a claimant that lost its lease must not delete rows a successor indexed since
+    // The refresh doubles as the ownership check
     let db_path = search_db_path(root_dir);
     let token = claim_token.as_str().to_string();
     let shared = shared.clone();
@@ -685,9 +667,8 @@ async fn reindex_all(
                 needs_rebootstrap = true;
             }
             Ok(true) => {}
-            // No claim at all means the file was replaced under us (a heal
-            // here or in a peer), not taken over; the fresh index is empty
-            // and needs a rebuild.
+            // No claim at all means the file was replaced under us (a heal here or in a peer), not taken over
+            // The fresh index is empty and needs a rebuild
             Ok(false) => match has_bootstrap_claim(&db_path) {
                 Ok(false) => {
                     tracing::warn!(
@@ -708,8 +689,7 @@ async fn reindex_all(
     Ok(BootstrapOutcome::Done)
 }
 
-// Gate tests inject a fresh BootstrapProgress and assert only on their own
-// per-tmpdir database state.
+// Gate tests inject a fresh BootstrapProgress and assert only on their own per-tmpdir database state
 #[cfg(test)]
 #[path = "bootstrap_tests.rs"]
 mod tests;

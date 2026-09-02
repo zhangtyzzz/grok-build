@@ -13590,6 +13590,7 @@ dependencies = [
  "reqwest-middleware 0.4.2",
  "rustls",
  "serde_json",
+ "tokio",
  "tracing",
  "xai-grok-auth",
  "xai-grok-extra-ca",
@@ -13685,6 +13686,7 @@ dependencies = [
  "filetime",
  "flate2",
  "git2",
+ "libc",
  "nix 0.30.1",
  "notify",
  "reqwest 0.12.24",
@@ -14180,6 +14182,7 @@ dependencies = [
  "git2",
  "glob",
  "globset",
+ "hmac",
  "ignore",
  "image",
  "indexmap",
@@ -14408,7 +14411,6 @@ dependencies = [
  "chrono",
  "ctor",
  "filetime",
- "futures-executor",
  "git2",
  "http 1.4.0",
  "mid",
@@ -14568,6 +14570,7 @@ dependencies = [
  "xai-tool-types",
  "xai-tty-utils",
  "zip",
+ "zstd",
 ]
 
 [[package]]
@@ -14880,7 +14883,6 @@ name = "xai-ratatui-textarea"
 version = "0.1.0"
 dependencies = [
  "arboard",
- "chrono",
  "crossterm",
  "fuzzy-matcher",
  "ignore",
