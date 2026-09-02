@@ -205,7 +205,7 @@ siphasher = { workspace = true }
 windows = { workspace = true }
 
 [dev-dependencies]
-# The fixture that builds a `[ui.status_line]` section field by field.
+xai-dirs = { workspace = true }
 xai-grok-status-line = { workspace = true, features = ["test-support"] }
 criterion = { workspace = true }
 # Pre-main unified-log redirect (`test_support::redirect_unified_log_for_tests`).

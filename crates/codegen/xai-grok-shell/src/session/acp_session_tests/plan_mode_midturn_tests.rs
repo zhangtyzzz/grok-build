@@ -346,17 +346,20 @@ async fn enter_plan_tool_result_waits_for_planner_model_barrier() {
                 prompt_text: "entered".into(),
                 effective_tool_name: None,
             };
+            let tool_call_id = acp::ToolCallId::new("enter-plan-1");
+            let tool_parsed_args = serde_json::json!({});
             actor
-                .handle_bridge_tool_success(
-                    &acp::ToolCallId::new("enter-plan-1"),
-                    "enter-plan-1",
-                    "enter_plan_mode",
-                    "enter_plan_mode",
-                    DrainedToolSuccess::new(result),
-                    0,
-                    "test",
-                    &serde_json::json!({}),
-                )
+                .handle_bridge_tool_success(BridgeToolSuccess {
+                    tool_call_id: &tool_call_id,
+                    call_id: "enter-plan-1",
+                    requested_tool_name: "enter_plan_mode",
+                    effective_tool_name: "enter_plan_mode",
+                    drained: DrainedToolSuccess::new(result),
+                    concatenated_json_count: 0,
+                    model_id: "test",
+                    tool_parsed_args: &tool_parsed_args,
+                    model_output_override: None,
+                })
                 .await
                 .expect("barrier acknowledged");
 

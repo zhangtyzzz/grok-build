@@ -1362,6 +1362,7 @@ pub(crate) async fn upload_trace_artifact_blocking(
                 artifact_name,
                 &session_id,
                 ctx.turn_number,
+                direct_attempt_started,
             )
             .await
         {

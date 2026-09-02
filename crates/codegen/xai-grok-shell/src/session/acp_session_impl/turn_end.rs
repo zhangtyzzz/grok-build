@@ -257,6 +257,13 @@ impl SessionActor {
                 })),
             );
         }
+        let binding = xai_message_delivery_core::TurnBinding::new(prompt_id.clone(), epoch);
+        let (message_completions, had_message_fallbacks) = self.transition_parent_messages(
+            &mut state,
+            xai_message_delivery_core::TerminalTarget::Turn(&binding),
+            xai_message_delivery_core::TerminalCause::Completion,
+        );
+        broadcast_queue |= had_message_fallbacks;
         // Owned (dequeued at the front) completions only
         // The unknown-prompt branch above is a stale completion the Cancel path already finalized, and `RemovedFromQueue` never ran
         let finalizes_turn = owned_completion
@@ -338,6 +345,7 @@ impl SessionActor {
                 );
             }
         }
+        Self::settle_parent_message_completions(message_completions, &result);
 
         if let Some(held) = held_rows_notice {
             self.send_hook_annotation(&format!(
