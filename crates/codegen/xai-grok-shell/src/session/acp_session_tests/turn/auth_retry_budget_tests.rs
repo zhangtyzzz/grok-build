@@ -1,8 +1,7 @@
-//! Real-turn-loop tests against a mock server that 401s unauthenticated
-//! requests and 200s a fresh bearer: a fail-closed (credential-less) 401
-//! must not consume `AuthRetrySchedule` budget — the field failure mode
-//! where each sleep cycle burned one slot — while credentialed 401s must
-//! still exhaust after `MAX_RETRIES`.
+//! These tests run the real turn loop against a mock server that 401s unauthenticated requests and 200s a fresh bearer.
+//! A fail-closed (credential-less) 401 must not consume `AuthRetrySchedule` budget.
+//! That was the failure seen in the field: each sleep cycle burned one slot.
+//! Credentialed 401s must still exhaust after `MAX_RETRIES`.
 
 use super::support::*;
 use super::*;
@@ -15,10 +14,9 @@ use xai_grok_test_support::{MockInferenceServer, MockModelEntry};
 /// The token the mock server accepts and the refresher mints on success.
 const FRESH_TOKEN: &str = "refreshed-test-token";
 
-/// With `fail_pre_request`, mimics the post-wake sequence: pre-send
-/// (`PreRequest`) refreshes fail transiently so the send goes out
-/// fail-closed, while the 401-triggered recovery (`ServerRejected`)
-/// succeeds and mints [`FRESH_TOKEN`]. Otherwise always succeeds.
+/// With `fail_pre_request`, mimics the post-wake sequence: pre-send (`PreRequest`) refreshes fail transiently, so the send goes out fail-closed.
+/// The 401-triggered recovery (`ServerRejected`) succeeds and mints [`FRESH_TOKEN`].
+/// Otherwise always succeeds.
 struct WakeGapRefresher {
     calls: Arc<AtomicU32>,
     fail_pre_request: bool,
@@ -46,9 +44,8 @@ impl crate::auth::refresh::TokenRefresher for WakeGapRefresher {
     }
 }
 
-/// `(tempdir, manager)` with a hard-expired OIDC token, so the wire-valid
-/// resolver has nothing to stamp until the refresher succeeds. The tempdir
-/// must outlive the manager (auth.json path).
+/// `(tempdir, manager)` with a hard-expired OIDC token, so the wire-valid resolver has nothing to stamp until the refresher succeeds.
+/// The tempdir must outlive the manager (auth.json path).
 fn expired_auth_manager(
     refresher: Arc<dyn crate::auth::refresh::TokenRefresher>,
 ) -> (tempfile::TempDir, Arc<AuthManager>) {
@@ -91,8 +88,7 @@ fn drain_gateway(
     captured
 }
 
-/// `(error_type, message)` of the turn's terminal `retryState`, if the client
-/// was told about one at all.
+/// `(error_type, message)` of the turn's terminal `retryState`, if the client was told about one.
 fn terminal_failure(updates: &XaiUpdates) -> Option<(String, String)> {
     updates.lock().iter().find_map(|value| {
         let update = value.get("update")?;
@@ -106,19 +102,8 @@ fn terminal_failure(updates: &XaiUpdates) -> Option<(String, String)> {
     })
 }
 
-fn drain_persistence(mut rx: tokio::sync::mpsc::UnboundedReceiver<PersistenceMsg>) {
-    tokio::task::spawn_local(async move {
-        while let Some(msg) = rx.recv().await {
-            if let PersistenceMsg::FlushAndAck { respond_to } = msg {
-                let _ = respond_to.send(Ok(()));
-            }
-        }
-    });
-}
-
-/// Actor wired for session-token auth against the mock server: real sampler,
-/// `cached_token` method, `NotByok` model facts (so the session-token gate is
-/// active against the loopback URL), and the supplied auth manager.
+/// Actor wired for session-token auth against the mock server: a real sampler, the `cached_token` method, and the supplied auth manager.
+/// `NotByok` model facts keep the session-token gate active against the loopback URL.
 async fn session_token_actor(
     server: &MockInferenceServer,
     auth_manager: Arc<AuthManager>,
@@ -168,8 +153,7 @@ async fn session_token_actor(
     creds.auth_type = xai_chat_state::AuthType::SessionToken;
     actor.chat_state_handle.update_credentials(creds);
 
-    // Definite NotByok: the session-token gate must stay active against the
-    // loopback mock URL (an `Unknown` would demand a first-party host).
+    // Definite NotByok: the session-token gate must stay active against the loopback mock URL (an `Unknown` would demand a first-party host)
     actor
         .model_auth_memo
         .replace(Some(crate::session::acp_session::ModelAuthMemo {
@@ -212,8 +196,11 @@ async fn run_prompt(
     let prompt_blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(
         "hello".to_string(),
     ))];
+    // Hang guard, not a latency assertion: only a wedged turn reaches it
+    // The exhaustion test runs on a paused clock, and the 401 ladder plus refresh waits burn far past any real-time budget in virtual time
+    // Auto-advance makes that virtual time free
     tokio::time::timeout(
-        Duration::from_secs(60),
+        Duration::from_secs(3600),
         actor.handle_prompt(
             prompt_id,
             prompt_blocks,

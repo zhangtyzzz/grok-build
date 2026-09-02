@@ -1,4 +1,4 @@
-//! Mixed plan.md edit + exit: approval snapshot matches the post-edit plan body.
+//! A batch mixing a plan.md edit and exit_plan_mode: the approval snapshot must match the plan body after the edit.
 
 use super::support::*;
 use super::*;
@@ -109,8 +109,7 @@ async fn seeded_active_plan_actor_with_edit_tools() -> (
             plan_path.clone(),
         ))
         .await;
-    // Phase-2 file tools dispatch through workspace_ops; without a bound
-    // session, search_replace hard-errors before writing plan.md.
+    // Phase-2 file tools dispatch through workspace_ops; without a bound session, search_replace hard-errors before writing plan.md
     actor
         .workspace_ops
         .bind_local_session(

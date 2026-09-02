@@ -1,5 +1,3 @@
-//! Messages API wire format.
-
 use super::*;
 
 /// Whether a tool-result payload carries nothing a breakpoint could sit on.
@@ -69,10 +67,9 @@ fn mark_message_cache_breakpoint(msg: &mut crate::messages::Message) -> bool {
     }
 }
 
-/// An entry is written only at a breakpoint, so marking the system prompt alone
-/// leaves the transcript uncached. The third covers a turn that appends more
-/// than the API's 20 block lookback. The fourth slot stays free: a gateway that
-/// turns on automatic caching takes it, and five is rejected outright.
+/// An entry is written only at a breakpoint, so marking the system prompt alone leaves the transcript uncached.
+/// The third covers a turn that appends more than the API's 20 block lookback.
+/// The fourth slot stays free: a gateway that turns on automatic caching takes it, and five is rejected outright.
 fn apply_cache_breakpoints(
     system_blocks: &mut [crate::messages::TextBlock],
     messages: &mut [crate::messages::Message],
@@ -87,8 +84,8 @@ fn apply_cache_breakpoints(
         .rev()
         .find(|&i| mark_message_cache_breakpoint(&mut messages[i]));
 
-    // Where the previous request ended. A turn can append several user messages
-    // in a row, so skip the whole trailing run rather than a neighbour of the tip.
+    // Where the previous request ended
+    // A turn can append several user messages in a row, so skip the whole trailing run rather than a neighbour of the tip
     if let Some(tip) = tip
         && let Some(prev) = messages[..tip]
             .iter()
@@ -360,8 +357,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                     cache_control: None,
                 });
             }
-            // `tco_*` blobs carry only `signature`; real reasoning sets
-            // `thinking`.
+            // `tco_*` blobs carry only `signature`; real reasoning sets `thinking`
             ConversationItem::Reasoning(r) => {
                 flush_tool_results(&mut pending_tool_results, &mut messages);
                 let thinking = reasoning_item_text(r);
@@ -388,7 +384,6 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     let system: Option<SystemParam> = if system_blocks.is_empty() {
         None
     } else if system_blocks.len() == 1 && system_blocks[0].cache_control.is_none() {
-        // Single block without cache_control - can use text form
         Some(SystemParam::Text(system_blocks[0].text.clone()))
     } else {
         Some(SystemParam::Blocks(system_blocks))
@@ -413,7 +408,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         ConversationToolChoice::Auto => ToolChoiceParam::Auto,
         ConversationToolChoice::Required => ToolChoiceParam::Any,
         ConversationToolChoice::Function(name) => ToolChoiceParam::Tool { name: name.clone() },
-        ConversationToolChoice::None => ToolChoiceParam::Auto, // default
+        ConversationToolChoice::None => ToolChoiceParam::Auto, // ToolChoiceParam has no none variant, so fall back to the default
     });
 
     let effort = req
@@ -421,8 +416,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         .and_then(|e| e.to_messages_api())
         .map(|s| s.to_string());
 
-    // A wire schema here suppresses tool calls, so the agent routes
-    // structured output through the StructuredOutput tool instead.
+    // A wire schema here suppresses tool calls, so the agent routes structured output through the StructuredOutput tool instead
     let format = req
         .json_schema
         .as_ref()
@@ -453,7 +447,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         temperature: req.temperature,
         top_p: req.top_p,
         top_k: None,
-        stream: None, // Set by caller
+        stream: None, // The caller sets this
         stop_sequences: None,
         thinking,
         output_config,
@@ -461,8 +455,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     }
 }
 
-/// `Thinking` is dropped because this `From` returns a single item; the
-/// streaming consumer emits the sibling `Reasoning` item instead.
+/// `Thinking` is dropped because this `From` returns a single item; the streaming consumer emits the sibling `Reasoning` item instead.
 impl From<crate::messages::MessagesResponse> for ConversationItem {
     fn from(resp: crate::messages::MessagesResponse) -> Self {
         use crate::messages::ContentBlock;
@@ -489,9 +482,9 @@ impl From<crate::messages::MessagesResponse> for ConversationItem {
                         ),
                     });
                 }
-                // Thinking dropped — see doc comment above.
+                // Thinking is dropped; see the doc comment above
                 ContentBlock::Thinking { .. } => {}
-                _ => {} // Image, ToolResult not expected in assistant responses
+                _ => {} // Image and ToolResult are not expected in assistant responses
             }
         }
 
