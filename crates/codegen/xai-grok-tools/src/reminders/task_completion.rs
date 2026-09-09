@@ -117,9 +117,6 @@ impl ReportedTaskCompletions {
         }
         self.reported.insert(id.to_owned())
     }
-    pub fn is_reported(&self, id: &str) -> bool {
-        self.reported.contains(id)
-    }
 }
 crate::register_resource!(
     "grok_build",

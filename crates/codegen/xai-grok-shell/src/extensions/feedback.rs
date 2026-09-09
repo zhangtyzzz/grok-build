@@ -15,9 +15,13 @@ pub use super::feedback_drafts::draft_op_error;
 use crate::agent::MvpAgent;
 use crate::session::persistence::{LocalFeedbackEntry, UserFeedbackEntry};
 use crate::session::{
-    ClientFeedbackInput, FeedbackDraftSendRequest, FeedbackRequestDismiss, FeedbackResponse,
+    ClientFeedbackInput, CommentDeleteRequest, CommentDeleteResponse, CommentRequest,
+    CommentResponse, FeedbackDraftSendRequest, FeedbackRequestDismiss, FeedbackResponse,
     SessionCommand,
 };
+use crate::upload::gcs::WithAuth as _;
+use xai_file_utils::gcs::upload_bytes;
+use xai_grok_telemetry::id::agent_id;
 
 #[tracing::instrument(skip_all, fields(method = %args.method))]
 pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
@@ -477,7 +481,7 @@ async fn handle_upload_trace(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRes
     let session_id = req.session_id.clone();
     let archive = tokio::task::spawn_blocking({
         let session_dir = session_dir.clone();
-        move || crate::upload::feedback_archive::build_session_archive(&session_dir, &session_id)
+        move || xai_grok_feedback::build_session_archive(&session_dir, &session_id)
     })
     .await
     .map_err(|e| acp::Error::internal_error().data(format!("couldn't build session archive: {e}")))?

@@ -215,14 +215,16 @@ async fn plan_mode_enter_and_exit_leave_permission_manager_untouched() {
             actor.permissions.set_auto_mode(true);
             actor
                 .handle_session_mode(acp::SessionModeId::new("plan"))
-                .await;
+                .await
+                .unwrap();
             assert!(
                 actor.permissions.is_auto_mode(),
                 "entering plan mode must keep auto mode"
             );
             actor
                 .handle_session_mode(acp::SessionModeId::new("default"))
-                .await;
+                .await
+                .unwrap();
             assert!(
                 actor.permissions.is_auto_mode(),
                 "leaving plan mode must keep auto mode"
@@ -231,14 +233,16 @@ async fn plan_mode_enter_and_exit_leave_permission_manager_untouched() {
             actor.permissions.set_yolo_mode(true);
             actor
                 .handle_session_mode(acp::SessionModeId::new("plan"))
-                .await;
+                .await
+                .unwrap();
             assert!(
                 actor.permissions.is_yolo_mode(),
                 "entering plan mode must keep always-approve"
             );
             actor
                 .handle_session_mode(acp::SessionModeId::new("default"))
-                .await;
+                .await
+                .unwrap();
             assert!(
                 actor.permissions.is_yolo_mode(),
                 "leaving plan mode must keep always-approve"

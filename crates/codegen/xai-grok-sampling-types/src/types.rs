@@ -1058,10 +1058,42 @@ impl PromptCachePolicy {
     }
 }
 
+/// Stable identifier shared by every model request in one root conversation tree.
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ConversationGroupId(String);
+
+impl AsRef<str> for ConversationGroupId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ConversationGroupId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<String> for ConversationGroupId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for ConversationGroupId {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
 /// Sampling client configuration (API key excluded — that stays in the client).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SamplingConfig {
     pub base_url: String,
+    /// Resolved local directory for this model's mTLS client identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtls_cert_dir: Option<std::path::PathBuf>,
     /// Stable catalog key for the physical model backing this session.
     ///
     /// `model` is the provider-facing routing slug and is not an identity:

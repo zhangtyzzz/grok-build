@@ -540,6 +540,7 @@ fn model_show_model_fingerprint_reads_catalog_flag() {
 
     let mut flagged = ModelEntry {
         info: config::ModelInfo::fallback("fp-model"),
+        mtls_cert_dir: None,
         api_key: None,
         env_key: None,
         auth_provider: None,
@@ -553,6 +554,7 @@ fn model_show_model_fingerprint_reads_catalog_flag() {
         "plain-model",
         ModelEntry {
             info: config::ModelInfo::fallback("plain-model"),
+            mtls_cert_dir: None,
             api_key: None,
             env_key: None,
             auth_provider: None,
@@ -563,6 +565,7 @@ fn model_show_model_fingerprint_reads_catalog_flag() {
 
     let mut custom = ModelEntry {
         info: config::ModelInfo::fallback("enterprise-slug"),
+        mtls_cert_dir: None,
         api_key: None,
         env_key: None,
         auth_provider: None,
@@ -588,6 +591,7 @@ fn reasoning_effort_helpers_resolve_wire_name_to_catalog_key() {
 
     let mut custom = ModelEntry {
         info: config::ModelInfo::fallback("enterprise-slug"),
+        mtls_cert_dir: None,
         api_key: None,
         env_key: None,
         auth_provider: None,
@@ -833,6 +837,7 @@ fn rebuild_updates_models_and_available() {
         "test-model".to_string(),
         ModelEntry {
             info: config::ModelInfo::fallback("test-model"),
+            mtls_cert_dir: None,
             api_key: None,
             env_key: None,
             auth_provider: None,
@@ -888,6 +893,7 @@ fn default_reasoning_effort_only_stamps_supporting_model() {
     let mut prefetched = IndexMap::new();
     let mut reasoning_entry = ModelEntry {
         info: config::ModelInfo::fallback("reasoning-model"),
+        mtls_cert_dir: None,
         api_key: None,
         env_key: None,
         auth_provider: None,
@@ -911,6 +917,7 @@ fn default_reasoning_effort_only_stamps_supporting_model() {
     let mut prefetched = IndexMap::new();
     let plain_entry = ModelEntry {
         info: config::ModelInfo::fallback("plain-model"),
+        mtls_cert_dir: None,
         api_key: None,
         env_key: None,
         auth_provider: None,
@@ -939,6 +946,7 @@ fn reasoning_effort_override_skips_models_that_do_not_offer_level() {
     let mut prefetched = IndexMap::new();
     let mut no_none = ModelEntry {
         info: config::ModelInfo::fallback("grok-4.5"),
+        mtls_cert_dir: None,
         api_key: None,
         env_key: None,
         auth_provider: None,
@@ -958,6 +966,7 @@ fn reasoning_effort_override_skips_models_that_do_not_offer_level() {
 
     let mut with_none = ModelEntry {
         info: config::ModelInfo::fallback("legacy-none"),
+        mtls_cert_dir: None,
         api_key: None,
         env_key: None,
         auth_provider: None,
@@ -1065,6 +1074,7 @@ fn cli_reasoning_effort_override_only_stamps_supporting_models() {
     let mut prefetched = IndexMap::new();
     let mut reasoning_entry = ModelEntry {
         info: config::ModelInfo::fallback("reasoning-model"),
+        mtls_cert_dir: None,
         api_key: None,
         env_key: None,
         auth_provider: None,
@@ -1076,6 +1086,7 @@ fn cli_reasoning_effort_override_only_stamps_supporting_models() {
 
     let plain_entry = ModelEntry {
         info: config::ModelInfo::fallback("plain-model"),
+        mtls_cert_dir: None,
         api_key: None,
         env_key: None,
         auth_provider: None,
@@ -1947,6 +1958,7 @@ async fn fetch_and_apply_degrades_offline_when_remote_fetch_disabled() {
         "static-one",
         ModelEntry {
             info: config::ModelInfo::fallback("static-one"),
+            mtls_cert_dir: None,
             api_key: None,
             env_key: None,
             auth_provider: None,
@@ -1974,6 +1986,7 @@ fn default_model_skips_oauth_only_for_api_key_users() {
 
     let mut oauth_only = ModelEntry {
         info: config::ModelInfo::fallback("oauth-only"),
+        mtls_cert_dir: None,
         api_key: None,
         env_key: None,
         auth_provider: None,
@@ -1985,6 +1998,7 @@ fn default_model_skips_oauth_only_for_api_key_users() {
 
     let public = ModelEntry {
         info: config::ModelInfo::fallback("public-model"),
+        mtls_cert_dir: None,
         api_key: None,
         env_key: None,
         auth_provider: None,

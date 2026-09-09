@@ -461,13 +461,7 @@ async fn task_completion_wake_is_admitted_without_cancel_barrier() {
             ));
             drop(state);
             assert!(
-                resources
-                    .lock()
-                    .await
-                    .get::<xai_grok_tools::types::resources::State<
-                        xai_grok_tools::reminders::task_completion::ReportedTaskCompletions,
-                    >>()
-                    .is_none_or(|reported| !reported.is_reported("bg-normal")),
+                !already_reported(&actor, "bg-normal").await,
                 "queue acceptance alone must not mark the completion reported"
             );
             let actor_for_turn = actor.clone();

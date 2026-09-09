@@ -526,6 +526,7 @@ fn session_resolver_is_not_stamped_onto_third_party_samplers() {
     );
     assert_eq!(
         first_party
+            .config
             .conversation_group_id
             .as_ref()
             .map(|id| id.as_ref()),

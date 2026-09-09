@@ -702,14 +702,18 @@ impl SessionActor {
             .expect("catalog context windows are non-zero");
         let resolved = xai_grok_sampling_types::SamplingConfig {
             base_url: fresh.base_url.clone(),
+            mtls_cert_dir: fresh.mtls_cert_dir.clone(),
             model_ref: fresh.model_ref.clone(),
             route_ref: Some(route_ref),
             model: fresh.model.clone(),
             max_completion_tokens: fresh.max_completion_tokens,
             temperature: fresh.temperature,
             top_p: fresh.top_p,
+            max_retries: fresh.max_retries,
+            rate_limit_retry_threshold: fresh.rate_limit_retry_threshold,
             api_backend: fresh.api_backend.clone(),
             extra_headers: fresh.extra_headers.clone(),
+            conversation_group_id: current.conversation_group_id.clone(),
             query_params: fresh.query_params.clone(),
             env_http_headers: fresh.env_http_headers.clone(),
             context_window,
@@ -815,14 +819,18 @@ impl SessionActor {
                 (
                     xai_grok_sampling_types::SamplingConfig {
                         base_url: String::new(),
+                        mtls_cert_dir: None,
                         model_ref: None,
                         route_ref: None,
                         model: String::new(),
                         max_completion_tokens: None,
                         temperature: None,
                         top_p: None,
+                        max_retries: None,
+                        rate_limit_retry_threshold: None,
                         api_backend: Default::default(),
                         extra_headers: Default::default(),
+                        conversation_group_id: None,
                         query_params: Default::default(),
                         env_http_headers: Default::default(),
                         context_window: std::num::NonZeroU64::new(256_000).unwrap(),
@@ -899,6 +907,7 @@ impl SessionActor {
         SamplingConfig {
             api_key,
             base_url: cfg.base_url,
+            mtls_cert_dir: cfg.mtls_cert_dir,
             model_ref: cfg.model_ref,
             route_ref: cfg.route_ref,
             model: cfg.model,
@@ -1537,7 +1546,7 @@ impl SessionActor {
                     tracing::warn!(
                     session_id = %self.session_info.id.0,
                     is_session_based = gate.is_session_based,
-                    model_byok = gate.model_byok.as_str(),
+                    model_byok = gate.model_byok.as_ref(),
                         endpoint_is_first_party = gate.endpoint_is_first_party,
                         "auth recovery: sampler 401 not refreshable (api-key auth) — surfacing 401",
                     );
@@ -1545,10 +1554,10 @@ impl SessionActor {
                         "auth recovery: sampler 401 not eligible (api-key auth)",
                         Some(self.session_info.id.0.as_ref()),
                         Some(serde_json::json!({
-                            "kind": error.kind.as_str(),
+                            "kind": error.kind.as_ref(),
                             "status_code": error.status_code,
                             "is_session_based": gate.is_session_based,
-                                "model_byok": gate.model_byok.as_str(),
+                            "model_byok": gate.model_byok.as_ref(),
                             "endpoint_is_first_party": gate.endpoint_is_first_party,
                         })),
                     );

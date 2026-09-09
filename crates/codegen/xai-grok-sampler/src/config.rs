@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use xai_grok_sampling_types::{
-    ApiBackend, CompactionAtTokens, CompactionsRemaining, DoomLoopRecoveryPolicy,
-    PromptCachePolicy, ReasoningEffort,
+    ApiBackend, CompactionAtTokens, CompactionsRemaining, ConversationGroupId,
+    DoomLoopRecoveryPolicy, PromptCachePolicy, ReasoningEffort,
 };
 
 use crate::attribution::SharedAttributionCallback;
@@ -28,6 +28,9 @@ pub enum AuthScheme {
 pub struct SamplerConfig {
     pub api_key: Option<String>,
     pub base_url: String,
+    /// Resolved local directory for this model's mTLS client identity.
+    #[serde(default)]
+    pub mtls_cert_dir: Option<PathBuf>,
     /// Stable catalog key for the physical model selected for this request.
     ///
     /// This is intentionally distinct from `model`, which is only the
@@ -126,6 +129,7 @@ impl Default for SamplerConfig {
         Self {
             api_key: None,
             base_url: String::new(),
+            mtls_cert_dir: None,
             model_ref: None,
             route_ref: None,
             model: String::new(),

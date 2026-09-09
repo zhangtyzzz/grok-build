@@ -770,6 +770,7 @@ async fn read_parent_sampling_config(
             let inherited = xai_grok_sampler::SamplerConfig {
                 api_key: creds.api_key,
                 base_url: cfg.base_url,
+                mtls_cert_dir: cfg.mtls_cert_dir,
                 model_ref: cfg.model_ref,
                 route_ref: cfg.route_ref,
                 model: cfg.model.clone(),

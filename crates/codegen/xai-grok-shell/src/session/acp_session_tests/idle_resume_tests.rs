@@ -104,6 +104,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 vec![],
                 xai_grok_sampling_types::SamplingConfig {
                     base_url: mock_url,
+                    mtls_cert_dir: None,
                     model_ref: None,
                     route_ref: None,
                     model: "test-model".to_string(),

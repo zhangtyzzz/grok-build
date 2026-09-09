@@ -535,6 +535,30 @@ impl SessionActor {
             self.invalidate_side_calls_for_new_prompt();
         }
         self.ensure_session_disk_writable().await?;
+        let wake_message = match input_origin.as_prompt_origin() {
+            super::super::PromptOrigin::SubagentCompleted { subagent_id } => {
+                Some(self.build_wake_turn_message(subagent_id).await)
+            }
+            _ => None,
+        };
+        let (prompt_blocks, commit_ids) = match wake_message {
+            Some(WakeTurnMessage::Digest { text, ids }) => (
+                vec![acp::ContentBlock::Text(acp::TextContent::new(text))],
+                ids,
+            ),
+            Some(WakeTurnMessage::Silent) => {
+                tracing::info!(prompt_id, "ending wake turn without sampling");
+                return ok_end_turn(0, None);
+            }
+            Some(WakeTurnMessage::KeepBody) | None => (
+                prompt_blocks,
+                input_origin
+                    .completion_id()
+                    .map(str::to_owned)
+                    .into_iter()
+                    .collect(),
+            ),
+        };
         self.signals_handle().increment_turn();
         let prompt_mode = self
             .resolve_turn_prompt_mode(input_origin.as_prompt_origin(), prompt_mode)
@@ -2429,6 +2453,8 @@ impl SessionActor {
         let _clear_turn_span_id = ClearTurnSpanId(&self.current_turn_span_id);
         let conv_turn_start = std::time::Instant::now();
         let conv_turn_clock = DualClock::now();
+        let turn_phases = self.turn_phases.clone();
+        turn_phases.start();
         self.refresh_token_if_expired().await;
         self.preflight_active_route_for_request().await?;
         self.maybe_refresh_model_metadata_on_resume().await;
@@ -2976,7 +3002,9 @@ impl SessionActor {
                                 },
                             ))
                             .await;
-                            pace_uncharged_resubmit(store, self.auth_manager.as_ref()).await;
+                            pace_uncharged_resubmit(store, self.auth_manager.as_deref(), delay)
+                                .await;
+                            turn_phases.record_sampling_retries(1);
                             retry_same_route_candidate = true;
                             continue;
                         }

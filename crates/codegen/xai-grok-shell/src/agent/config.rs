@@ -3625,6 +3625,9 @@ pub(crate) fn resolve_model_list(
             }
         });
         let effective = with_provider.as_ref().unwrap_or(model_override);
+        if effective.api_backend.is_some() {
+            explicit_api_backend_keys.insert(key.as_str());
+        }
         if let Some(provider_id) = effective.provider.as_deref() {
             match cfg.providers.get(provider_id) {
                 Some(provider) => {

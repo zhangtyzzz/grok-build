@@ -2332,6 +2332,7 @@ async fn retry_after_lost_ack_converges_memory_and_disk_to_authoritative_item() 
         vec![],
         xai_grok_sampling_types::SamplingConfig {
             base_url: String::new(),
+            mtls_cert_dir: None,
             model_ref: None,
             route_ref: None,
             model: String::new(),

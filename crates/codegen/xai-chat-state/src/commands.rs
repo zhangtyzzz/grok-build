@@ -476,7 +476,7 @@ mod tests {
                 reasoning_effort: None,
                 stream_tool_calls: None,
                 prompt_cache: Default::default(),
-            },
+            }),
         };
         let (tx, _rx) = oneshot::channel();
         let _ = ChatStateCommand::ReplaceSamplingConfigAndCredentials {

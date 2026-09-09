@@ -1,5 +1,19 @@
 use super::*;
 
+/// Path written (or the session key on auto-trust), never the raw git root.
+fn hooks_trust_key(
+    outcome: &xai_grok_workspace::folder_trust::GrantOutcome,
+    cwd: &std::path::Path,
+) -> std::path::PathBuf {
+    match outcome {
+        xai_grok_workspace::folder_trust::GrantOutcome::Granted { key, .. }
+        | xai_grok_workspace::folder_trust::GrantOutcome::AlreadyDurable { key } => key.clone(),
+        xai_grok_workspace::folder_trust::GrantOutcome::Refused { .. } => {
+            xai_grok_workspace::trust::workspace_key(cwd)
+        }
+    }
+}
+
 /// Parse every hook contributed by active plugins, injecting the plugin-owned
 /// environment values required by their command adapters.
 ///

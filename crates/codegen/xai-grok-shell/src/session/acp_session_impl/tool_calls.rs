@@ -213,6 +213,17 @@ pub(super) enum PlanEditGate {
     /// A command or tool whose side effects cannot be proven read-only.
     RejectSideEffect,
 }
+fn access_kind_for_resolved_tool(tool_name: &str, tool_input: &ToolInput) -> AccessKind {
+    if tool_name == xai_grok_tools::implementations::grok_build::SEND_FEEDBACK_TOOL_NAME {
+        return match tool_input {
+            ToolInput::SendFeedback(_) | ToolInput::Dynamic(_) => {
+                AccessKind::Edit("feedback_draft".to_owned())
+            }
+            other => AccessKind::from(other),
+        };
+    }
+    AccessKind::from(tool_input)
+}
 /// Gate edit-class tool calls while plan mode is active.
 ///
 /// Plan mode is read-only **in every permission mode, including always-approve**.
@@ -291,6 +302,7 @@ pub(super) fn plan_mode_edit_gate(
         | ToolInput::SchedulerCreate(_)
         | ToolInput::SchedulerDelete(_)
         | ToolInput::Workflow(_)
+        | ToolInput::SendFeedback(_)
         | ToolInput::UpdateGoal(_)
         | ToolInput::Dynamic(_) => PlanEditGate::RejectSideEffect,
     }
@@ -1256,8 +1268,7 @@ impl SessionActor {
                 tool_result_size_bytes = tool_result_size_bytes,
                 success = matches!(tool_outcome, crate::session::events::ToolOutcome::Success),
                 outcome = <&'static str >::from(tool_outcome),
-            )
-            .in_scope(|| {});
+            );
             if let Some(artifact) = compaction_artifact_read(&prepared.parsed_args) {
                 xai_grok_telemetry::event_span!(
                     "compaction.segment_read",
@@ -1599,8 +1610,7 @@ impl SessionActor {
                 decision = "deny",
                 source = "plan_mode",
                 wait_ms = 0_i64,
-            )
-            .in_scope(|| {});
+            );
             let msg = self.plan_mode_tool_rejected_message(plan_gate).await;
             self.handle_tool_not_executed(&call.id, &tool_call_id, msg.clone())
                 .await?;
@@ -1616,7 +1626,7 @@ impl SessionActor {
             AccessKind::Edit(path) if hook_ask.is_none() => self
                 .plan_mode
                 .lock()
-                .should_auto_approve_edit(std::path::Path::new(path)),
+                .should_auto_approve_edit(std::path::Path::new(&path)),
             _ => false,
         };
         if plan_file_auto_approve {

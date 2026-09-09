@@ -25,6 +25,7 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
         sampling_config: xai_grok_sampler::SamplerConfig {
             api_key: None,
             base_url: String::new(),
+            mtls_cert_dir: None,
             model_ref: None,
             route_ref: None,
             model: String::new(),

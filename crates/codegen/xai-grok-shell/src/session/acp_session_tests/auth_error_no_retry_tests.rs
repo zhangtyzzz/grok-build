@@ -1559,6 +1559,7 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
             let cfg = xai_grok_sampler::SamplerConfig {
                 api_key: Some("byok-key".to_string()),
                 base_url: "https://third-party.example/v1".to_string(),
+                mtls_cert_dir: None,
                 model_ref: None,
                 route_ref: None,
                 model: model.clone(),
@@ -1667,6 +1668,7 @@ async fn switch_to_first_party_model_drops_minted_provider_token() {
             let cfg = xai_grok_sampler::SamplerConfig {
                 api_key: Some("session-jwt".to_string()),
                 base_url: "https://api.x.ai/v1".to_string(),
+                mtls_cert_dir: None,
                 model_ref: None,
                 route_ref: None,
                 model,

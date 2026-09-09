@@ -374,9 +374,10 @@ async fn fail_closed_401_is_uncharged_and_turn_survives_impl() {
     let refresher = Arc::new(WakeGapRefresher {
         calls: calls.clone(),
         fail_pre_request: true,
+        mint_ttl: chrono::Duration::hours(1),
     });
     let (_dir, am) = expired_auth_manager(refresher);
-    let (actor, _updates) = session_token_actor(&server, am).await;
+    let (actor, _updates) = session_token_actor(&server, am, ActorShape::default()).await;
 
     let outcome = run_prompt(&actor, "auth-retry-budget-fail-closed").await;
     assert!(
@@ -437,9 +438,10 @@ async fn authenticated_401s_still_exhaust_after_three_retries_impl() {
     let refresher = Arc::new(WakeGapRefresher {
         calls: Arc::new(AtomicU32::new(0)),
         fail_pre_request: false,
+        mint_ttl: chrono::Duration::hours(1),
     });
     let (_dir, am) = expired_auth_manager(refresher);
-    let (actor, updates) = session_token_actor(&server, am).await;
+    let (actor, updates) = session_token_actor(&server, am, ActorShape::default()).await;
 
     let outcome = run_prompt(&actor, "auth-retry-budget-exhaust").await;
     let err = outcome.expect_err("authenticated 401s must exhaust and fail the turn");

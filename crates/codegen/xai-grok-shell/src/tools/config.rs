@@ -197,6 +197,7 @@ impl ShellToolsetConfig {
         let default_base = SamplerConfig {
             api_key: None,
             base_url: "https://api.x.ai/v1".to_string(),
+            mtls_cert_dir: None,
             model_ref: None,
             route_ref: None,
             model: String::new(),

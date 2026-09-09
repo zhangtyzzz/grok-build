@@ -175,14 +175,18 @@ impl SessionActor {
             .replace_sampling_config_and_credentials(
                 xai_grok_sampling_types::SamplingConfig {
                     base_url: sampling_config.base_url.clone(),
+                    mtls_cert_dir: sampling_config.mtls_cert_dir.clone(),
                     model_ref: sampling_config.model_ref.clone(),
                     route_ref: sampling_config.route_ref.clone(),
                     model: sampling_config.model.clone(),
                     max_completion_tokens: sampling_config.max_completion_tokens,
                     temperature: sampling_config.temperature,
                     top_p: sampling_config.top_p,
+                    max_retries: sampling_config.max_retries,
+                    rate_limit_retry_threshold: sampling_config.rate_limit_retry_threshold,
                     api_backend: sampling_config.api_backend.clone(),
                     extra_headers: sampling_config.extra_headers.clone(),
+                    conversation_group_id: sampling_config.conversation_group_id.clone(),
                     query_params: sampling_config.query_params.clone(),
                     env_http_headers: sampling_config.env_http_headers.clone(),
                     context_window: new_context_window,

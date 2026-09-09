@@ -2688,6 +2688,7 @@ fn test_sampling_config(model_slug: &str) -> xai_grok_sampling_types::SamplingCo
     use std::num::NonZeroU64;
     xai_grok_sampling_types::SamplingConfig {
         base_url: "https://api.test/v1".to_string(),
+        mtls_cert_dir: None,
         model_ref: None,
         route_ref: None,
         model: model_slug.to_string(),

@@ -2991,6 +2991,10 @@ mod durable_plan_persistence_tests {
             acp::ModelId::new("executor"),
             sampling_client(),
             crate::test_support::TEST_MODEL.to_owned(),
+            ExplicitSessionOpen::New {
+                identity: None,
+                next_trace_turn: None,
+            },
         )
         .await
         .expect("persistence actor starts");

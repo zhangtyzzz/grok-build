@@ -114,6 +114,7 @@ async fn create_test_actor_with_memory(
         vec![],
         xai_grok_sampling_types::SamplingConfig {
             base_url: "http://localhost".to_string(),
+            mtls_cert_dir: None,
             model_ref: None,
             route_ref: None,
             model: "test".to_string(),

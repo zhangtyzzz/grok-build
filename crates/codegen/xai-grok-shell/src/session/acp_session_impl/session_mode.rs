@@ -690,8 +690,7 @@ impl SessionActor {
                 to_mode = %session_mode_id.0,
                 trigger = "user",
                 enabled = false,
-            )
-            .in_scope(|| {});
+            );
         } else if has_model_scope {
             if let Err(error) = self.apply_plan_model_scope(false, false).await {
                 tracing::error!(

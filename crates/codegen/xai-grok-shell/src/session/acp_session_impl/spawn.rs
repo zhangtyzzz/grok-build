@@ -554,6 +554,7 @@ pub(crate) async fn spawn_session_actor(
     let chat_state_guard = chat_state_span.enter();
     let chat_state_sampling_config = xai_grok_sampling_types::SamplingConfig {
         base_url: sampling_config.base_url.clone(),
+        mtls_cert_dir: sampling_config.mtls_cert_dir.clone(),
         model_ref: sampling_config.model_ref.clone(),
         route_ref: sampling_config.route_ref.clone(),
         model: sampling_config.model.clone(),
@@ -2041,98 +2042,89 @@ pub(crate) async fn spawn_session_actor(
         workspace_ops: workspace_ops.clone(),
         trace_config_template: std::cell::RefCell::new(None),
     });
-    if owns_permission_manager {
-        session.wire_permission_prompt_notification();
-    }
-    if goal_was_restored {
-        let current_tokens = session.chat_state_handle.get_total_tokens().await as i64;
-        let (tokens_used, finished_marginal) = session.goal_tokens(current_tokens);
-        session.goal_notify_sender().emit_goal_updated(
-            &mut session.goal_tracker.lock(),
-            tokens_used,
-            finished_marginal,
-        );
-    }
-    session.emit_resolved_tool_overrides();
-    {
-        let drainer_session = session.clone();
-        let mut sampler_event_rx = sampler_event_rx;
-        tokio::task::spawn_local(async move {
-            while let Some(event) = sampler_event_rx.recv().await {
-                drainer_session.handle_sampling_event(event).await;
-            }
-            tracing::debug!("sampler event drainer exiting (channel closed)");
-        });
-    }
-    if !background_workflows_enabled {
-        let drainer_session = session.clone();
-        let Some(mut goal_update_rx) = session.goal_update_rx.borrow_mut().take() else {
-            unreachable!("goal_update_rx must be Some at session spawn");
-        };
-        tokio::task::spawn_local(async move {
-            while let Some(envelope) = goal_update_rx.recv().await {
-                let current_tokens =
-                    drainer_session.chat_state_handle.get_total_tokens().await as i64;
-                drainer_session
-                    .drain_goal_updates_with_extra(
-                        current_tokens,
-                        DrainPurpose::MidTurn,
-                        vec![envelope],
-                    )
-                    .await;
-            }
-            tracing::debug!("goal update drainer exiting (channel closed)");
-        });
-    }
-    {
-        let snapshot = session.tool_metadata_snapshot.clone();
-        let tool_index = crate::session::tool_index::Bm25ToolSearchIndex::new(snapshot);
-        session
-            .agent
-            .borrow()
-            .tool_bridge()
-            .update_resource(xai_grok_tools::types::tool_index::ToolIndex(
-                std::sync::Arc::new(tool_index),
-            ))
-            .await;
-    }
-    if let Some(client) = managed_gateway_tool_client.clone() {
-        session
-            .agent
-            .borrow()
-            .tool_bridge()
-            .update_resource(client)
-            .await;
-    }
-    {
-        let plan_path = session.plan_mode.lock().plan_file_path().to_path_buf();
-        let bridge = session.agent.borrow().tool_bridge().clone();
-        bridge
-            .update_resource(xai_grok_tools::types::resources::PlanFilePath(
-                plan_path.clone(),
-            ))
-            .await;
-        bridge
-            .update_resource(xai_grok_tools::types::resources::ProtectedPlanFilePath(
-                plan_path,
-            ))
-            .await;
-    }
-    session.inject_deny_read_globs().await;
-    if session.permissions.is_auto_mode() {
-        session.wire_permission_auto_llm_classifier().await;
-    }
-    session
-        .agent
-        .borrow()
-        .tool_bridge()
-        .update_resource(
-            xai_grok_tools::implementations::grok_build::workflow::WorkflowLaunchHandle(
-                session.workflow_launch_tx.clone(),
-            ),
-        )
-        .await;
-    if !background_workflows_enabled {
+    drop(actor_build_span);
+    async {
+        if owns_permission_manager {
+            session.wire_permission_prompt_notification();
+        }
+        if goal_was_restored {
+            let current_tokens = session.chat_state_handle.get_total_tokens().await as i64;
+            let (tokens_used, finished_marginal) = session.goal_tokens(current_tokens);
+            session.goal_notify_sender().emit_goal_updated(
+                &mut session.goal_tracker.lock(),
+                tokens_used,
+                finished_marginal,
+            );
+        }
+        session.emit_resolved_tool_overrides();
+        {
+            let drainer_session = session.clone();
+            let mut sampler_event_rx = sampler_event_rx;
+            tokio::task::spawn_local(async move {
+                while let Some(event) = sampler_event_rx.recv().await {
+                    drainer_session.handle_sampling_event(event).await;
+                }
+                tracing::debug!("sampler event drainer exiting (channel closed)");
+            });
+        }
+        if !background_workflows_enabled {
+            let drainer_session = session.clone();
+            let Some(mut goal_update_rx) = session.goal_update_rx.borrow_mut().take() else {
+                unreachable!("goal_update_rx must be Some at session spawn");
+            };
+            tokio::task::spawn_local(async move {
+                while let Some(envelope) = goal_update_rx.recv().await {
+                    let current_tokens =
+                        drainer_session.chat_state_handle.get_total_tokens().await as i64;
+                    drainer_session
+                        .drain_goal_updates_with_extra(
+                            current_tokens,
+                            DrainPurpose::MidTurn,
+                            vec![envelope],
+                        )
+                        .await;
+                }
+                tracing::debug!("goal update drainer exiting (channel closed)");
+            });
+        }
+        {
+            let snapshot = session.tool_metadata_snapshot.clone();
+            let tool_index = crate::session::tool_index::Bm25ToolSearchIndex::new(snapshot);
+            session
+                .agent
+                .borrow()
+                .tool_bridge()
+                .update_resource(xai_grok_tools::types::tool_index::ToolIndex(
+                    std::sync::Arc::new(tool_index),
+                ))
+                .await;
+        }
+        if let Some(client) = managed_gateway_tool_client.clone() {
+            session
+                .agent
+                .borrow()
+                .tool_bridge()
+                .update_resource(client)
+                .await;
+        }
+        {
+            let plan_path = session.plan_mode.lock().plan_file_path().to_path_buf();
+            let bridge = session.agent.borrow().tool_bridge().clone();
+            bridge
+                .update_resource(xai_grok_tools::types::resources::PlanFilePath(
+                    plan_path.clone(),
+                ))
+                .await;
+            bridge
+                .update_resource(xai_grok_tools::types::resources::ProtectedPlanFilePath(
+                    plan_path,
+                ))
+                .await;
+        }
+        session.inject_deny_read_globs().await;
+        if session.permissions.is_auto_mode() {
+            session.wire_permission_auto_llm_classifier().await;
+        }
         session
             .agent
             .borrow()
