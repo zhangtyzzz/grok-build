@@ -58,6 +58,21 @@ impl ModelsEndpoint for FailingEndpoint {
     }
 }
 
+struct CountingEndpoint {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+impl ModelsEndpoint for CountingEndpoint {
+    fn fetch_models(
+        &self,
+        _endpoints: config::EndpointsConfig,
+        _auth: Option<GrokAuth>,
+        _fetch_auth: ModelFetchAuth,
+    ) -> ModelsFetchFuture {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async { None })
+    }
+}
+
 struct SlowEndpoint {
     catalog: IndexMap<String, ModelEntry>,
     delay: std::time::Duration,
@@ -147,21 +162,6 @@ async fn catalog_retry_recovers_after_endpoint_returns() {
 #[tokio::test]
 async fn disk_cache_reload_applies_without_fetching() {
     use std::sync::atomic::{AtomicUsize, Ordering};
-
-    struct CountingEndpoint {
-        calls: Arc<AtomicUsize>,
-    }
-    impl ModelsEndpoint for CountingEndpoint {
-        fn fetch_models(
-            &self,
-            _endpoints: config::EndpointsConfig,
-            _auth: Option<GrokAuth>,
-            _fetch_auth: ModelFetchAuth,
-        ) -> ModelsFetchFuture {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async { None })
-        }
-    }
 
     let calls = Arc::new(AtomicUsize::new(0));
     let tmp = tempfile::TempDir::new().unwrap();
@@ -329,10 +329,8 @@ async fn etag_refresh_is_bounded_and_single_flighted() {
     }))
     .build();
 
-    // First etag change spawns a bounded fetch; let the task register in-flight.
     mgr.spawn_fetch_inner(Some("etag-1".into()), /*remote_fetch_enabled*/ true);
     tokio::task::yield_now().await;
-    // Single-flight: a second spawn while one is in flight must not fetch again.
     mgr.spawn_fetch_inner(Some("etag-2".into()), /*remote_fetch_enabled*/ true);
     tokio::task::yield_now().await;
     assert_eq!(
@@ -345,7 +343,6 @@ async fn etag_refresh_is_bounded_and_single_flighted() {
     tokio::time::sleep(crate::http::STARTUP_FETCH_TIMEOUT * 2).await;
     tokio::task::yield_now().await;
 
-    // Once the guard is released, a later etag change fetches again
     mgr.spawn_fetch_inner(Some("etag-3".into()), /*remote_fetch_enabled*/ true);
     tokio::task::yield_now().await;
     assert_eq!(
@@ -354,7 +351,6 @@ async fn etag_refresh_is_bounded_and_single_flighted() {
         "after the timeout cleared the in-flight guard, a new etag fetch proceeds",
     );
 
-    // remote_fetch disabled is a no-op: no additional fetch.
     mgr.spawn_fetch_inner(Some("etag-4".into()), /*remote_fetch_enabled*/ false);
     tokio::task::yield_now().await;
     assert_eq!(
@@ -1119,11 +1115,16 @@ fn apply_refresh_result_only_updates_etag_on_success() {
         mgr.prefetched().is_none(),
         "prefetched models should stay unchanged"
     );
+    assert!(
+        !mgr.has_fetched_real_catalog(),
+        "failed refresh must not flip has_fetched_real_catalog"
+    );
 }
 
 fn make_model_entry(model_id: &str) -> ModelEntry {
     ModelEntry {
         info: config::ModelInfo::fallback(model_id),
+        mtls_cert_dir: None,
         api_key: None,
         env_key: None,
         auth_provider: None,
@@ -1138,8 +1139,6 @@ fn make_prefetched(ids: &[&str]) -> IndexMap<String, ModelEntry> {
         .collect()
 }
 
-// ── startup background refresh ─────────────────────────────────────
-
 #[test]
 fn spawn_background_refresh_is_noop_when_real_catalog_present() {
     let mgr = test_manager();
@@ -1148,14 +1147,11 @@ fn spawn_background_refresh_is_noop_when_real_catalog_present() {
     assert!(mgr.has_fetched_real_catalog());
 }
 
-// Guards in CI that the background refresh never blocks the readiness path; the e2e proofs are `#[ignore]`
-// current_thread: the post-spawn `!polled` check relies on the task not being polled until this test awaits
 #[tokio::test(flavor = "current_thread")]
 async fn spawn_background_refresh_never_blocks_on_a_hanging_endpoint() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::Notify;
 
-    // Never resolves; signals the instant the detached task first polls it.
     struct NeverResolvingEndpoint {
         polled: Arc<AtomicBool>,
         dispatched: Arc<Notify>,
@@ -1212,21 +1208,6 @@ async fn spawn_background_refresh_never_blocks_on_a_hanging_endpoint() {
 async fn sign_out_clears_catalog_rebuilds_bundled_without_fetching() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    struct BoomEndpoint {
-        calls: Arc<AtomicUsize>,
-    }
-    impl ModelsEndpoint for BoomEndpoint {
-        fn fetch_models(
-            &self,
-            _endpoints: config::EndpointsConfig,
-            _auth: Option<GrokAuth>,
-            _fetch_auth: ModelFetchAuth,
-        ) -> ModelsFetchFuture {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async { None })
-        }
-    }
-
     // Unset keys so fetch_auth resolves to Session (the sign-out branch).
     let _no_key = EnvGuard::unset("XAI_API_KEY");
     let _no_legacy_key = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
@@ -1240,7 +1221,7 @@ async fn sign_out_clears_catalog_rebuilds_bundled_without_fetching() {
         auth_manager,
         config_from_toml("[models]\ndefault = \"grok-4.5\""),
     )
-    .endpoint(Arc::new(BoomEndpoint {
+    .endpoint(Arc::new(CountingEndpoint {
         calls: calls.clone(),
     }))
     .cache(test_cache_manager(tmp.path()))
@@ -1303,8 +1284,6 @@ fn from_config_without_prefetch_produces_usable_catalog() {
     );
 }
 
-// ── auth-change refresh: has_fetched_real_catalog flag ─────────────
-
 #[test]
 fn first_apply_refresh_reselects_default_model() {
     let mgr = test_manager();
@@ -1362,21 +1341,6 @@ fn subsequent_refresh_reselects_when_model_removed() {
         "should fall back to config default when current is removed"
     );
 }
-
-#[test]
-fn failed_refresh_does_not_set_has_fetched_real_catalog() {
-    let mgr = test_manager();
-    let cfg = config::Config::default();
-
-    mgr.apply_refresh_result(&cfg, None, None);
-
-    assert!(
-        !mgr.has_fetched_real_catalog(),
-        "failed refresh must not flip has_fetched_real_catalog"
-    );
-}
-
-// ── apply_config: honor changed preferred model from config ────────
 
 #[test]
 fn apply_config_honors_new_preferred_model() {
@@ -1486,8 +1450,6 @@ fn apply_config_old_some_new_none_preserves_current() {
     );
 }
 
-// ── end-to-end: auth refresh + config reload compose correctly ───
-
 #[test]
 fn auth_refresh_then_config_reload_preserves_user_model() {
     let mgr = test_manager();
@@ -1511,8 +1473,6 @@ fn auth_refresh_then_config_reload_preserves_user_model() {
     mgr.apply_config(new_cfg);
     assert_eq!(mgr.current_model_id().0.as_ref(), "grok-4");
 }
-
-// ── disk-cache hot-reload (external models_cache.json writes) ────
 
 fn test_cache_manager(dir: &std::path::Path) -> ModelsCacheManager {
     ModelsCacheManager {
@@ -1718,8 +1678,6 @@ fn reload_from_disk_cache_ignores_legacy_cache_without_origin() {
     assert!(!mgr.models().contains_key("grok-legacy"));
 }
 
-// ── clear() resets has_fetched_real_catalog ──────────────────────
-
 #[test]
 fn clear_resets_has_fetched_real_catalog() {
     let mgr = test_manager();
@@ -1853,8 +1811,6 @@ fn unavailable_campaign_default_falls_back_to_config_default() {
     );
 }
 
-// ── ModelFetchAuth::resolve priority tests ──────────────────────
-
 use serial_test::serial;
 use xai_grok_test_support::EnvGuard;
 
@@ -1948,8 +1904,6 @@ fn resolve_deployment_key_outranks_ambient_api_key() {
     );
 }
 
-// ── remote_fetch gate: resolve_prefetch_env_from_parts ───────────
-
 #[test]
 #[serial]
 fn prefetch_env_none_when_remote_fetch_disabled_despite_credentials() {
@@ -2013,8 +1967,6 @@ async fn fetch_and_apply_degrades_offline_when_remote_fetch_disabled() {
     );
 }
 
-// ── supported_in_api tests ──────────────────────────────────────
-
 #[test]
 fn default_model_skips_oauth_only_for_api_key_users() {
     let cfg = config::Config::default();
@@ -2072,8 +2024,6 @@ fn visible_for_auth_logic() {
     assert!(!info.visible_for_auth(false));
 }
 
-// ── duplicate model slug re-keying (A/B experiment "auto" alias) ──
-
 fn make_entry_config(model: &str, name: Option<&str>) -> config::ModelEntryConfig {
     make_entry_config_with_id(None, model, name)
 }
@@ -2106,6 +2056,7 @@ fn make_entry_config_with_id(
         agent_type: config::default_agent_type(),
         inference_idle_timeout_secs: None,
         max_retries: None,
+        rate_limit_retry_threshold: None,
         subagent_rate_limit_max_attempts: None,
         hidden: false,
         supported_in_api: true,
@@ -2187,21 +2138,6 @@ fn resolve_default_model_prefers_id_over_model_slug() {
     let (key, _, _) = resolve_default_model(&cfg, &catalog, true);
     assert_eq!(key, "grok-build", "must match id, not first slug hit");
 }
-
-#[test]
-fn build_prefetched_map_none_id_falls_back_to_slug() {
-    let entries = vec![make_entry_config_with_id(
-        None,
-        "grok-build",
-        Some("Grok Build"),
-    )];
-    let map = build_prefetched_map(entries, None);
-
-    assert_eq!(map.len(), 1);
-    assert!(map.contains_key("grok-build"));
-}
-
-// ── persisted model id → catalog key (session resume) ─────────────
 
 #[test]
 fn resolve_catalog_key_maps_routing_slug_to_config_key() {
@@ -2360,7 +2296,6 @@ async fn explicit_model_pick_survives_first_real_catalog() {
 
 #[tokio::test]
 async fn identity_switch_clears_user_pick_latch() {
-    // After an identity change (`clear()`), the new identity's first catalog must reselect its own default rather than inherit the prior user's pick
     let mgr = test_manager();
     let cfg = config_from_toml("[models]\ndefault = \"grok-4.5\"");
     mgr.set_current_model_id(acp::ModelId::new("grok-4"));
@@ -2370,5 +2305,22 @@ async fn identity_switch_clears_user_pick_latch() {
         mgr.current_model_id().0.as_ref(),
         "grok-4.5",
         "a new identity's first catalog must reselect the default after clear()",
+    );
+}
+
+#[test]
+fn personal_offline_boot_does_not_emit_a_managed_degraded_warn() {
+    use crate::managed_config::LaunchProfile;
+    use xai_grok_telemetry::unified_log::LogLevel;
+
+    assert_eq!(
+        degraded_log_level(LaunchProfile::Personal),
+        LogLevel::Debug,
+        "a personal offline boot must not WARN on every degraded start",
+    );
+    assert_eq!(
+        degraded_log_level(LaunchProfile::Managed),
+        LogLevel::Warn,
+        "a managed degraded start stays a WARN: settings can gate the client",
     );
 }

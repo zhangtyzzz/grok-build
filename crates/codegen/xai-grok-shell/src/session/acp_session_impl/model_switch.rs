@@ -326,13 +326,8 @@ impl SessionActor {
         Ok(model_id)
     }
     /// Handle [`SessionCommand::RebuildAgentForDefinition`].
-    ///
     /// Builds a fresh [`xai_grok_agent::Agent`] from the cached [`crate::session::agent_rebuild::AgentRebuildSpec`] and the supplied definition.
-    /// Replaces `self.agent`, rewrites the system message in the conversation, persists the new prompt artifacts, and updates `active_agent_type`.
-    ///
     /// Triggered from `MvpAgent::set_session_model` only when the new model's `agent_type` differs from the session's `active_agent_type`.
-    /// The trigger also requires `turn_count == 0` (no user message has been sent yet).
-    /// Defense-in-depth: rejects if a turn is in flight.
     pub(super) async fn handle_rebuild_agent_for_definition(
         &self,
         definition: xai_grok_agent::AgentDefinition,
@@ -442,31 +437,13 @@ impl SessionActor {
             }
             self.inject_deny_read_globs().await;
         }
-        {
-            let notified = self.mcp_handshakes_done.notified();
-            tokio::pin!(notified);
-            let needs_wait = {
-                let s = self.mcp_state.lock().await;
-                !s.configs.is_empty() && !s.is_initialized()
-            };
-            if needs_wait {
-                const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-                tokio::select! {
-                    () = &mut notified => {}
-                    () = tokio::time::sleep(TIMEOUT) => {
-                        tracing::warn!(
-                            session_id = %self.session_info.id.0,
-                            "handle_rebuild_agent_for_definition: timed out waiting for MCP handshakes"
-                        );
-                    }
-                }
-            }
-        }
+        self.mcp_state.lock().await.restart_init();
         self.re_register_mcp_tools_on_rebuilt_bridge().await;
-        if let Some(old_handle) = self.deferred_prefix.take() {
-            old_handle.abort();
-        }
-        let new_user_prefix = self.build_user_message_prefix().await;
+        self.ensure_mcp_tools_initialized().await;
+        self.deferred_prefix.cancel();
+        let new_user_prefix = self
+            .build_prefix_after_mcp_wait(self.requires_full_mcp_wait())
+            .await;
         {
             let mut conversation = self.chat_state_handle.get_conversation().await;
             let _ = replace_or_insert_system_head(&mut conversation, &new_system_prompt);
@@ -494,7 +471,8 @@ impl SessionActor {
         persist_chat_history_jsonl_sync(&self.session_info, &snapshot);
         self.mcp_reminder_dirty
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        self.send_available_commands_update().await;
+        self.send_available_commands_update(AdvertiseTrigger::HarnessRebuild)
+            .await;
         tracing::info!(
             session_id = %self.session_info.id.0,
             new_agent_type = %new_agent_name,
@@ -503,9 +481,8 @@ impl SessionActor {
         Ok(())
     }
     /// Apply a client-supplied `systemPromptOverride` on attach without wiping user/assistant history: swap only the leading `System` message.
-    /// The swap happens atomically inside the `ChatStateActor` (see `ChatStateCommand::ReplaceSystemHead` for the serialization guarantees).
+    /// The swap happens atomically inside the `ChatStateActor`.
     /// `system_prompt.txt` (not owned by the persistence actor) is saved directly, even on a head no-op, so a diverged secondary artifact self-heals.
-    /// Skipped entirely on a verbatim mirror-fork (`preserve_inherited_system`).
     pub(super) async fn handle_replace_system_prompt(&self, system_prompt: String) {
         if self.startup_hints.preserve_inherited_system {
             tracing::debug!(
