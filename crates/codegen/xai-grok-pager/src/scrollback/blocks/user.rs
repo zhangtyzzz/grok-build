@@ -232,14 +232,25 @@ impl UserPromptBlock {
         let theme = Theme::current();
         // Minimal mode engages this lock; read it here instead of app state.
         let terminal_native = crate::theme::cache::terminal_native_locked();
-        self.wrap_prompt_lines_with_theme(
+        let mut lines = self.wrap_prompt_lines_with_theme(
             width,
             max_lines,
             show_prefix,
             is_selected,
             &theme,
             terminal_native,
-        )
+        );
+        // The terminal theme in fullscreen mode is bandless, so retain the
+        // upstream bold prompt emphasis without coupling deterministic color
+        // tests to process-global terminal capability state.
+        if !terminal_native && crate::theme::cache::terminal_native_active() {
+            for line in &mut lines {
+                for span in &mut line.content.spans {
+                    span.style = span.style.add_modifier(Modifier::BOLD);
+                }
+            }
+        }
+        lines
     }
 
     /// Deterministic rendering seam used by color-sensitive tests. Production
