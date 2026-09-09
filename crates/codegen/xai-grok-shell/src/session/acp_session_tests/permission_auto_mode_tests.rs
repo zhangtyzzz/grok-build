@@ -7,7 +7,7 @@ use xai_grok_workspace::permission::{
     AccessKind, ClientType, PermissionRequest, spawn_permission_manager,
 };
 
-use super::support::create_test_actor;
+use super::support::{create_test_actor, spawn_test_persistence_acknowledger};
 use super::{PersistenceMsg, SessionActor};
 
 fn dummy_gateway() -> AcpAgentGatewaySender {
@@ -208,7 +208,9 @@ async fn plan_mode_enter_and_exit_leave_permission_manager_untouched() {
         .run_until(async {
             let (gateway_tx, _grx) =
                 tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
-            let (persistence_tx, _prx) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let (persistence_tx, persistence_rx) =
+                tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            spawn_test_persistence_acknowledger(persistence_rx);
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
             install_real_permissions(&mut actor);
 
