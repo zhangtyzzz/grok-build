@@ -253,6 +253,7 @@ mod tests {
     fn test_sampling_config() -> SamplingConfig {
         SamplingConfig {
             base_url: "https://api.example.com".to_string(),
+            mtls_cert_dir: None,
             model_ref: None,
             route_ref: None,
             model: "test-model".to_string(),

@@ -166,6 +166,7 @@ mod tests {
             conversation: vec![],
             sampling_config: SamplingConfig {
                 base_url: "https://api.example.com".to_string(),
+                mtls_cert_dir: None,
                 model_ref: None,
                 route_ref: None,
                 model: "test-model".to_string(),
@@ -222,6 +223,7 @@ mod tests {
             ],
             sampling_config: SamplingConfig {
                 base_url: "https://api.example.com".to_string(),
+                mtls_cert_dir: None,
                 model_ref: None,
                 route_ref: None,
                 model: "grok-3".to_string(),

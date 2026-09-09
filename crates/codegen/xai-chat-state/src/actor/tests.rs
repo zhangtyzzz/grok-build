@@ -20,6 +20,7 @@ fn test_config() -> SamplingConfig {
 fn test_config_with_window(context_window: u64) -> SamplingConfig {
     SamplingConfig {
         base_url: "https://api.example.com".to_string(),
+        mtls_cert_dir: None,
         model_ref: None,
         route_ref: None,
         model: "test-model".to_string(),
@@ -1370,6 +1371,7 @@ async fn update_sampling_config_is_queryable() {
     let h = TestHarness::new();
     let new_config = SamplingConfig {
         base_url: "https://new.example.com".to_string(),
+        mtls_cert_dir: None,
         model_ref: None,
         route_ref: None,
         model: "grok-3".to_string(),
@@ -1904,6 +1906,7 @@ async fn build_request_with_tool_definitions() {
 async fn build_request_uses_sampling_config() {
     let config = SamplingConfig {
         base_url: "https://api.example.com".to_string(),
+        mtls_cert_dir: None,
         model_ref: None,
         route_ref: None,
         model: "grok-3".to_string(),
@@ -4442,6 +4445,7 @@ async fn sampling_config_survives_compaction_replacement() {
 
     let config = SamplingConfig {
         base_url: "https://api.example.com".to_string(),
+        mtls_cert_dir: None,
         model_ref: None,
         route_ref: None,
         model: "grok-build".to_string(),
@@ -4534,6 +4538,7 @@ async fn sampling_config_survives_compaction_replacement() {
 async fn model_metadata_lost_after_compaction_then_recovered_on_next_turn() {
     let config = SamplingConfig {
         base_url: "https://api.example.com".to_string(),
+        mtls_cert_dir: None,
         model_ref: None,
         route_ref: None,
         model: "grok-build".to_string(),
@@ -4619,6 +4624,7 @@ async fn context_window_downgrade_triggers_auto_compact() {
     // Initial config: 500k context, Responses backend (matches grok-4.5)
     let config = SamplingConfig {
         base_url: "https://api.x.ai/v1".to_string(),
+        mtls_cert_dir: None,
         model_ref: None,
         route_ref: None,
         model: "grok-4.5".to_string(),
