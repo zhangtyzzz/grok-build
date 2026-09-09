@@ -70,6 +70,7 @@ mod tests {
         SamplerConfig {
             api_key: None,
             base_url: "https://example.test".into(),
+            mtls_cert_dir: None,
             model_ref: None,
             route_ref: None,
             model: "test-model".into(),

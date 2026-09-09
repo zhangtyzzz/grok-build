@@ -2337,6 +2337,7 @@ mod tests {
         SamplerConfig {
             api_key: Some("test-key".to_string()),
             base_url: "https://example.test".to_string(),
+            mtls_cert_dir: None,
             model_ref: None,
             route_ref: None,
             model: "test-model".to_string(),

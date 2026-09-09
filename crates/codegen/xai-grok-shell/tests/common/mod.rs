@@ -377,6 +377,7 @@ pub fn test_sampler_config(
     SamplerConfig {
         api_key: Some("test-api-key".to_string()),
         base_url: base_url.to_string(),
+        mtls_cert_dir: None,
         model_ref: None,
         route_ref: None,
         model: "test-model".to_string(),

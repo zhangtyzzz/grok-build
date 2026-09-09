@@ -71,6 +71,7 @@ fn test_config(base_url: String, model: &str) -> SamplerConfig {
     SamplerConfig {
         api_key: Some("test-key".into()),
         base_url,
+        mtls_cert_dir: None,
         model_ref: None,
         route_ref: None,
         model: model.into(),
