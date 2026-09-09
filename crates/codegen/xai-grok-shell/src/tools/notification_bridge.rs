@@ -50,9 +50,7 @@ pub(crate) struct NotificationBridgeConfig {
             >,
         >,
     >,
-    /// Resolved name of the `BackgroundTaskAction` tool.
-    /// Written exactly once after the agent's toolset is finalized.
-    /// Read many times thereafter from the notification bridge and the session actor's between-turn drain.
+    /// Resolved name of the `BackgroundTaskAction` tool. Written exactly once after the agent's toolset is finalized. Read many times thereafter from the notification bridge and the session actor's between-turn drain.
     /// `None` means no such tool is registered in this toolset, which is a valid resolved state.
     pub task_output_tool_name: Arc<std::sync::OnceLock<Option<String>>>,
     /// Resolved name of the `Read` tool, used by `format_bash_completion`'s footer.
@@ -392,7 +390,7 @@ async fn handle_notification(
                         client_identifier: None,
                         screen_mode: None,
                         verbatim: true,
-                        traceparent: xai_file_utils::trace_context::current_traceparent(),
+                        traceparent: xai_grok_otel::current_traceparent(),
                         json_schema: None,
                         send_now: false,
                         tool_overrides_update: None,
@@ -629,23 +627,6 @@ async fn handle_notification(
                 subagent_id = fired.subagent_id.as_deref().unwrap_or(""),
                 "Scheduled task fired"
             );
-            if fired.subagent_id.is_none() {
-                let inject_payload = serde_json::json!({
-                    "sessionId": config.session_id,
-                    "taskId": &fired.task_id,
-                    "prompt": &fired.prompt,
-                    "humanSchedule": &fired.human_schedule,
-                    "nextFireAt": &fired.next_fire_at,
-                });
-                if let Ok(params) = serde_json::value::to_raw_value(&inject_payload) {
-                    config
-                        .gateway
-                        .forward_fire_and_forget(acp::ExtNotification::new(
-                            "x.ai/scheduled_task_inject_prompt",
-                            params.into(),
-                        ));
-                }
-            }
             let mut meta = None;
             stamp_scheduler_meta(config, &mut meta, &fired.generation, fired.revision);
             let fired_notif = crate::extensions::notification::SessionNotification {

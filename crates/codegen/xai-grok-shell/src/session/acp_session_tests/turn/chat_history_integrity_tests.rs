@@ -128,7 +128,6 @@ async fn mid_turn_user_injection_must_not_duplicate_tool_results_for_one_tool_us
                 sampling_cfg,
                 xai_grok_sampler::RetryPolicy {
                     max_retries: 0,
-                    rate_limit_retry_threshold: 0,
                     ..Default::default()
                 },
                 sampler_event_tx,

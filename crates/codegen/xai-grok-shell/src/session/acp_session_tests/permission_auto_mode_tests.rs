@@ -7,7 +7,7 @@ use xai_grok_workspace::permission::{
     AccessKind, ClientType, PermissionRequest, spawn_permission_manager,
 };
 
-use super::support::create_test_actor;
+use super::support::{create_test_actor, spawn_test_persistence_acknowledger};
 use super::{PersistenceMsg, SessionActor};
 
 fn dummy_gateway() -> AcpAgentGatewaySender {
@@ -197,6 +197,58 @@ async fn set_auto_mode_off_clears_side_query_flag() {
             session.permissions.set_llm_side_query_wired(false);
             assert!(!session.permissions.is_auto_mode());
             assert!(!session.permissions.has_llm_side_query());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn plan_mode_enter_and_exit_leave_permission_manager_untouched() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _grx) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, persistence_rx) =
+                tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            spawn_test_persistence_acknowledger(persistence_rx);
+            let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            install_real_permissions(&mut actor);
+
+            actor.permissions.set_auto_mode(true);
+            actor
+                .handle_session_mode(acp::SessionModeId::new("plan"))
+                .await
+                .unwrap();
+            assert!(
+                actor.permissions.is_auto_mode(),
+                "entering plan mode must keep auto mode"
+            );
+            actor
+                .handle_session_mode(acp::SessionModeId::new("default"))
+                .await
+                .unwrap();
+            assert!(
+                actor.permissions.is_auto_mode(),
+                "leaving plan mode must keep auto mode"
+            );
+
+            actor.permissions.set_yolo_mode(true);
+            actor
+                .handle_session_mode(acp::SessionModeId::new("plan"))
+                .await
+                .unwrap();
+            assert!(
+                actor.permissions.is_yolo_mode(),
+                "entering plan mode must keep always-approve"
+            );
+            actor
+                .handle_session_mode(acp::SessionModeId::new("default"))
+                .await
+                .unwrap();
+            assert!(
+                actor.permissions.is_yolo_mode(),
+                "leaving plan mode must keep always-approve"
+            );
         })
         .await;
 }
