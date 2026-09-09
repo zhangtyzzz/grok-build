@@ -1893,7 +1893,9 @@ impl SessionActor {
                     self.notify_rate_limit_wait(attempt, budget, backoff).await;
                     // Esc cancels a turn by aborting its task, so this await point is itself the cancellation point; no select needed
                     sleep(backoff).await;
-                    self.refresh_sampler_for_retry().await;
+                    if !park.is_parked() {
+                        self.refresh_sampler_for_retry().await;
+                    }
                 }
             }
         }

@@ -559,7 +559,6 @@ impl SessionActor {
                     .collect(),
             ),
         };
-        self.signals_handle().increment_turn();
         let prompt_mode = self
             .resolve_turn_prompt_mode(input_origin.as_prompt_origin(), prompt_mode)
             .await?;
@@ -2455,8 +2454,6 @@ impl SessionActor {
         let conv_turn_clock = DualClock::now();
         let turn_phases = self.turn_phases.clone();
         turn_phases.start();
-        self.refresh_token_if_expired().await;
-        self.preflight_active_route_for_request().await?;
         self.maybe_refresh_model_metadata_on_resume().await;
         self.maybe_compact_on_model_switch().await?;
         self.chat_state_handle
@@ -2589,10 +2586,6 @@ impl SessionActor {
                 .await;
                 return Ok(TurnOutcome::StationarityEnded);
             }
-            if !retry_same_route_candidate {
-                self.refresh_token_if_expired().await;
-                self.preflight_active_route_for_request().await?;
-            }
             if identical_tool_calls.take_nudge() {
                 let run_len = identical_tool_calls.run_len;
                 let tool_name = identical_tool_calls.tool_name.clone();
@@ -2670,6 +2663,9 @@ impl SessionActor {
                 });
                 self.compaction.prefire.set_handle(handle);
             }
+            if self.tool_context.task_output_token_budget.is_none() && !turn_parked.is_parked() {
+                self.refresh_token_if_expired().await;
+            }
             if self.tool_context.task_output_token_budget.is_none()
                 && !turn_parked.is_parked()
                 && !salvage.awaiting_continuation()
@@ -2681,10 +2677,12 @@ impl SessionActor {
                     return Err(self.surface_compact_auth_failure(e).await);
                 }
             }
-            if retry_same_route_candidate {
-                self.refresh_sampler_for_retry().await;
-            } else {
-                self.prepare_sampler_for_turn().await?;
+            if !turn_parked.is_parked() {
+                if retry_same_route_candidate {
+                    self.refresh_sampler_for_retry().await;
+                } else {
+                    self.prepare_sampler_for_turn().await?;
+                }
             }
             let native_backend = if json_schema.is_some() {
                 match self.chat_state_handle.get_sampling_config().await {

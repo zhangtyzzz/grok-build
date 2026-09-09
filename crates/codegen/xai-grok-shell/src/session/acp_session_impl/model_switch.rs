@@ -11,6 +11,12 @@ impl SessionActor {
         skip_prompt_rewrite: bool,
         auto_compact_threshold_percent: u8,
     ) -> Result<acp::ModelId, acp::Error> {
+        let mut sampling_config = sampling_config;
+        if let Some(current) = self.chat_state_handle.get_sampling_config().await
+            && let Some(id) = current.conversation_group_id
+        {
+            sampling_config.conversation_group_id = Some(id);
+        }
         let model_name = sampling_config.model.clone();
         let new_context_window = self.compaction.context_window_override.unwrap_or_else(|| {
             std::num::NonZeroU64::new(sampling_config.context_window).unwrap_or_else(|| {
