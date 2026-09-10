@@ -1619,6 +1619,15 @@ async fn a_server_that_publishes_is_not_second_guessed_with_a_pull() {
         .await
         .notify_file_changed(&file, "const y = 1;\n");
 
+    // On a loaded CI runner, the mock process may not publish before the
+    // first drain begins. Wait for the push channel itself so this test does
+    // not accidentally turn process scheduling into part of the contract.
+    let uri = file_uri(&file).unwrap().to_string();
+    let diagnostics = mgr.lock().await.clients["mock-ts"].diagnostics.clone();
+    wait_until("the mock server's first pushed diagnostic", || {
+        diagnostics.covers(&uri).is_some()
+    })
+    .await;
     let summary = drain_until_reported(&mgr, "the check that only the push channel runs").await;
     assert!(
         summary.contains("the check that only the push channel runs"),
