@@ -30,7 +30,7 @@ impl Drop for EnvRestore {
     }
 }
 
-fn route_manager() -> crate::agent::models::ModelsManager {
+fn route_manager() -> crate::agent::remote_config::ModelsManager {
     let raw = toml::from_str::<toml::Value>(
         r#"
 [provider.primary]
@@ -60,13 +60,13 @@ candidates = ["primary-shared", "secondary-shared"]
     .expect("valid route test TOML");
     let cfg =
         crate::agent::config::Config::new_from_toml_cfg(&raw).expect("valid route test config");
-    let catalog = crate::agent::models::resolve_model_catalog(&cfg, None);
+    let catalog = crate::agent::remote_config::resolve_model_catalog(&cfg, None);
     let auth_root = std::env::temp_dir().join("grok-route-preflight-auth");
     let auth_manager = std::sync::Arc::new(crate::auth::AuthManager::new(
         &auth_root,
         crate::auth::GrokComConfig::default(),
     ));
-    crate::agent::models::ModelsManager::new(
+    crate::agent::remote_config::ModelsManager::new(
         None,
         catalog,
         acp::ModelId::new("route:main"),
@@ -75,7 +75,7 @@ candidates = ["primary-shared", "secondary-shared"]
     )
 }
 
-fn auth_none_manager(base_url: &str) -> crate::agent::models::ModelsManager {
+fn auth_none_manager(base_url: &str) -> crate::agent::remote_config::ModelsManager {
     let raw = toml::from_str::<toml::Value>(&format!(
         r#"
 [provider.anon]
@@ -95,13 +95,13 @@ candidates = ["anon-direct"]
     .expect("valid auth-none provider TOML");
     let cfg = crate::agent::config::Config::new_from_toml_cfg(&raw)
         .expect("valid auth-none provider config");
-    let catalog = crate::agent::models::resolve_model_catalog(&cfg, None);
+    let catalog = crate::agent::remote_config::resolve_model_catalog(&cfg, None);
     let auth_root = std::env::temp_dir().join("grok-auth-none-provider-manager");
     let auth_manager = std::sync::Arc::new(crate::auth::AuthManager::new(
         &auth_root,
         crate::auth::GrokComConfig::default(),
     ));
-    crate::agent::models::ModelsManager::new(
+    crate::agent::remote_config::ModelsManager::new(
         None,
         catalog,
         acp::ModelId::new("anon-direct"),

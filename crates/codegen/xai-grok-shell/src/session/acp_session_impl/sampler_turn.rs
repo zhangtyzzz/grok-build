@@ -2302,7 +2302,7 @@ impl SessionActor {
         let config = crate::agent::config::Config::new_from_toml_cfg(&raw_config)
             .map_err(|e| tracing::warn!(error = %e, "Failed to parse reloaded config.toml"))
             .ok()?;
-        let catalog = crate::agent::models::resolve_model_catalog(&config, None);
+        let catalog = crate::agent::remote_config::resolve_model_catalog(&config, None);
         let Some(model) = crate::agent::config::find_model_by_locator(
             &catalog,
             current_model_ref,
