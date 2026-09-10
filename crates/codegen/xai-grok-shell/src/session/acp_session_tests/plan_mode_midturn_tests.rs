@@ -195,7 +195,7 @@ async fn midturn_reentry_after_delivery_buffers_no_duplicate_reminder() {
         .await;
 }
 
-fn plan_models_manager(profile_model: &str) -> crate::agent::models::ModelsManager {
+fn plan_models_manager(profile_model: &str) -> crate::agent::remote_config::ModelsManager {
     let raw: toml::Value = toml::from_str(&format!(
         r#"
 [provider.local]
@@ -225,13 +225,13 @@ restore_model = true
     ))
     .expect("valid test config");
     let cfg = crate::agent::config::Config::new_from_toml_cfg(&raw).expect("valid model config");
-    let models = crate::agent::models::resolve_model_catalog(&cfg, None);
+    let models = crate::agent::remote_config::resolve_model_catalog(&cfg, None);
     let auth_root = std::env::temp_dir().join("grok-plan-barrier-auth");
     let auth_manager = std::sync::Arc::new(crate::auth::AuthManager::new(
         &auth_root,
         crate::auth::GrokComConfig::default(),
     ));
-    crate::agent::models::ModelsManager::new(
+    crate::agent::remote_config::ModelsManager::new(
         None,
         models,
         acp::ModelId::new("executor"),

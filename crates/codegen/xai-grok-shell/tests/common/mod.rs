@@ -290,6 +290,10 @@ pub mod leader {
 
 #[allow(dead_code)]
 pub fn isolated_home() -> tempfile::TempDir {
+    #[cfg(feature = "test-support")]
+    xai_grok_shell::agent::remote_config::settings_get::reset_startup_settings_for_tests();
+    #[cfg(feature = "test-support")]
+    xai_grok_shell::managed_config::clear_startup_profile_for_tests();
     let home = tempfile::TempDir::new().expect("grok home tempdir");
     // SAFETY: single-test binary; no other thread reads or writes the environment.
     unsafe { xai_grok_test_support::isolate_grok_env(home.path()) };

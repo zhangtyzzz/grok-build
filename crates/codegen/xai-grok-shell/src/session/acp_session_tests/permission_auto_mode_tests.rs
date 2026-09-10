@@ -255,7 +255,7 @@ async fn plan_mode_enter_and_exit_leave_permission_manager_untouched() {
 
 #[test]
 fn session_meta_auto_mode_key_resolution() {
-    use crate::agent::mvp_agent::resolve_session_auto_mode;
+    use crate::session::auto_mode::resolve_session_auto_mode;
 
     let meta = serde_json::json!({"autoMode": true});
     assert!(resolve_session_auto_mode(meta.as_object(), false, false));
@@ -278,7 +278,7 @@ fn session_meta_auto_mode_key_resolution() {
 
 #[test]
 fn explicit_auto_request_overrides_stale_launch_yolo() {
-    use crate::agent::mvp_agent::resolve_session_auto_mode;
+    use crate::session::auto_mode::resolve_session_auto_mode;
 
     let meta = serde_json::json!({"yoloMode": false, "autoMode": true});
     let request_meta = meta.as_object();
