@@ -379,6 +379,7 @@ pub fn run_agent_test_with_models<F, Fut>(
     Fut: std::future::Future<Output = ()>,
 {
     let _env_guard = hold_global_env();
+    #[cfg(feature = "test-support")]
     xai_grok_shell::agent::remote_config::settings_get::reset_startup_settings_for_tests();
     xai_grok_extra_ca::ensure_default_crypto_provider();
 
