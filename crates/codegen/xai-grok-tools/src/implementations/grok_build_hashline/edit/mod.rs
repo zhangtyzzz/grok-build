@@ -443,10 +443,9 @@ impl xai_tool_runtime::Tool for HashlineEditTool {
             Err(e)
                 if protected_plan_write
                     && e.io_error_kind() == Some(std::io::ErrorKind::NotFound)
-                    && input.edits.len() == 1
-                    && matches!(&input.edits[0], HashlineOp::Write { .. }) =>
+                    && matches!(input.edits.as_slice(), [HashlineOp::Write { .. }]) =>
             {
-                let HashlineOp::Write { ref content } = input.edits[0] else {
+                let Some(HashlineOp::Write { content }) = input.edits.first() else {
                     unreachable!("guarded by matches")
                 };
                 if let Err(error) = fs.write_file(&path, content.as_bytes()).await {
