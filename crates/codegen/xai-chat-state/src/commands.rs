@@ -295,6 +295,12 @@ pub enum ChatStateCommand {
         reply: oneshot::Sender<(SamplingConfig, Credentials)>,
     },
 
+    /// Soft-trim / hard-clear old tool results the same way a turn request does.
+    ApplyTurnRequestPruning {
+        items: Vec<ConversationItem>,
+        reply: oneshot::Sender<Vec<ConversationItem>>,
+    },
+
     /// Get the set of agent-edited file paths.
     GetAgentEditedPaths {
         reply: oneshot::Sender<BTreeSet<String>>,
@@ -477,6 +483,7 @@ mod tests {
                 reasoning_effort: None,
                 stream_tool_calls: None,
                 prompt_cache: Default::default(),
+                ..Default::default()
             }),
         };
         let (tx, _rx) = oneshot::channel();
@@ -571,6 +578,12 @@ mod tests {
 
         let (tx, _rx) = oneshot::channel();
         let _ = ChatStateCommand::GetSamplingConfigAndCredentials { reply: tx };
+
+        let (tx, _rx) = oneshot::channel();
+        let _ = ChatStateCommand::ApplyTurnRequestPruning {
+            items: vec![],
+            reply: tx,
+        };
 
         let (tx, _rx) = oneshot::channel();
         let _ = ChatStateCommand::GetAgentEditedPaths { reply: tx };

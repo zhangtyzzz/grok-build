@@ -63,26 +63,14 @@ impl ActorState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::ApiBackend;
-    use indexmap::IndexMap;
 
     fn cfg() -> SamplerConfig {
         SamplerConfig {
-            api_key: None,
             base_url: "https://example.test".into(),
             mtls_cert_dir: None,
             model_ref: None,
             route_ref: None,
             model: "test-model".into(),
-            max_completion_tokens: None,
-            temperature: None,
-            top_p: None,
-            api_backend: ApiBackend::ChatCompletions,
-            auth_scheme: Default::default(),
-            extra_headers: IndexMap::new(),
-            extra_response_includes: Vec::new(),
-            query_params: IndexMap::new(),
-            env_http_headers: IndexMap::new(),
             context_window: 8192,
             force_http1: false,
             max_retries: None,
@@ -104,6 +92,7 @@ mod tests {
             compaction_at_tokens: None,
             doom_loop_recovery: None,
             header_injector: None,
+            ..Default::default()
         }
     }
 

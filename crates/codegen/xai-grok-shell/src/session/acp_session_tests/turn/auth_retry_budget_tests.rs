@@ -377,7 +377,7 @@ async fn fail_closed_401_is_uncharged_and_turn_survives_impl() {
         mint_ttl: chrono::Duration::hours(1),
     });
     let (_dir, am) = expired_auth_manager(refresher);
-    let (actor, _updates) = session_token_actor(&server, am, ActorShape::default()).await;
+    let (actor, updates) = session_token_actor(&server, am, ActorShape::default()).await;
 
     let outcome = run_prompt(&actor, "auth-retry-budget-fail-closed").await;
     assert!(
@@ -395,8 +395,11 @@ async fn fail_closed_401_is_uncharged_and_turn_survives_impl() {
         "expected the fail-closed send plus the resubmit; got {}",
         inference.len()
     );
+    let Some(first) = inference.first() else {
+        panic!("expected inference requests: {inference:?}");
+    };
     assert_eq!(
-        inference[0].authorization, None,
+        first.authorization, None,
         "first send must carry no Authorization header"
     );
     assert_eq!(
@@ -407,6 +410,12 @@ async fn fail_closed_401_is_uncharged_and_turn_survives_impl() {
     assert!(
         calls.load(Ordering::SeqCst) >= 2,
         "both the failing pre-flight and the recovery refresh must run"
+    );
+    assert_retrying(
+        &updates,
+        1,
+        AuthRetrySchedule::MAX_UNCHARGED_RESUBMITS,
+        &["carried no credential"],
     );
 }
 
@@ -560,7 +569,10 @@ async fn deferred_recovery_credential_less_401_parks_and_survives() {
                  authenticated resubmit; got {}",
                 inference.len()
             );
-            for (i, req) in inference[..inference.len() - 1].iter().enumerate() {
+            let Some((_, prefix)) = inference.split_last() else {
+                panic!("expected inference requests: {inference:?}");
+            };
+            for (i, req) in prefix.iter().enumerate() {
                 assert_eq!(
                     req.authorization, None,
                     "send {i} precedes the token landing and must carry no \

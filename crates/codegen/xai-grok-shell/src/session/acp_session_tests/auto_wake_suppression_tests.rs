@@ -173,7 +173,13 @@ fn pending_notification_cap_keeps_newest_entries() {
         );
     }
     assert_eq!(state.pending_notifications.len(), MAX_PENDING_NOTIFICATIONS);
-    assert_eq!(state.pending_notifications[0].source.task_id(), "task-3");
+    assert_eq!(
+        state
+            .pending_notifications
+            .first()
+            .map(|n| n.source.task_id()),
+        Some("task-3")
+    );
     let newest = format!("task-{}", MAX_PENDING_NOTIFICATIONS + 2);
     assert_eq!(
         state.pending_notifications.last().unwrap().source.task_id(),
@@ -840,6 +846,82 @@ async fn task_output_completed_drops_matching_pending_input() {
                 vec!["task-completed-bg-other", "user-real"],
                 "only the matching synthetic input should be dropped"
             );
+        })
+        .await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn task_output_failed_drops_matching_pending_input() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            {
+                let mut state = actor.state.lock().await;
+                state
+                    .pending_inputs
+                    .push_back(task_completed_input("bg-failed"));
+                state
+                    .pending_inputs
+                    .push_back(task_completed_input("bg-running"));
+            }
+            let output =
+                ToolOutput::TaskOutput(TaskOutputOutput::MultiResult(MultiTaskOutputResult {
+                    mode: "wait_all".into(),
+                    results: vec![
+                        task_output_result("bg-failed", "failed"),
+                        task_output_result("bg-running", "running"),
+                    ],
+                    summary: String::new(),
+                }));
+            let consumed = consumed_completion_ids(&output);
+            assert_eq!(consumed, vec!["bg-failed"]);
+            actor
+                .drop_pending_items_for_consumed_completions(&consumed)
+                .await;
+            let state = actor.state.lock().await;
+            let remaining_ids: Vec<&str> = state
+                .pending_inputs
+                .iter()
+                .map(|i| i.prompt_id.as_str())
+                .collect();
+            assert_eq!(remaining_ids, vec!["task-completed-bg-running"]);
+        })
+        .await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn interrupted_wait_placeholder_keeps_pending_input() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            actor
+                .state
+                .lock()
+                .await
+                .pending_inputs
+                .push_back(task_completed_input("bg-still-running"));
+            let output = ToolOutput::TaskOutput(TaskOutputOutput::Result(task_output_result(
+                "bg-still-running",
+                "cancelled",
+            )));
+            let consumed = consumed_completion_ids(&output);
+            assert!(consumed.is_empty());
+            actor
+                .drop_pending_items_for_consumed_completions(&consumed)
+                .await;
+            let state = actor.state.lock().await;
+            let remaining_ids: Vec<&str> = state
+                .pending_inputs
+                .iter()
+                .map(|i| i.prompt_id.as_str())
+                .collect();
+            assert_eq!(remaining_ids, vec!["task-completed-bg-still-running"]);
         })
         .await;
 }
@@ -1556,11 +1638,13 @@ async fn wake_turn_digest_coalesces_unreported_siblings() {
                 matches!(
                     mentions.as_slice(),
                     [ConversationItem::User(u)]
-                        if u.synthetic_reason == Some(SyntheticReason::SubagentCompleted)
+                        if u.synthetic_reason == SyntheticReason::SubagentCompleted
                 ),
                 "only the wake turn may name the children: {mentions:?}"
             );
-            let digest = mentions[0].text_content();
+            let Some(digest) = mentions.first().map(|m| m.text_content()) else {
+                panic!("only the wake turn may name the children: {mentions:?}");
+            };
             assert!(
                 digest.contains("While you were idle"),
                 "the wake turn's message must be the digest: {digest}"
@@ -1684,7 +1768,7 @@ async fn preempted_wake_is_redelivered_by_next_between_turn_drain() {
                 matches!(
                     digests.as_slice(),
                     [ConversationItem::User(u)]
-                        if u.synthetic_reason == Some(SyntheticReason::SystemReminder)
+                        if u.synthetic_reason == SyntheticReason::SystemReminder
                 ),
                 "the dropped wake must be redelivered as exactly one digest: {digests:?}"
             );
@@ -1787,13 +1871,13 @@ async fn wake_missing_from_buffer_falls_back_to_injected_body() {
                 matches!(
                     mentions.as_slice(),
                     [ConversationItem::User(u)]
-                        if u.synthetic_reason == Some(SyntheticReason::SubagentCompleted)
+                        if u.synthetic_reason == SyntheticReason::SubagentCompleted
                 ),
                 "the wake turn carries exactly one message: {mentions:?}"
             );
             assert_eq!(
-                mentions[0].text_content(),
-                wake_body("sa-evicted"),
+                mentions.first().map(|m| m.text_content()).as_deref(),
+                Some(wake_body("sa-evicted")).as_deref(),
                 "without a buffered copy the injected body is what the model sees"
             );
             assert!(already_reported(&actor, "sa-evicted").await);

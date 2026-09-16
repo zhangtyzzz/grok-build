@@ -51,7 +51,10 @@ async fn midturn_plan_toggle_activates_and_buffers_reminder() {
             actor.flush_pending_skill_reminders().await;
             let conv = actor.chat_state_handle.get_conversation().await;
             assert_eq!(conv.len(), 1);
-            let text = conv[0].text_content();
+            let Some(item) = conv.first() else {
+                panic!("expected reminder in conversation: {conv:?}");
+            };
+            let text = item.text_content();
             assert!(
                 text.contains("<system-reminder>"),
                 "reminder must be system-reminder wrapped: {text}"
@@ -604,14 +607,19 @@ async fn pending_scope_recovers_and_manual_model_switch_wins_on_exit() {
                 .expect("manual model");
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                actor.handle_set_session_model(
-                    manual_sampling,
-                    manual_entry.info.use_concise,
-                    false,
-                    false,
-                    true,
-                    85,
-                ),
+                actor.handle_set_session_model(crate::session::SessionModelSwitch {
+                    sampling_config: manual_sampling,
+                    use_concise: manual_entry.info.use_concise,
+                    is_family_switch: false,
+                    apply_prompt_override: false,
+                    skip_prompt_rewrite: true,
+                    auto_compact_threshold_percent: 85,
+                    system_prompt_label: manual_entry
+                        .info
+                        .system_prompt_label
+                        .clone()
+                        .unwrap_or_else(|| xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_owned()),
+                }),
             )
             .await
             .expect("manual model switch must not hang")

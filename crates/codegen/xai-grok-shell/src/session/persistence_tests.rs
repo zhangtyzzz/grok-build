@@ -117,6 +117,38 @@ async fn writeback_backfill_is_fresh_only_and_acp_only() {
     );
 }
 
+#[tokio::test]
+async fn winning_identity_stamp_seeds_remote_writeback() {
+    let dir = tempfile::tempdir().unwrap();
+    let info = Info {
+        id: acp::SessionId::new("winner-identity"),
+        cwd: "/test".into(),
+    };
+    let storage = Arc::new(JsonlStorageAdapter::with_explicit_session_dir(
+        dir.path().to_path_buf(),
+    ));
+    storage
+        .init_session(&info, default_model_id())
+        .await
+        .unwrap();
+    let (remote_sync, mut identities) = RemoteSync::test_identity_observer();
+    let actor = test_actor_with_remote_sync(info, storage, Some(remote_sync));
+    let identity = mint_next_session_identity(None, false);
+    let expected = identity.agent_id.clone();
+    let (respond_to, response) = tokio::sync::oneshot::channel();
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::StampSessionIdentity {
+            identity,
+            respond_to,
+        })
+        .unwrap();
+    response.await.unwrap().unwrap();
+    assert_eq!(identities.recv().await.as_deref(), Some(expected.as_str()));
+    actor.stop().await;
+}
+
 fn break_summary_writes(dir: &std::path::Path) {
     let summary = dir.join("summary.json");
     std::fs::remove_file(&summary).unwrap();
@@ -1209,10 +1241,13 @@ async fn flush_and_ack_propagates_session_file_sync_error_through_the_ack() {
 async fn measure_prompt_barrier_idle_barrier_and_summary_rewrite_cost() {
     fn median_and_max(mut samples: Vec<std::time::Duration>) -> (String, String) {
         samples.sort();
-        (
-            format!("{:?}", samples[samples.len() / 2]),
-            format!("{:?}", samples[samples.len() - 1]),
-        )
+        let Some(mid) = samples.get(samples.len() / 2) else {
+            panic!("expected samples for median: {samples:?}");
+        };
+        let Some(last) = samples.last() else {
+            panic!("expected samples for max: {samples:?}");
+        };
+        (format!("{mid:?}"), format!("{last:?}"))
     }
 
     const N: usize = 50;

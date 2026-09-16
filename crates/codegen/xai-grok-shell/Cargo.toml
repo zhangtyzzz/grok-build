@@ -212,7 +212,6 @@ xai-grok-memory = { workspace = true, features = ["test-support"] }
 # sandbox-enforce: keep tests running against the enforcing sandbox build.
 xai-grok-workspace = { workspace = true, features = ["test-support", "sandbox-enforce"] }
 xai-grok-config = { workspace = true, features = [] }
-ring = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 semver = { workspace = true }
