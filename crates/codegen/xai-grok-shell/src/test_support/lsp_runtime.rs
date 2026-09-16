@@ -59,6 +59,7 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
             compaction_at_tokens: None,
             doom_loop_recovery: None,
             header_injector: None,
+            ..Default::default()
         },
         setup_failure: None,
         run_shell_child_harness: None,
@@ -91,6 +92,7 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
         video_gen_config: Default::default(),
         app_builder_deployer_config: Default::default(),
         write_file_enabled: true,
+        active_agent_messages_enabled: false,
         goal_enabled: false,
         background_workflows_enabled: false,
         ask_user_question_enabled: false,
@@ -148,6 +150,7 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
         parent_skills: None,
         parent_skills_config: xai_grok_agent::prompt::skills::SkillsConfig::default(),
         parent_compat: xai_grok_tools::types::compat::CompatConfig::default(),
+        parent_paths_config: Default::default(),
         synthetic_trace_tx: None,
         task_output_tool_name: xai_grok_tools::reminders::task_completion::DEFAULT_TASK_OUTPUT_TOOL
             .to_string(),

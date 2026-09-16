@@ -405,6 +405,9 @@ impl ChatStateActor {
                     self.state.credentials.clone(),
                 ));
             }
+            ChatStateCommand::ApplyTurnRequestPruning { items, reply } => {
+                let _ = reply.send(self.prune_items_for_turn_request(items));
+            }
             ChatStateCommand::GetAgentEditedPaths { reply } => {
                 let _ = reply.send(self.state.agent_edited_paths.clone());
             }

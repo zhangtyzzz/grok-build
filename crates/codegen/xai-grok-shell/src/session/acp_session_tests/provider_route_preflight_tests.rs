@@ -134,10 +134,21 @@ async fn resident_session_reselects_route_before_each_request_and_fails_closed()
                 .models_manager
                 .sampling_config_for_model_ref("route:main")
                 .expect("secondary route candidate");
-            let selected = actor
-                .handle_set_session_model(initial, entry.info.use_concise, false, false, true, 80)
-                .await
-                .expect("route model switch");
+            let selected =
+                actor
+                    .handle_set_session_model(crate::session::SessionModelSwitch {
+                        sampling_config: initial,
+                        use_concise: entry.info.use_concise,
+                        is_family_switch: false,
+                        apply_prompt_override: false,
+                        skip_prompt_rewrite: true,
+                        auto_compact_threshold_percent: 80,
+                        system_prompt_label: entry.info.system_prompt_label.clone().unwrap_or_else(
+                            || xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_owned(),
+                        ),
+                    })
+                    .await
+                    .expect("route model switch");
             assert_eq!(selected.0.as_ref(), "route:main");
             assert!(matches!(
                 persistence_rx.try_recv(),
@@ -324,7 +335,19 @@ async fn auth_none_provider_never_emits_session_authorization_for_direct_or_rout
                 .expect("direct auth-none model");
             assert!(direct_entry.opts_out_of_ambient_credentials());
             actor
-                .handle_set_session_model(direct_sampling, false, false, false, true, 85)
+                .handle_set_session_model(crate::session::SessionModelSwitch {
+                    sampling_config: direct_sampling,
+                    use_concise: false,
+                    is_family_switch: false,
+                    apply_prompt_override: false,
+                    skip_prompt_rewrite: true,
+                    auto_compact_threshold_percent: 85,
+                    system_prompt_label: direct_entry
+                        .info
+                        .system_prompt_label
+                        .clone()
+                        .unwrap_or_else(|| xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_owned()),
+                })
                 .await
                 .expect("switch to direct auth-none provider");
             let direct_client = actor
@@ -348,12 +371,24 @@ async fn auth_none_provider_never_emits_session_authorization_for_direct_or_rout
                     auth_type: xai_chat_state::AuthType::SessionToken,
                     ..Default::default()
                 });
-            let (_route_entry, route_sampling) = actor
+            let (route_entry, route_sampling) = actor
                 .models_manager
                 .sampling_config_for_model_ref("route:anon")
                 .expect("auth-none route");
             actor
-                .handle_set_session_model(route_sampling, false, false, false, true, 85)
+                .handle_set_session_model(crate::session::SessionModelSwitch {
+                    sampling_config: route_sampling,
+                    use_concise: false,
+                    is_family_switch: false,
+                    apply_prompt_override: false,
+                    skip_prompt_rewrite: true,
+                    auto_compact_threshold_percent: 85,
+                    system_prompt_label: route_entry
+                        .info
+                        .system_prompt_label
+                        .clone()
+                        .unwrap_or_else(|| xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_owned()),
+                })
                 .await
                 .expect("switch to auth-none route");
             let route_client = actor

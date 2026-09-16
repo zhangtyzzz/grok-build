@@ -13,7 +13,7 @@ gives a full audit surface, pins exact source, and avoids crates.io yanks. Local
 patches and upgrade checklists live in each crate’s `Cargo.toml` header comments — treat
 those as the source of truth when re-vendoring.
 
-## Mermaid layout stack
+## Vendored crates
 
 | Crate | Version | License | Upstream | Full license text |
 |-------|---------|---------|----------|-------------------|
@@ -22,8 +22,9 @@ those as the source of truth when re-vendoring.
 | [`graphlib_rust`](./graphlib_rust/) | 0.0.2 | Apache-2.0 | [r3alst/graphlib-rust](https://github.com/r3alst/graphlib-rust) | [`LICENCE`](./graphlib_rust/LICENCE) |
 | [`ordered_hashmap`](./ordered_hashmap/) | 0.0.3 | Apache-2.0 | [r3alst/ordered-hashmap](https://github.com/r3alst/ordered-hashmap) | [`LICENCE`](./ordered_hashmap/LICENCE) |
 | [`nfsserve`](./nfsserve/) | 0.11.0 | BSD-3-Clause | [huggingface/nfsserve](https://github.com/huggingface/nfsserve) | [`LICENSE`](./nfsserve/LICENSE) |
+| [`fuser`](./fuser/) | 0.18.0 | MIT | [cberner/fuser](https://github.com/cberner/fuser) | [`LICENSE.md`](./fuser/LICENSE.md) |
 
-Dependency shape:
+Mermaid layout stack:
 
 ```text
 xai-grok-mermaid

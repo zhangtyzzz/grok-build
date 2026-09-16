@@ -52,8 +52,7 @@ fn drain_gateway_debug(
     out
 }
 
-/// The deferred apply runs as a detached local task with nothing to join, and several callers assert absence afterwards.
-/// That needs a window, not a completion signal.
+/// Several callers assert that a notification never arrives; that needs a window, not a completion signal.
 /// Yield to the LocalSet for a wall-clock bound.
 async fn settle() {
     let _ = tokio::time::timeout(std::time::Duration::from_millis(100), async {
@@ -312,8 +311,23 @@ async fn timed_out_strip_survives_new_turn_until_late_completed() {
         .await;
 }
 
-/// Rewind can commit while a terminal event is waiting to acquire strip ownership.
-/// The terminal handler must not claim URLs before it owns the gate.
+/// Deliver `Completed` the way the sampler drainer does: on its own local task, so the caller can hold
+/// the strip gate and observe the persist blocked on it without deadlocking the single-threaded runtime.
+fn deliver_completed(
+    actor: &Arc<SessionActor>,
+    request_id: &RequestId,
+) -> tokio::task::JoinHandle<()> {
+    let actor = Arc::clone(actor);
+    let request_id = request_id.clone();
+    tokio::task::spawn_local(async move {
+        actor
+            .handle_sampling_event(completed_event(&request_id))
+            .await;
+    })
+}
+
+/// Rewind can commit after `Completed` arrives but before its persist acquires the strip gate.
+/// The persist must acquire rewrite ownership before claiming URLs.
 /// A waiting successful rewind then clears queued work while preserving the restored image and emitting no stale note.
 #[tokio::test(flavor = "current_thread")]
 async fn rewind_cancels_terminal_image_strip_waiting_for_gate() {
@@ -353,7 +367,7 @@ async fn rewind_cancels_terminal_image_strip_waiting_for_gate() {
                 .expect("snapshot available");
             snapshot.prompt_index = 2;
             snapshot.prompt_texts = vec!["image turn".into(), "later turn".into()];
-            let ConversationItem::User(image_turn) = &mut snapshot.conversation[0] else {
+            let Some(ConversationItem::User(image_turn)) = snapshot.conversation.first_mut() else {
                 panic!("seeded image must be a user turn");
             };
             image_turn.prompt_index = Some(0);
@@ -375,13 +389,7 @@ async fn rewind_cancels_terminal_image_strip_waiting_for_gate() {
             let _ = actor.chat_state_handle.get_conversation().await;
 
             let strip_blocker = actor.image_strip_rewrite_barrier.lock_strip().await;
-            let terminal_actor = Arc::clone(&actor);
-            let terminal_id = timed_out.clone();
-            let terminal = tokio::task::spawn_local(async move {
-                terminal_actor
-                    .handle_sampling_event(completed_event(&terminal_id))
-                    .await;
-            });
+            let completed = deliver_completed(&actor, &timed_out);
             tokio::task::yield_now().await;
             assert!(
                 actor
@@ -389,7 +397,7 @@ async fn rewind_cancels_terminal_image_strip_waiting_for_gate() {
                     .lock()
                     .get(&timed_out)
                     .is_some_and(|strip| !strip.applying && !strip.urls.is_empty()),
-                "Completed must not claim URLs before the terminal handler owns the gate"
+                "Completed must not claim URLs before its persist owns the gate"
             );
 
             let rewind_actor = Arc::clone(&actor);
@@ -418,7 +426,7 @@ async fn rewind_cancels_terminal_image_strip_waiting_for_gate() {
                 .expect("rewind task completes")
                 .expect("rewind succeeds");
             assert!(rewind.success, "rewind should commit: {rewind:?}");
-            terminal.await.expect("terminal handler completes");
+            completed.await.expect("Completed handler finishes");
             settle().await;
 
             let conv = actor.chat_state_handle.get_conversation().await;
@@ -470,13 +478,7 @@ async fn rejected_rewind_preserves_queued_image_strip() {
             });
             tokio::task::yield_now().await;
 
-            let terminal_actor = Arc::clone(&actor);
-            let terminal_id = request_id.clone();
-            let terminal = tokio::task::spawn_local(async move {
-                terminal_actor
-                    .handle_sampling_event(completed_event(&terminal_id))
-                    .await;
-            });
+            let completed = deliver_completed(&actor, &request_id);
             tokio::task::yield_now().await;
             assert!(
                 actor
@@ -496,7 +498,7 @@ async fn rejected_rewind_preserves_queued_image_strip() {
                 !rewind.success,
                 "invalid rewind must be rejected: {rewind:?}"
             );
-            terminal.await.expect("terminal handler completes");
+            completed.await.expect("Completed handler finishes");
 
             let conv = actor.chat_state_handle.get_conversation().await;
             assert!(
@@ -575,13 +577,7 @@ async fn failed_compaction_replay_preserves_queued_image_strip() {
                 .await;
 
             let strip_blocker = actor.image_strip_rewrite_barrier.lock_strip().await;
-            let terminal_actor = Arc::clone(&actor);
-            let terminal_id = request_id.clone();
-            let terminal = tokio::task::spawn_local(async move {
-                terminal_actor
-                    .handle_sampling_event(completed_event(&terminal_id))
-                    .await;
-            });
+            let completed = deliver_completed(&actor, &request_id);
             tokio::task::yield_now().await;
             let rewind_actor = Arc::clone(&actor);
             let rewind = tokio::task::spawn_local(async move {
@@ -609,7 +605,7 @@ async fn failed_compaction_replay_preserves_queued_image_strip() {
                 .expect("rewind task completes")
                 .expect("rewind returns a response");
             assert!(!rewind.success, "missing checkpoint must reject rewind");
-            terminal.await.expect("terminal handler completes");
+            completed.await.expect("Completed handler finishes");
 
             let conv = actor.chat_state_handle.get_conversation().await;
             let _ = std::fs::remove_dir_all(&session_dir);
@@ -645,13 +641,7 @@ async fn pending_strip_bound_preserves_waiting_and_new_url_entries() {
                 .await;
 
             let strip_blocker = actor.image_strip_rewrite_barrier.lock_strip().await;
-            let terminal_actor = Arc::clone(&actor);
-            let terminal_id = applying_id.clone();
-            let terminal = tokio::task::spawn_local(async move {
-                terminal_actor
-                    .handle_sampling_event(completed_event(&terminal_id))
-                    .await;
-            });
+            let completed = deliver_completed(&actor, &applying_id);
             tokio::task::yield_now().await;
             {
                 let mut pending = actor.pending_image_strip.lock();
@@ -692,12 +682,12 @@ async fn pending_strip_bound_preserves_waiting_and_new_url_entries() {
                 assert_eq!(16, pending.len());
             }
             drop(strip_blocker);
-            terminal.await.expect("terminal handler completes");
+            completed.await.expect("Completed handler finishes");
 
             let conv = actor.chat_state_handle.get_conversation().await;
             assert!(
                 !conversation_has_image(&conv, PERSIST_GATE_IMAGE_URI),
-                "retained terminal write must finish after acquiring the gate: {conv:?}"
+                "retained write must finish after acquiring the gate: {conv:?}"
             );
             assert!(!actor.pending_image_strip.lock().contains_key(&applying_id));
         })

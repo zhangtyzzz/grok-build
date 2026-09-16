@@ -13,7 +13,6 @@ use axum::http::StatusCode;
 use axum::response::sse::{Event, Sse};
 use axum::routing::post;
 use futures_util::stream::{self, StreamExt};
-use indexmap::IndexMap;
 use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
@@ -24,7 +23,7 @@ use xai_grok_sampler::{
 };
 use xai_grok_sampling_types::{
     ConversationItem, ConversationRequest, DoomLoopRecoveryPolicy, INVALID_IMAGE_ERROR_CODE,
-    PromptCachePolicy, UserItem,
+    PromptCachePolicy, SyntheticReason, UserItem,
 };
 use xai_grok_test_support::{SseEvent, sse};
 
@@ -76,20 +75,9 @@ fn test_config(base_url: String, model: &str) -> SamplerConfig {
         route_ref: None,
         model: model.into(),
         max_completion_tokens: Some(1024),
-        temperature: None,
-        top_p: None,
-        api_backend: ApiBackend::ChatCompletions,
-        auth_scheme: Default::default(),
-        extra_headers: IndexMap::new(),
-        extra_response_includes: Vec::new(),
-        query_params: IndexMap::new(),
-        env_http_headers: IndexMap::new(),
         context_window: 128_000,
-        force_http1: false,
         // Keep retries minimal so tests don't take forever.
         max_retries: Some(2),
-        rate_limit_retry_threshold: None,
-        stream_tool_calls: false,
         idle_timeout_secs: Some(30),
         prompt_cache: Default::default(),
         reasoning_effort: None,
@@ -106,6 +94,7 @@ fn test_config(base_url: String, model: &str) -> SamplerConfig {
         compaction_at_tokens: None,
         doom_loop_recovery: None,
         header_injector: None,
+        ..Default::default()
     }
 }
 
@@ -115,7 +104,7 @@ fn user_request(text: &str) -> ConversationRequest {
             content: vec![xai_grok_sampling_types::ContentPart::Text {
                 text: std::sync::Arc::<str>::from(text),
             }],
-            synthetic_reason: None,
+            synthetic_reason: SyntheticReason::Human,
             ..Default::default()
         })],
         ..Default::default()
