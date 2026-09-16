@@ -1367,7 +1367,10 @@ async fn sha256_file(path: &std::path::Path) -> Result<String> {
         if read == 0 {
             break;
         }
-        hasher.update(&buffer[..read]);
+        let chunk = buffer
+            .get(..read)
+            .ok_or_else(|| anyhow::anyhow!("read returned more bytes than the checksum buffer"))?;
+        hasher.update(chunk);
     }
     Ok(format!("{:x}", hasher.finalize()))
 }

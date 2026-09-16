@@ -484,7 +484,6 @@ mod tests {
                 reasoning_summary: None,
                 stream_tool_calls: None,
                 prompt_cache: Default::default(),
-                ..Default::default()
             }),
         };
         let (tx, _rx) = oneshot::channel();
