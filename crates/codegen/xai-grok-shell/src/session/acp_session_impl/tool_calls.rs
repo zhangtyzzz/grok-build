@@ -235,9 +235,9 @@ fn access_kind_for_resolved_tool(tool_name: &str, tool_input: &ToolInput) -> Acc
 ///   exhaustive, adding a new tool variant requires a conscious plan-mode
 ///   classification instead of silently inheriting `AccessKind::Read`.
 ///
-/// `apply_patch` maps to a placeholder `AccessKind::Edit("apply_patch")` and
-/// therefore never matches the plan file: it is always rejected in plan mode
-/// (conservative — per-file targets are only known after patch parsing).
+/// `apply_patch` does not expose a single target path through `AccessKind`, so
+/// it is rejected as an unproven side effect in plan mode (conservative —
+/// per-file targets are only known after patch parsing).
 ///
 /// Commands, subagents, MCP/meta tools, generators, and other unknown or
 /// externally side-effecting tools are rejected fail-closed. In particular,
@@ -3538,7 +3538,8 @@ mod plan_mode_edit_gate_tests {
             PlanEditGate::Allow
         );
     }
-    /// `apply_patch` names its files inside the patch text, never the plan file alone: always rejected in plan mode.
+    /// `apply_patch` names its files inside the patch text, so the access-kind
+    /// classifier cannot prove that it only edits the plan file.
     #[test]
     fn apply_patch_rejected_in_plan_mode() {
         use xai_grok_tools::implementations::codex::apply_patch::ApplyPatchInput;
@@ -3550,7 +3551,7 @@ mod plan_mode_edit_gate_tests {
                     patch: String::new()
                 })
             ),
-            PlanEditGate::RejectNonPlanFile
+            PlanEditGate::RejectSideEffect
         );
     }
     /// Commands cannot bypass the read-only contract, even in always-approve
