@@ -387,6 +387,7 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | `model.<id>.model_provider` | `string` | `yes` | `user` | Named `[model_providers.<name>]` provider id for this model. |
 | `model.<id>.mtls_cert_dir` | `string` | `yes` | `user` | Directory containing the model endpoint's mTLS identity as `client.crt` and `client.key`, or `tls.crt` and `tls.key`; configuration is rejected unless the same model has one HTTPS `base_url` and no `api_base_url`, and requests do not follow redirects. |
 | `model.<id>.name` | `string` | `yes` | `user` | Label shown in the model picker. |
+| `model.<id>.prompt_cache` | `table` | `yes` | `user` | Prompt-cache policy override (`mode` = `stable_prefix`/`off`, `ttl` = `5m`/`1h`); wins over a bound provider's policy. |
 | `model.<id>.query_params` | `map<string,string>` | `yes` | `user` | Extra query parameters on this model's requests. |
 | `model.<id>.rate_limit_retry_threshold` | `number` | `yes` | `user` | Total-attempt ceiling for rate-limited requests, capped by the resolved `max_retries`; when configured, it disables the separate subagent 429 wait loop. |
 | `model.<id>.reasoning_effort` | `string` | `yes` | `user` | Deprecated per-model effort; prefer `reasoning_efforts`. |
@@ -408,6 +409,16 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
 | `model_providers.<name>` | `table` | `yes` | `user` | Named custom model provider definition. |
+| `model_providers.<name>.auth_scheme` | `bearer / x_api_key / none` | `yes` | `user` | Explicit authentication scheme; marks bound models as credential-isolated (never ambient xAI credentials). Requires `base_url`; needs a credential unless `none`. |
+| `model_providers.<name>.inference_idle_timeout_secs` | `number` | `yes` | `user` | Idle timeout default for models bound to this provider. |
+| `model_providers.<name>.max_retries` | `number` | `yes` | `user` | Inference retry default for models bound to this provider. |
+| `model_providers.<name>.prompt_cache` | `table` | `yes` | `user` | Prompt-cache policy default for bound models (`mode` = `stable_prefix`/`off`, `ttl` = `5m`/`1h`). |
+
+### `model_route`
+
+| Key | Type / Values | Requirements | Managed | Details |
+| --- | --- | --- | --- | --- |
+| `model_route.<name>` | `table` | `yes` | `user` | Ordered logical route (`candidates` = model ids); the first preflight-ready candidate is selected before inference. Referenced as `route:<name>`. |
 
 ### `models`
 
