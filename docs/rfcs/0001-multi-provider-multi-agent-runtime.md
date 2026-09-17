@@ -104,40 +104,50 @@ flowchart TD
 
 ### 4.2 配置
 
+> **2026-09-17 修订。** 上游已引入 `[model_providers.<id>]` 表与
+> `model_provider` 绑定（含 base_url/credentials/headers 的继承，model
+> 字段优先）。本 fork 的 provider 实现已收敛到该机制之上：transport 与
+> credential 继承完全走上游路径；fork 独有语义（auth scheme、prompt-cache
+> TTL、retry/timeout、凭据隔离）以旁路 policy（`auth_scheme` 等键）在
+> `apply()` 之后作为增量层施加。原 `[provider.<name>]` + `provider =`
+> 拼写在解析前归一化为上游形状（legacy 别名，行为不变）；"model 不得
+> 覆盖 provider-owned 字段"的禁止规则已让位于上游的"model 优先"语义
+> （认证 header 保护不变）。示例按新拼写更新，旧拼写仍被接受。
+
 ```toml
-[provider.anthropic]
+[model_providers.anthropic]
 base_url = "https://api.anthropic.com/v1"
 api_backend = "messages"
-auth = "x_api_key"
+auth_scheme = "x_api_key"
 env_key = "ANTHROPIC_API_KEY"
 extra_headers = { "anthropic-version" = "2023-06-01" }
 max_retries = 5
 inference_idle_timeout_secs = 300
 prompt_cache = { mode = "stable_prefix", ttl = "1h" }
 
-[provider.openai]
+[model_providers.openai]
 base_url = "https://api.openai.com/v1"
 api_backend = "responses"
-auth = "bearer"
+auth_scheme = "bearer"
 env_key = "OPENAI_API_KEY"
 
-[provider.local]
+[model_providers.local]
 base_url = "http://127.0.0.1:11434/v1"
 api_backend = "chat_completions"
-auth = "none"
+auth_scheme = "none"
 
 [model.claude-planner]
-provider = "anthropic"
+model_provider = "anthropic"
 model = "claude-sonnet"
 context_window = 200000
 
 [model.openai-executor]
-provider = "openai"
+model_provider = "openai"
 model = "gpt-codex"
 context_window = 400000
 
 [model.local-reviewer]
-provider = "local"
+model_provider = "local"
 model = "qwen-coder"
 context_window = 65536
 
@@ -148,7 +158,7 @@ candidates = ["claude-planner", "openai-executor"]
 candidates = ["local-reviewer", "claude-planner"]
 ```
 
-Provider auth 取值：
+Provider `auth_scheme` 取值：
 
 - `bearer`：发送 `Authorization: Bearer ...`；
 - `x_api_key`：发送 `x-api-key: ...`；
@@ -159,14 +169,13 @@ Provider auth 取值：
 
 ### 4.3 兼容和安全规则
 
-- 未设置 `provider` 的旧 `[model.*]` 完全保留现有 credential fallback。
-- 设置 `provider` 后，model 不得重复 provider-owned 的 `base_url`、
-  `api_base_url`、`api_backend`、`api_key` 或 `env_key`。
-- Provider headers 是默认值；model 可按大小写无关的 key 覆盖非认证 header。
-- Provider-bound model 只使用 provider 的 credential source，绝不 fallback
-  到 xAI session token 或 `XAI_API_KEY`。
-- `auth = "none"` 与 credential 同时出现是配置错误。
-- 未知 provider、空 route、nested route 和认证 header 冲突在配置加载时失败。
+- 未绑定 provider 的旧 `[model.*]` 完全保留现有 credential fallback。
+- 继承语义跟随上游：provider 字段是默认值，model 同名字段优先。
+- 绑定到带 `auth_scheme` 的 provider 后，model 只使用该 provider 的
+  credential source，绝不 fallback 到 xAI session token 或 `XAI_API_KEY`。
+- `auth_scheme = "none"` 与 credential 同时出现是配置错误。
+- 同一 provider 用两种拼写声明、同一 model 同时设置 `provider` 与
+  `model_provider`、空 route、nested route 和认证 header 冲突在配置加载时失败。
 
 ### 4.4 Route 语义
 

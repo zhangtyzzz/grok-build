@@ -14,6 +14,7 @@ pub mod init;
 pub mod model_providers;
 pub mod mvp_agent;
 pub(crate) mod otel_gate;
+pub(crate) mod provider_policy;
 pub(crate) mod proxy;
 pub mod relay;
 pub mod remote_config;

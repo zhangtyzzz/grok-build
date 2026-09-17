@@ -78,22 +78,23 @@ Grok supports three API backends. Set `api_backend` in your `[model.*]` config t
 When you omit `api_backend`, Grok uses `chat_completions`.
 
 For reusable provider transport and authentication, prefer a named
-`[provider.<name>]` and bind one or more models to it. Legacy model entries
-without `provider` continue to work.
+`[model_providers.<id>]` and bind one or more models to it. Model entries
+without a `model_provider` binding continue to work standalone.
 
 ---
 
 ## Named Providers and Model Routes
 
-A provider owns the endpoint, protocol, authentication, shared headers, retry
-policy, timeout, and prompt-cache policy. A model owns the upstream model ID
-and model-specific sampling/capability metadata:
+A named `[model_providers.<id>]` block owns the endpoint, protocol,
+credentials, shared headers, retry policy, timeout, and prompt-cache policy.
+Models bind to it with `model_provider = "<id>"` and inherit every
+provider-owned field as a default; a per-model value always wins:
 
 ```toml
-[provider.anthropic]
+[model_providers.anthropic]
 base_url = "https://api.anthropic.com/v1"
 api_backend = "messages"
-auth = "x_api_key"                       # bearer, x_api_key, or none
+auth_scheme = "x_api_key"                # bearer, x_api_key, or none
 env_key = "ANTHROPIC_API_KEY"
 extra_headers = { "anthropic-version" = "2023-06-01" }
 max_retries = 5
@@ -101,28 +102,38 @@ inference_idle_timeout_secs = 300
 prompt_cache = { mode = "stable_prefix", ttl = "1h" }
 
 [model.claude-planner]
-provider = "anthropic"
+model_provider = "anthropic"
 model = "claude-sonnet"
 name = "Claude planner"
 context_window = 200000
 
 [model.claude-reviewer]
-provider = "anthropic"
+model_provider = "anthropic"
 model = "claude-sonnet"
 name = "Claude reviewer"
 context_window = 200000
 ```
 
-Provider credentials can come from `api_key` or `env_key`; environment-backed
-keys are recommended. A provider-bound model never falls back to the ambient
-xAI login token or `XAI_API_KEY`, which prevents credentials from being sent
-to the wrong endpoint. Use `auth = "none"` for an unauthenticated local
-endpoint. Authentication headers cannot also be supplied through
-`extra_headers`.
+Provider credentials can come from `api_key`, `env_key`, or an
+`[auth_provider.<name>]` helper; environment-backed keys are recommended.
+`auth_scheme` marks the provider as a credential boundary: models bound to it
+never fall back to the ambient xAI login token or `XAI_API_KEY`, which
+prevents credentials from being sent to the wrong endpoint. Such a provider
+must have a `base_url` and — unless `auth_scheme = "none"` — a credential.
+Use `auth_scheme = "none"` for an unauthenticated local endpoint. The
+scheme's authentication header (`authorization` or `x-api-key`) cannot also
+be supplied through `extra_headers` on the provider or a bound model.
 
-When `provider` is set, do not repeat provider-owned fields (`base_url`,
-`api_base_url`, `api_backend`, `api_key`, or `env_key`) on the model. A model
-may still override non-authentication headers and sampling fields.
+A provider without `auth_scheme` keeps the plain inheritance semantics: it
+only shares defaults (headers, sampling policy), and models without their own
+credentials keep the usual ambient credential resolution.
+
+> **Legacy spelling.** `[provider.<name>]` with `auth = "..."` and the model
+> key `provider = "<name>"` are still accepted and normalized into
+> `[model_providers.<name>]` with `auth_scheme` before parsing. Declaring the
+> same id under both spellings, or setting both `provider` and
+> `model_provider` on one model, is a startup error. New configs should use
+> the `model_providers` spelling.
 
 Logical routes keep roles and mode profiles independent of one physical model:
 
@@ -195,15 +206,16 @@ env_http_headers = { "X-Tenant" = "TENANT_TOKEN" }    # Headers from env vars, r
 
 ### Credential Resolution
 
-For a legacy model without `provider`, Grok resolves the API key in this order:
+For a model without a provider binding, Grok resolves the API key in this order:
 
 1. The `api_key` field in the model config
 2. The environment variable(s) named by `env_key` — a single string or an array of names. The first set, non-empty value wins (for example `env_key = ["ANTHROPIC_AUTH_TOKEN", "LC_ANTHROPIC_AUTH_TOKEN"]` for SSH `LC_*` forwarding)
 3. Your signed-in session token (from `grok login`), for a model with no `api_key`/`env_key` of its own
 4. The `XAI_API_KEY` environment variable (global fallback; Grok also accepts `GROK_CODE_XAI_API_KEY` for backward compatibility)
 
-Provider-bound models use only that provider's `api_key` or `env_key` (or no
-credential when `auth = "none"`).
+Models bound to a provider with an explicit `auth_scheme` use only that
+provider's `api_key`, `env_key`, or auth helper (or no credential when
+`auth_scheme = "none"`).
 
 ### Context Window
 
@@ -221,10 +233,11 @@ extra_headers = { "X-Request-Tags" = "team=example,env=prod" }
 These act as a base for each model's inference requests. A per-model `[model.<id>].extra_headers` entry overrides the global default **per key** (matched case-insensitively): a key set on the model wins, while any global-only keys are still inherited by that model. Like the per-model field, they ride on that model's inference calls -- not on separate services such as image generation or video generation -- which makes them handy for attribution tags (for example, cost tracking) without re-declaring them whenever a new model appears.
 
 For backward compatibility, global `Authorization` and `x-api-key` headers
-still apply to legacy models without `provider`. Provider-bound models never
-inherit those global authentication headers; configure their credentials with
-the provider's `auth`, `api_key`, or `env_key` fields instead. Non-authentication
-global headers continue to apply to both kinds of model.
+still apply to models without a provider binding. Models bound to a provider
+with an explicit `auth_scheme` never inherit those global authentication
+headers; configure their credentials with the provider's `auth_scheme`,
+`api_key`, or `env_key` fields instead. Non-authentication global headers
+continue to apply to both kinds of model.
 
 ### Global Default Values
 
@@ -312,23 +325,23 @@ When you override a built-in model, Grok starts with the default configuration (
 Use Claude models directly via the Anthropic Messages API:
 
 ```toml
-[provider.anthropic]
+[model_providers.anthropic]
 base_url = "https://api.anthropic.com/v1"
 api_backend = "messages"
-auth = "x_api_key"
+auth_scheme = "x_api_key"
 env_key = "ANTHROPIC_API_KEY"
 extra_headers = { "anthropic-version" = "2023-06-01" }
 prompt_cache = { mode = "stable_prefix", ttl = "1h" }
 
 [model.claude-opus]
-provider = "anthropic"
+model_provider = "anthropic"
 model = "claude-opus-4-6"
 name = "Claude Opus 4.6"
 context_window = 200000
 ```
 
 The `messages` backend uses the Anthropic Messages protocol. The provider's
-`x_api_key` authentication policy sends the resolved key as `x-api-key`.
+`x_api_key` authentication scheme sends the resolved key as `x-api-key`.
 
 ### OpenAI (Chat Completions)
 

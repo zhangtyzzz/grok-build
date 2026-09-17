@@ -1024,58 +1024,6 @@ pub struct ModelsConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_tool_calls: Option<bool>,
 }
-/// Authentication policy for a named provider.
-///
-/// Provider-bound models never fall back to the ambient xAI session token or
-/// `XAI_API_KEY`. This is deliberately separate from [`AuthScheme`], which
-/// only controls the wire header used when a credential is present.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderAuth {
-    /// Send the configured provider credential as `Authorization: Bearer`.
-    #[default]
-    Bearer,
-    /// Send the configured provider credential as `x-api-key`.
-    XApiKey,
-    /// Send no authentication header.
-    None,
-}
-
-/// Reusable transport and credential configuration from `[provider.<name>]`.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ProviderConfig {
-    /// Base URL used for inference requests.
-    pub base_url: String,
-    /// Optional API-key-specific base URL. Kept for parity with legacy model
-    /// entries; most third-party providers should leave this unset.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub api_base_url: Option<String>,
-    /// Wire protocol used by this provider.
-    #[serde(default)]
-    pub api_backend: ApiBackend,
-    /// Authentication header policy.
-    #[serde(default)]
-    pub auth: ProviderAuth,
-    /// Inline provider key. Environment-backed credentials are preferred.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub api_key: Option<String>,
-    /// One or more environment variables containing the provider key.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub env_key: Option<EnvKeys>,
-    /// Headers inherited by every model bound to this provider.
-    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
-    pub extra_headers: IndexMap<String, String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_retries: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub inference_idle_timeout_secs: Option<u64>,
-    /// Prompt-cache policy inherited by provider-bound models. Only protocol
-    /// adapters that support caching consume it.
-    #[serde(default, skip_serializing_if = "PromptCachePolicy::is_default")]
-    pub prompt_cache: PromptCachePolicy,
-}
-
 /// Ordered, preflight-only logical model route.
 ///
 /// The first candidate present in the resolved catalog with usable provider
@@ -1316,13 +1264,12 @@ pub struct Config {
     pub config_models: IndexMap<String, ConfigModelOverride>,
     #[serde(skip)]
     pub config_warnings: Vec<super::config_model_override_parse::ConfigWarning>,
-    /// Named provider registry from `[provider.<name>]`.
-    #[serde(
-        default,
-        rename = "provider",
-        skip_serializing_if = "IndexMap::is_empty"
-    )]
-    pub providers: IndexMap<String, ProviderConfig>,
+    /// Fork provider policies from fork-only `[model_providers.<id>]` keys,
+    /// populated by [`super::provider_policy::split_provider_policies`].
+    /// Legacy `[provider.<name>]` tables are normalized into `model_providers`
+    /// (and their `auth` into an explicit policy) before parsing.
+    #[serde(skip)]
+    pub provider_policies: IndexMap<String, super::provider_policy::ProviderPolicy>,
     /// Ordered logical routes from `[model_route.<name>]`.
     #[serde(
         default,
@@ -1718,7 +1665,7 @@ impl Default for Config {
             feature_values: BTreeMap::new(),
             config_models: IndexMap::new(),
             config_warnings: Vec::new(),
-            providers: IndexMap::new(),
+            provider_policies: IndexMap::new(),
             model_routes: IndexMap::new(),
             modes: ModesConfig::default(),
             grok_com_config: GrokComConfig::default(),
@@ -1947,12 +1894,26 @@ impl Config {
                 ));
             }
         }
-        for (provider_id, provider) in &self.providers {
+        use super::provider_policy::ProviderAuth;
+        for (provider_id, policy) in &self.provider_policies {
+            // Only an explicit auth scheme carries the strict provider checks;
+            // a policy that just shares sampling defaults (TTL, retry, timeout)
+            // follows upstream provider-table semantics.
+            let Some(auth) = policy.auth else { continue };
+            let Some(provider) = self.model_providers.get(provider_id) else {
+                continue;
+            };
             if provider_id.trim().is_empty() {
                 return Err("provider names must not be empty".to_owned());
             }
-            if provider.base_url.trim().is_empty() {
-                return Err(format!("provider.{provider_id}.base_url must not be empty"));
+            if provider
+                .base_url
+                .as_deref()
+                .is_none_or(|url| url.trim().is_empty())
+            {
+                return Err(format!(
+                    "model_providers.{provider_id}.base_url must not be empty when auth_scheme is set"
+                ));
             }
             let has_inline_key = provider
                 .api_key
@@ -1962,53 +1923,55 @@ impl Config {
                 .env_key
                 .as_ref()
                 .is_some_and(|keys| !keys.is_empty());
-            match provider.auth {
-                ProviderAuth::None if has_inline_key || has_env_key => {
+            let has_auth_helper = provider.auth_provider.is_some() || provider.auth.is_some();
+            match auth {
+                ProviderAuth::None if has_inline_key || has_env_key || has_auth_helper => {
                     return Err(format!(
-                        "provider.{provider_id} uses auth = \"none\" but also configures a credential"
+                        "model_providers.{provider_id} uses auth_scheme = \"none\" but also configures a credential"
                     ));
                 }
-                ProviderAuth::Bearer | ProviderAuth::XApiKey if !has_inline_key && !has_env_key => {
+                ProviderAuth::Bearer | ProviderAuth::XApiKey
+                    if !has_inline_key && !has_env_key && !has_auth_helper =>
+                {
                     return Err(format!(
-                        "provider.{provider_id} requires api_key or env_key; use auth = \"none\" for an unauthenticated endpoint"
+                        "model_providers.{provider_id} requires api_key, env_key, or auth_provider; use auth_scheme = \"none\" for an unauthenticated endpoint"
                     ));
                 }
                 _ => {}
             }
-            if let Some(auth_header) = protected_auth_header(&provider.extra_headers) {
+            let protected = auth.protected_header();
+            if let Some(header) = provider
+                .extra_headers
+                .keys()
+                .find(|header| header.eq_ignore_ascii_case(protected))
+            {
                 return Err(format!(
-                    "provider.{provider_id}.extra_headers must not set authentication header {auth_header}; configure provider auth instead"
+                    "model_providers.{provider_id}.extra_headers must not set authentication header {header}; configure the provider credential instead"
                 ));
             }
         }
         for (model_id, model) in &self.config_models {
-            let Some(provider_id) = model.provider.as_deref() else {
+            let Some(provider_id) = model.model_provider.as_deref() else {
                 continue;
             };
-            let Some(provider) = self.providers.get(provider_id) else {
-                return Err(format!(
-                    "model.{model_id} references unknown provider {provider_id:?}"
-                ));
+            // A provider with an explicit auth scheme owns the authentication
+            // header; the model must not bypass the scheme through
+            // extra_headers. Models bound to scheme-less providers keep the
+            // upstream extra_headers semantics.
+            let Some(auth) = self
+                .provider_policies
+                .get(provider_id)
+                .and_then(|policy| policy.auth)
+            else {
+                continue;
             };
-            let conflicts = [
-                ("base_url", model.base_url.is_some()),
-                ("api_base_url", model.api_base_url.is_some()),
-                ("api_backend", model.api_backend.is_some()),
-                ("api_key", model.api_key.is_some()),
-                ("env_key", model.env_key.is_some()),
-            ]
-            .into_iter()
-            .filter_map(|(field, present)| present.then_some(field))
-            .collect::<Vec<_>>();
-            if !conflicts.is_empty() {
+            if let Some(header) = model
+                .extra_headers
+                .keys()
+                .find(|header| header.eq_ignore_ascii_case(auth.protected_header()))
+            {
                 return Err(format!(
-                    "model.{model_id} binds provider {provider_id:?} and must not override provider-owned field(s): {}",
-                    conflicts.join(", ")
-                ));
-            }
-            if let Some(protected_header) = protected_auth_header(&model.extra_headers) {
-                return Err(format!(
-                    "model.{model_id}.extra_headers must not override provider authentication header {protected_header}"
+                    "model.{model_id}.extra_headers must not override provider authentication header {header}"
                 ));
             }
         }
@@ -2103,13 +2066,18 @@ impl Config {
         Ok((config, unrecognized_keys))
     }
     pub fn new_from_toml_cfg(raw_config: &toml::Value) -> Result<Self, String> {
-        let raw_config = &Self::expand_auth_alias(raw_config);
+        let normalized =
+            super::provider_policy::normalize_provider_config(Self::expand_auth_alias(raw_config))?;
+        let (provider_tables, provider_policies, provider_policy_warnings) =
+            super::provider_policy::split_provider_policies(&normalized);
+        let raw_config = &normalized;
         let super::config_model_override_parse::ParsedModelOverrides {
             models: config_models,
             warnings: config_warnings,
         } = super::config_model_override_parse::parse_model_overrides(raw_config);
         let (mut auth_providers, auth_provider_warnings) = parse_auth_providers(raw_config);
-        let (model_providers, mut model_provider_warnings) = parse_model_providers(raw_config);
+        let (model_providers, mut model_provider_warnings) =
+            parse_model_providers(&provider_tables);
         for (model_id, model) in &config_models {
             let Some(cert_dir) = model.mtls_cert_dir.as_deref() else {
                 continue;
@@ -2190,6 +2158,7 @@ impl Config {
         config.config_warnings = config_warnings;
         config.auth_providers = auth_providers;
         config.model_providers = model_providers;
+        config.provider_policies = provider_policies;
         for spec in FEATURES {
             let Some(&value) = config.features.entries.flags.get(spec.key) else {
                 continue;
@@ -2198,6 +2167,7 @@ impl Config {
         }
         config.config_warnings.extend(auth_provider_warnings);
         config.config_warnings.extend(model_provider_warnings);
+        config.config_warnings.extend(provider_policy_warnings);
         unrecognized_keys.sort();
         for key in unrecognized_keys {
             config.config_warnings.push(
@@ -3138,12 +3108,6 @@ impl Config {
     }
 }
 
-fn protected_auth_header(headers: &IndexMap<String, String>) -> Option<&str> {
-    headers
-        .keys()
-        .find_map(|header| is_protected_auth_header(header).then_some(header.as_str()))
-}
-
 fn is_protected_auth_header(header: &str) -> bool {
     header.eq_ignore_ascii_case("authorization") || header.eq_ignore_ascii_case("x-api-key")
 }
@@ -3637,33 +3601,6 @@ pub(crate) fn resolve_model_list(
         if effective.api_backend.is_some() {
             explicit_api_backend_keys.insert(key.as_str());
         }
-        if let Some(provider_id) = effective.provider.as_deref() {
-            match cfg.providers.get(provider_id) {
-                Some(provider) => {
-                    base = Some(provider.bind_model(provider_id, key, base, &cfg.endpoints));
-                }
-                None => {
-                    // Startup validation rejects this. Keep resolution
-                    // fail-closed for defensive callers that build a catalog
-                    // without validating first: the entry cannot borrow the
-                    // ambient xAI credential.
-                    tracing::error!(
-                        model_key = %key,
-                        provider = %provider_id,
-                        "model references an unknown provider"
-                    );
-                    let mut entry =
-                        base.unwrap_or_else(|| ModelEntry::fallback(key, &cfg.endpoints));
-                    entry.api_key = None;
-                    entry.env_key = None;
-                    entry.provider = Some(ResolvedProviderBinding {
-                        id: provider_id.to_owned(),
-                        auth_required: true,
-                    });
-                    base = Some(entry);
-                }
-            }
-        }
         let mut entry = effective.apply(key, base, &cfg.endpoints);
         let session_bearer_unsafe = !crate::util::is_xai_api_bearer_url(&entry.info.base_url)
             || entry
@@ -3677,6 +3614,15 @@ pub(crate) fn resolve_model_list(
             entry.auth_provider = Some(xai_grok_login::AuthProviderRef::fail_closed(format!(
                 "model_provider:{pid} (fail-closed)"
             )));
+        }
+        // Fork layer: provider policies (auth scheme, prompt-cache TTL, retry,
+        // timeout) ride on top of the upstream inheritance above. Model-level
+        // values already applied by `apply` win; an explicit auth scheme marks
+        // the entry provider-bound and opts it out of ambient xAI credentials.
+        if let Some(pid) = model_override.model_provider.as_deref()
+            && let Some(policy) = cfg.provider_policies.get(pid)
+        {
+            super::provider_policy::apply_provider_policy(&mut entry, pid, policy);
         }
         tracing::debug!(
             model_key = %key,
@@ -4222,8 +4168,6 @@ fn is_default_laziness_detector(cfg: &LazinessDetectorPerModelConfig) -> bool {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ConfigModelOverride {
-    /// Named `[provider.<name>]` supplying transport and credentials.
-    pub provider: Option<String>,
     pub model: Option<String>,
     pub model_family: Option<String>,
     pub base_url: Option<String>,
@@ -4323,23 +4267,7 @@ impl ConfigModelOverride {
             entry.info.prompt_cache = v;
         }
         if !self.extra_headers.is_empty() {
-            if entry.provider.is_some() {
-                // Provider headers are defaults; a model may override
-                // non-auth headers case-insensitively without dropping the
-                // provider's remaining required headers.
-                for (header, value) in &self.extra_headers {
-                    entry
-                        .info
-                        .extra_headers
-                        .retain(|existing, _| !existing.eq_ignore_ascii_case(header));
-                    entry
-                        .info
-                        .extra_headers
-                        .insert(header.clone(), value.clone());
-                }
-            } else {
-                entry.info.extra_headers = self.extra_headers.clone();
-            }
+            entry.info.extra_headers = self.extra_headers.clone();
         }
         if !self.query_params.is_empty() {
             entry.info.query_params = self.query_params.clone();
@@ -4686,42 +4614,6 @@ pub struct ModelEntry {
 pub struct ResolvedProviderBinding {
     pub id: String,
     pub auth_required: bool,
-}
-
-impl ProviderConfig {
-    fn bind_model(
-        &self,
-        provider_id: &str,
-        model_key: &str,
-        base: Option<ModelEntry>,
-        endpoints: &EndpointsConfig,
-    ) -> ModelEntry {
-        let mut entry = base.unwrap_or_else(|| ModelEntry::fallback(model_key, endpoints));
-        entry.info.base_url = self.base_url.clone();
-        entry.api_base_url = self.api_base_url.clone();
-        entry.info.api_backend = self.api_backend.clone();
-        entry.info.prompt_cache = self.prompt_cache;
-        entry.info.auth_scheme = match self.auth {
-            ProviderAuth::Bearer | ProviderAuth::None => AuthScheme::Bearer,
-            ProviderAuth::XApiKey => AuthScheme::XApiKey,
-        };
-        entry.info.extra_headers = self.extra_headers.clone();
-        entry.info.max_retries = self.max_retries;
-        entry.info.inference_idle_timeout_secs = self.inference_idle_timeout_secs;
-        let auth_required = self.auth != ProviderAuth::None;
-        if auth_required {
-            entry.api_key.clone_from(&self.api_key);
-            entry.env_key.clone_from(&self.env_key);
-        } else {
-            entry.api_key = None;
-            entry.env_key = None;
-        }
-        entry.provider = Some(ResolvedProviderBinding {
-            id: provider_id.to_owned(),
-            auth_required,
-        });
-        entry
-    }
 }
 
 impl ModelEntry {
