@@ -31,6 +31,7 @@ pub mod testkit;
 pub(crate) mod update_chunk_merge;
 
 pub use mvp_agent::MvpAgent;
+pub use mvp_agent::SessionSetupPhase;
 pub use relay::{RelayConfig, RelayHandle, spawn_relay_connection};
 pub use server::{ServerConfig, run_agent_server};
 
