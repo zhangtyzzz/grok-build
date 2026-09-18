@@ -27,518 +27,6 @@ pub(super) fn filter_cursor_tools_by_plan_mode(
     defs
 }
 impl SessionActor {
-    pub(super) async fn persist_plan_mode_state_durable(&self) -> Result<(), acp::Error> {
-        let state = self.plan_mode.lock().snapshot();
-        let (respond_to, response) = tokio::sync::oneshot::channel();
-        self.notifications
-            .persistence_tx
-            .send(PersistenceMsg::PlanModeStateAndAck { state, respond_to })
-            .map_err(|_| {
-                acp::Error::internal_error()
-                    .data("durable plan-mode persistence actor is unavailable")
-            })?;
-        response
-            .await
-            .map_err(|_| {
-                acp::Error::internal_error()
-                    .data("durable plan-mode acknowledgement channel closed")
-            })?
-            .map_err(|error| {
-                acp::Error::internal_error()
-                    .data(format!("durable plan-mode write failed: {error}"))
-            })
-    }
-
-    async fn current_plan_model_locator(
-        &self,
-    ) -> Option<crate::session::plan_mode::PlanModelLocator> {
-        self.chat_state_handle
-            .get_sampling_config()
-            .await
-            .map(|config| crate::session::plan_mode::PlanModelLocator {
-                route_ref: config.route_ref,
-                model_ref: config.model_ref,
-                model: config.model,
-                base_url: config.base_url,
-            })
-    }
-
-    fn sampling_config_for_plan_locator(
-        &self,
-        locator: &crate::session::plan_mode::PlanModelLocator,
-    ) -> Option<(
-        crate::agent::config::ModelEntry,
-        xai_grok_sampler::SamplerConfig,
-    )> {
-        if let Some(route_ref) = locator.route_ref.as_deref() {
-            self.models_manager.sampling_config_for_model_ref(route_ref)
-        } else {
-            self.models_manager.sampling_config_for_locator(
-                locator.model_ref.as_deref(),
-                &locator.model,
-                &locator.base_url,
-            )
-        }
-    }
-
-    async fn emit_plan_scoped_model_changed(&self, model_id: &str) {
-        let notification = crate::extensions::notification::SessionNotification {
-            session_id: self.session_info.id.clone(),
-            update: crate::extensions::notification::SessionUpdate::ModelChanged {
-                model_id: model_id.to_owned(),
-                reasoning_effort: None,
-            },
-            meta: None,
-        };
-        if let Ok(params) = serde_json::value::to_raw_value(&notification) {
-            self.notifications
-                .gateway
-                .forward_fire_and_forget(acp::ExtNotification::new(
-                    "x.ai/session_notification",
-                    params.into(),
-                ));
-        }
-    }
-
-    /// Apply or release `[modes.plan].model` without changing the process-wide
-    /// ModelsManager selection (leader mode may host sessions on different
-    /// models). Exit uses compare-and-restore so a manual `/model` switch made
-    /// while planning is never overwritten.
-    pub(super) async fn apply_plan_model_scope(
-        &self,
-        entering: bool,
-        inject_overlay: bool,
-    ) -> Result<(), acp::Error> {
-        let profile = self.models_manager.plan_mode_profile();
-        if entering {
-            self.apply_plan_model_scope_enter(&profile).await?;
-            // Overlay delivery is independent of model resolution. A missing
-            // credential, unavailable route, or absent sampling config must
-            // not silently drop configured Plan Mode instructions/skills.
-            if inject_overlay {
-                self.queue_plan_profile_overlay().await;
-            }
-            return Ok(());
-        }
-
-        self.release_plan_model_scope(&profile).await
-    }
-
-    async fn apply_plan_model_scope_enter(
-        &self,
-        profile: &crate::agent::config::PlanModeProfileConfig,
-    ) -> Result<(), acp::Error> {
-        let Some(current) = self.current_plan_model_locator().await else {
-            tracing::warn!(
-                session_id = %self.session_info.id.0,
-                "Plan model override skipped: session has no sampling config"
-            );
-            return Err(
-                acp::Error::internal_error().data("session has no sampling config for Plan Mode")
-            );
-        };
-
-        // Recover a crash between the write-ahead snapshot and the commit
-        // snapshot. The live locator tells us which side of the switch became
-        // durable. A third locator is a manual switch and always wins.
-        // Bind the snapshot before `if let`: a mutex guard created directly in
-        // the condition lives through the whole branch and would deadlock when
-        // recovery commits or aborts the scope below.
-        let pending_scope = { self.plan_mode.lock().pending_model_scope().cloned() };
-        if let Some(pending) = pending_scope {
-            // A pending scope is actionable only after the persistence actor
-            // confirms that exact write-ahead snapshot is durable.
-            self.persist_plan_mode_state_durable().await?;
-            if current.same_selection(&pending.applied) {
-                // The in-memory chat state is changed before CurrentModel's
-                // disk ACK. A previous write failure can therefore leave the
-                // live locator at `applied` while summary.json is still at
-                // `base`. Re-issue the durable model write before committing
-                // the scope; duplicate success is harmless.
-                let Some((entry, sampling)) =
-                    self.sampling_config_for_plan_locator(&pending.applied)
-                else {
-                    return Err(acp::Error::internal_error()
-                        .data("pending Plan Mode model is no longer available"));
-                };
-                return self
-                    .apply_prepared_plan_model(entry, sampling, &pending.applied)
-                    .await;
-            }
-            if !current.same_selection(&pending.base) {
-                self.plan_mode.lock().abort_prepared_model_scope();
-                self.persist_plan_mode_state_durable().await?;
-                tracing::info!(
-                    session_id = %self.session_info.id.0,
-                    model = %current.model,
-                    "Abandoned pending Plan Mode model switch because the live model changed"
-                );
-                return Ok(());
-            }
-
-            if let Some((entry, sampling)) = self.sampling_config_for_plan_locator(&pending.applied)
-            {
-                self.apply_prepared_plan_model(entry, sampling, &pending.applied)
-                    .await?;
-                return Ok(());
-            }
-
-            // The exact pending target disappeared (for example a route's
-            // credential changed while the process was down). Clear the stale
-            // transaction and resolve the configured reference afresh below.
-            self.plan_mode.lock().abort_prepared_model_scope();
-            self.persist_plan_mode_state_durable().await?;
-        }
-
-        let committed_scope = { self.plan_mode.lock().model_scope().cloned() };
-        if let Some(scope) = committed_scope {
-            if current.same_selection(&scope.applied) {
-                return Ok(());
-            }
-            if current.same_selection(&scope.base) {
-                let Some((entry, sampling)) = self.sampling_config_for_plan_locator(&scope.applied)
-                else {
-                    return Err(acp::Error::internal_error()
-                        .data("committed Plan Mode model is no longer available"));
-                };
-                let threshold = self
-                    .models_manager
-                    .auto_compact_threshold_for_model(&sampling.model);
-                let model_id = self
-                    .handle_set_session_model_durable(
-                        sampling,
-                        entry.info.use_concise,
-                        false,
-                        true,
-                        threshold,
-                    )
-                    .await?;
-                self.emit_plan_scoped_model_changed(model_id.0.as_ref())
-                    .await;
-                return Ok(());
-            }
-
-            // A third locator is an explicit/manual model choice. Preserve it
-            // and release ownership rather than forcing the configured
-            // planner over the user's selection during recovery.
-            self.plan_mode.lock().finish_model_scope(&current, false);
-            if let Err(error) = self.persist_plan_mode_state_durable().await {
-                self.plan_mode
-                    .lock()
-                    .begin_model_scope(scope.base, scope.applied);
-                return Err(error);
-            }
-            return Ok(());
-        }
-        let Some(model_ref) = profile.model.as_deref() else {
-            return Ok(());
-        };
-        let Some((entry, sampling)) = self.models_manager.sampling_config_for_model_ref(model_ref)
-        else {
-            tracing::error!(
-                session_id = %self.session_info.id.0,
-                model = %model_ref,
-                "Plan model override skipped: model/route unavailable or provider credential missing"
-            );
-            return Ok(());
-        };
-        let applied = crate::session::plan_mode::PlanModelLocator {
-            route_ref: sampling.route_ref.clone(),
-            model_ref: sampling.model_ref.clone(),
-            model: sampling.model.clone(),
-            base_url: sampling.base_url.clone(),
-        };
-
-        // Write-ahead ordering is intentional: PersistenceMsg is FIFO, so the
-        // recoverable scope reaches plan_mode.json before CurrentModel can be
-        // emitted by handle_set_session_model.
-        if !self
-            .plan_mode
-            .lock()
-            .prepare_model_scope(current, applied.clone())
-        {
-            return Ok(());
-        }
-        self.persist_plan_mode_state_durable().await?;
-        self.apply_prepared_plan_model(entry, sampling, &applied)
-            .await
-    }
-
-    async fn apply_prepared_plan_model(
-        &self,
-        entry: crate::agent::config::ModelEntry,
-        sampling: xai_grok_sampler::SamplerConfig,
-        applied: &crate::session::plan_mode::PlanModelLocator,
-    ) -> Result<(), acp::Error> {
-        let threshold = self
-            .models_manager
-            .auto_compact_threshold_for_model(&sampling.model);
-        match self
-            .handle_set_session_model_durable(
-                sampling,
-                entry.info.use_concise,
-                false,
-                true,
-                threshold,
-            )
-            .await
-        {
-            Ok(model_id) => {
-                self.plan_mode.lock().commit_prepared_model_scope();
-                if let Err(error) = self.persist_plan_mode_state_durable().await {
-                    self.plan_mode.lock().rollback_model_scope_commit();
-                    return Err(error);
-                }
-                self.emit_plan_scoped_model_changed(model_id.0.as_ref())
-                    .await;
-                Ok(())
-            }
-            Err(error) => {
-                tracing::error!(
-                    session_id = %self.session_info.id.0,
-                    model = %applied.model,
-                    ?error,
-                    "Plan model override persistence failed; retaining the write-ahead scope"
-                );
-                Err(error)
-            }
-        }
-    }
-
-    async fn release_plan_model_scope(
-        &self,
-        profile: &crate::agent::config::PlanModeProfileConfig,
-    ) -> Result<(), acp::Error> {
-        let Some(current) = self.current_plan_model_locator().await else {
-            return Err(acp::Error::internal_error()
-                .data("session has no sampling config for Plan Mode restore"));
-        };
-
-        let pending_scope = { self.plan_mode.lock().pending_model_scope().cloned() };
-        if let Some(pending) = pending_scope {
-            self.persist_plan_mode_state_durable().await?;
-            if current.same_selection(&pending.applied) {
-                self.plan_mode.lock().commit_prepared_model_scope();
-            } else {
-                // Still at the base means the apply never landed; any third
-                // locator is a manual model switch. Neither case needs restore.
-                self.plan_mode.lock().abort_prepared_model_scope();
-                self.persist_plan_mode_state_durable().await?;
-                return Ok(());
-            }
-            if let Err(error) = self.persist_plan_mode_state_durable().await {
-                self.plan_mode.lock().rollback_model_scope_commit();
-                return Err(error);
-            }
-        }
-
-        let Some(scope) = self.plan_mode.lock().model_scope().cloned() else {
-            return Ok(());
-        };
-        if !profile.restore_model || !current.same_selection(&scope.applied) {
-            self.plan_mode
-                .lock()
-                .finish_model_scope(&current, profile.restore_model);
-            if let Err(error) = self.persist_plan_mode_state_durable().await {
-                self.plan_mode
-                    .lock()
-                    .begin_model_scope(scope.base, scope.applied);
-                return Err(error);
-            }
-            return Ok(());
-        }
-        let Some((entry, sampling)) = self.sampling_config_for_plan_locator(&scope.base) else {
-            tracing::error!(
-                session_id = %self.session_info.id.0,
-                model = %scope.base.model,
-                "Plan model restore deferred: original model is no longer available"
-            );
-            return Err(acp::Error::internal_error()
-                .data("original Plan Mode model is no longer available"));
-        };
-        let threshold = self
-            .models_manager
-            .auto_compact_threshold_for_model(&sampling.model);
-        match self
-            .handle_set_session_model_durable(
-                sampling,
-                entry.info.use_concise,
-                false,
-                true,
-                threshold,
-            )
-            .await
-        {
-            Ok(model_id) => {
-                self.plan_mode
-                    .lock()
-                    .finish_model_scope(&current, profile.restore_model);
-                if let Err(error) = self.persist_plan_mode_state_durable().await {
-                    self.plan_mode
-                        .lock()
-                        .begin_model_scope(scope.base, scope.applied);
-                    return Err(error);
-                }
-                self.emit_plan_scoped_model_changed(model_id.0.as_ref())
-                    .await;
-                Ok(())
-            }
-            Err(error) => {
-                tracing::error!(
-                    session_id = %self.session_info.id.0,
-                    model = %scope.base.model,
-                    ?error,
-                    "Plan model restore failed; retaining scope for a later retry"
-                );
-                Err(error)
-            }
-        }
-    }
-
-    async fn render_plan_profile_overlay(&self) -> Option<String> {
-        let profile = self.models_manager.plan_mode_profile();
-        let mut parts = Vec::new();
-        if let Some(instructions) = profile
-            .instructions
-            .as_deref()
-            .map(str::trim)
-            .filter(|instructions| !instructions.is_empty())
-        {
-            parts.push(instructions.to_owned());
-        }
-        if !profile.skills.is_empty() {
-            let bridge = self.agent.borrow().tool_bridge().clone();
-            let discovered = bridge.slash_skills().await;
-            for requested in &profile.skills {
-                let Some(skill) = discovered.iter().find(|skill| {
-                    skill.name.eq_ignore_ascii_case(requested)
-                        || skill.dedup_key().eq_ignore_ascii_case(requested)
-                }) else {
-                    tracing::warn!(
-                        session_id = %self.session_info.id.0,
-                        skill = %requested,
-                        "Configured Plan Mode skill was not found"
-                    );
-                    continue;
-                };
-                match xai_grok_tools::implementations::skills::skill::load_skill_with_body(skill)
-                    .await
-                {
-                    Ok(loaded) => {
-                        if let Some(body) = loaded.body.as_deref() {
-                            parts.push(
-                                xai_grok_tools::implementations::skills::skill::build_skill_message(
-                                    &loaded, body,
-                                ),
-                            );
-                        }
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            session_id = %self.session_info.id.0,
-                            skill = %requested,
-                            %error,
-                            "Configured Plan Mode skill could not be loaded"
-                        );
-                    }
-                }
-            }
-        }
-        (!parts.is_empty()).then(|| {
-            format!(
-                "<plan-mode-profile>\n{}\n</plan-mode-profile>",
-                parts.join("\n\n")
-            )
-        })
-    }
-
-    async fn queue_plan_profile_overlay(&self) {
-        let Some(overlay) = self.render_plan_profile_overlay().await else {
-            return;
-        };
-        let tag = self.reminder_wrapper_tag();
-        self.pending_skill_reminders
-            .lock()
-            .push(ConversationItem::system_reminder(format!(
-                "<{tag}>\n{overlay}\n</{tag}>"
-            )));
-    }
-
-    /// Apply an agent-tool Plan Mode transition entirely on the session actor.
-    ///
-    /// Both the fire-and-forget notification bridge and the completed tool
-    /// result call this path. The state-machine transition is the idempotency
-    /// key: only the caller that changes state emits UI/persistence, applies or
-    /// releases the model scope, and queues the profile overlay.
-    pub(super) async fn apply_plan_tool_transition(
-        &self,
-        entering: bool,
-    ) -> Result<bool, acp::Error> {
-        use crate::session::plan_mode::PromptMode;
-        use xai_grok_tools::types::SessionMode;
-
-        if entering {
-            let activated = self.plan_mode.lock().activate_from_tool();
-            if !activated && !self.plan_mode.lock().is_active() {
-                return Ok(false);
-            }
-            if activated {
-                *self.current_prompt_mode.lock() = PromptMode::Plan;
-                *self.turn_prompt_mode.lock() = PromptMode::Plan;
-            }
-            // The duplicate acknowledged command is also a durable retry
-            // barrier: always re-assert Active before touching the model scope.
-            self.persist_plan_mode_state_durable().await?;
-            if activated {
-                self.enqueue_current_mode_update(acp::SessionModeId::new(
-                    SessionMode::Plan.as_id(),
-                ));
-                self.queue_plan_profile_overlay().await;
-            }
-            self.apply_plan_model_scope(true, false).await?;
-            tracing::info!(
-                session_id = %self.session_info.id.0,
-                "Plan Mode tool entry committed before next sampling request"
-            );
-            return Ok(activated);
-        }
-
-        let deactivated = {
-            let mut tracker = self.plan_mode.lock();
-            let deactivated = tracker.deactivate_approved();
-            if deactivated
-                && self
-                    .queue_exit_reminder_on_approved_exit
-                    .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                tracker.queue_exit_reminder();
-            }
-            deactivated
-        };
-        if deactivated {
-            *self.current_prompt_mode.lock() = PromptMode::Agent;
-            *self.turn_prompt_mode.lock() = PromptMode::Agent;
-            if let Err(error) = self.persist_plan_mode_state_durable().await {
-                self.plan_mode.lock().rollback_failed_approved_exit();
-                *self.current_prompt_mode.lock() = PromptMode::Plan;
-                *self.turn_prompt_mode.lock() = PromptMode::Plan;
-                return Err(error);
-            }
-            self.enqueue_current_mode_update(acp::SessionModeId::new(SessionMode::Default.as_id()));
-        } else if self.plan_mode.lock().is_active() {
-            return Ok(false);
-        } else {
-            // Idempotent exit barrier after a partial restore/commit.
-            self.persist_plan_mode_state_durable().await?;
-        }
-        self.apply_plan_model_scope(false, false).await?;
-        tracing::info!(
-            session_id = %self.session_info.id.0,
-            "Plan Mode tool exit committed before next sampling request"
-        );
-        Ok(deactivated)
-    }
-
     pub(super) fn apply_prompt_modes_to_snapshot(&self, snapshot: &mut TurnDeltaSnapshot) {
         snapshot.start_prompt_mode = Some(self.turn_start_prompt_mode.lock().to_string());
         snapshot.end_prompt_mode = Some(self.turn_prompt_mode.lock().to_string());
@@ -553,34 +41,15 @@ impl SessionActor {
     pub(super) fn is_cursor_harness(&self) -> bool {
         false
     }
-    pub(super) async fn handle_session_mode(
-        &self,
-        session_mode_id: acp::SessionModeId,
-    ) -> Result<(), acp::Error> {
+    pub(super) async fn handle_session_mode(&self, session_mode_id: acp::SessionModeId) {
         use xai_grok_tools::types::SessionMode;
         let prompt_mode = prompt_mode_from_session_mode_id(&session_mode_id);
-        let previous_prompt_mode = *self.current_prompt_mode.lock();
+        *self.current_prompt_mode.lock() = prompt_mode;
         let mode = SessionMode::from_id(session_mode_id.0.as_ref());
         if mode.is_plan() {
-            let before = self.plan_mode.lock().clone();
             let entered = self.plan_mode.lock().enter_pending();
             if entered {
-                *self.current_prompt_mode.lock() = prompt_mode;
-            }
-            if let Err(error) = self.persist_plan_mode_state_durable().await {
-                if entered {
-                    *self.plan_mode.lock() = before;
-                    *self.current_prompt_mode.lock() = previous_prompt_mode;
-                }
-                tracing::error!(
-                    session_id = %self.session_info.id.0,
-                    ?error,
-                    "Plan mode toggle rejected because its durable state write failed"
-                );
-                return Err(error);
-            }
-            *self.current_prompt_mode.lock() = prompt_mode;
-            if entered {
+                self.persist_plan_mode_state();
                 self.enqueue_current_mode_update(acp::SessionModeId::new(
                     SessionMode::Plan.as_id(),
                 ));
@@ -591,24 +60,8 @@ impl SessionActor {
                 "Plan mode toggled ON (Pending)"
             );
             let turn_in_flight = self.state.lock().await.running_task.is_some();
-            if entered
-                && turn_in_flight
-                && let Err(error) = self.activate_plan_mode_mid_turn().await
-            {
-                tracing::error!(
-                    session_id = %self.session_info.id.0,
-                    ?error,
-                    "Mid-turn Plan mode activation was not durably persisted"
-                );
-                return Err(error);
-            }
-            if let Err(error) = self.apply_plan_model_scope(true, false).await {
-                tracing::error!(
-                    session_id = %self.session_info.id.0,
-                    ?error,
-                    "Plan mode model scope was not durably applied"
-                );
-                return Err(error);
+            if entered && turn_in_flight {
+                self.activate_plan_mode_mid_turn().await;
             }
             xai_grok_telemetry::session_ctx::log_event(
                 xai_grok_telemetry::events::PlanModeToggled {
@@ -638,36 +91,16 @@ impl SessionActor {
                     enabled = true,
                 );
             }
-            return Ok(());
+            return;
         }
         let was_plan = {
             let tracker = self.plan_mode.lock();
             tracker.state() != crate::session::plan_mode::PlanModeState::Inactive
         };
-        let has_model_scope = self.plan_mode.lock().has_any_model_scope();
         if was_plan {
             let turn_in_flight = self.state.lock().await.running_task.is_some();
-            let before = self.plan_mode.lock().clone();
             self.plan_mode.lock().user_exit(turn_in_flight);
-            if let Err(error) = self.persist_plan_mode_state_durable().await {
-                *self.plan_mode.lock() = before;
-                *self.current_prompt_mode.lock() = previous_prompt_mode;
-                tracing::error!(
-                    session_id = %self.session_info.id.0,
-                    ?error,
-                    "Plan mode exit rejected because its durable state write failed"
-                );
-                return Err(error);
-            }
-            if !turn_in_flight && let Err(error) = self.apply_plan_model_scope(false, false).await {
-                tracing::error!(
-                    session_id = %self.session_info.id.0,
-                    ?error,
-                    "Plan mode model restore is incomplete; it will be retried"
-                );
-                return Err(error);
-            }
-            *self.current_prompt_mode.lock() = prompt_mode;
+            self.persist_plan_mode_state();
             self.enqueue_current_mode_update(session_mode_id.clone());
             tracing::info!(
                 session_id = %self.session_info.id.0,
@@ -691,18 +124,6 @@ impl SessionActor {
                 trigger = "user",
                 enabled = false,
             );
-        } else if has_model_scope {
-            if let Err(error) = self.apply_plan_model_scope(false, false).await {
-                tracing::error!(
-                    session_id = %self.session_info.id.0,
-                    ?error,
-                    "Incomplete Plan mode model restore could not be retried"
-                );
-                return Err(error);
-            }
-            *self.current_prompt_mode.lock() = prompt_mode;
-        } else {
-            *self.current_prompt_mode.lock() = prompt_mode;
         }
         let agent_def = match session_mode_id.0.as_ref() {
             "browser_use" => Some(AgentDefinition::browser_use()),
@@ -738,51 +159,31 @@ impl SessionActor {
             }
             self.chat_state_handle.replace_conversation(conversation);
         }
-        Ok(())
     }
     /// Only a real user turn declares a mode.
     /// Reconciling one would end plan mode just by waking the session.
-    ///
-    /// Returns the resolved mode rather than echoing the argument, so a
-    /// synthetic turn is also *recorded* under the mode it really ran in.
-    pub(super) async fn resolve_turn_prompt_mode(
+    /// Returns the resolved mode rather than echoing the argument, so a synthetic turn is also *recorded* under the mode it really ran in.
+    pub(super) fn resolve_turn_prompt_mode(
         &self,
         origin: &crate::session::PromptOrigin,
         declared: PromptMode,
-    ) -> Result<PromptMode, acp::Error> {
+    ) -> PromptMode {
         if !origin.is_synthetic() {
-            self.reconcile_plan_mode_with_prompt(declared).await?;
+            self.reconcile_plan_mode_with_prompt(declared);
         }
-        Ok(*self.current_prompt_mode.lock())
+        *self.current_prompt_mode.lock()
     }
     /// Mirrors `handle_session_mode` but driven from `_meta.mode` on the prompt, the only signal the client sends.
-    /// Both transitions are idempotent, so `set_mode`-driven flows are unaffected.
-    ///
-    /// Like `handle_session_mode`, a real transition here emits a
-    /// `CurrentModeUpdate`. Without it a client that carries its mode on the
-    /// prompt could enter or leave plan mode with no signal at all — and since
-    /// the same line is what lands in `updates.jsonl`, a later replay could not
-    /// recover the mode either.
-    pub(super) async fn reconcile_plan_mode_with_prompt(
-        &self,
-        prompt_mode: PromptMode,
-    ) -> Result<(), acp::Error> {
+    /// Without it a client that carries its mode on the prompt could enter or leave plan mode with no signal.
+    /// The same line is what lands in `updates.jsonl`, so a later replay could not recover the mode either.
+    pub(super) fn reconcile_plan_mode_with_prompt(&self, prompt_mode: PromptMode) {
         use crate::session::plan_mode::PlanModeState;
-        let previous_prompt_mode = *self.current_prompt_mode.lock();
         *self.current_prompt_mode.lock() = prompt_mode;
         match prompt_mode {
             PromptMode::Plan => {
-                let before = self.plan_mode.lock().clone();
                 let entered = self.plan_mode.lock().enter_pending();
-                if let Err(error) = self.persist_plan_mode_state_durable().await {
-                    if entered {
-                        *self.plan_mode.lock() = before;
-                    }
-                    *self.current_prompt_mode.lock() = previous_prompt_mode;
-                    return Err(error);
-                }
-                self.apply_plan_model_scope(true, false).await?;
                 if entered {
+                    self.persist_plan_mode_state();
                     self.enqueue_current_mode_update(session_mode_id_from_prompt_mode(prompt_mode));
                 }
             }
@@ -791,34 +192,18 @@ impl SessionActor {
                     let tracker = self.plan_mode.lock();
                     tracker.state() != PlanModeState::Inactive
                 };
-                let has_model_scope = self.plan_mode.lock().has_any_model_scope();
                 if was_plan {
-                    let before = self.plan_mode.lock().clone();
-                    if before.state() == crate::session::plan_mode::PlanModeState::ExitPending {
-                        self.plan_mode.lock().complete_deferred_exit();
-                    } else {
-                        self.plan_mode.lock().user_exit(false);
-                    }
-                    if let Err(error) = self.persist_plan_mode_state_durable().await {
-                        *self.plan_mode.lock() = before;
-                        *self.current_prompt_mode.lock() = previous_prompt_mode;
-                        return Err(error);
-                    }
-                }
-                if was_plan || has_model_scope {
-                    self.apply_plan_model_scope(false, false).await?;
-                }
-                if was_plan {
+                    self.plan_mode.lock().user_exit(false);
+                    self.persist_plan_mode_state();
                     self.enqueue_current_mode_update(session_mode_id_from_prompt_mode(prompt_mode));
                 }
             }
         }
-        Ok(())
     }
     /// Called once per turn from `handle_prompt()`, before the user's actual message is pushed.
     /// All reminders are pushed as `<system-reminder>`-wrapped user messages so the model sees them in the same turn as the user's prompt.
     /// Tool names are resolved at render time via `TemplateRenderer`.
-    pub(super) async fn inject_plan_mode_reminders(&self) -> Result<(), acp::Error> {
+    pub(super) async fn inject_plan_mode_reminders(&self) {
         use crate::session::plan_mode::{
             PlanModeState, plan_mode_exit_reminder_template, plan_mode_reminder_full_template,
             plan_mode_reminder_sparse_template,
@@ -835,7 +220,7 @@ impl SessionActor {
         };
         if let Some((is_reentry, plan_path)) = activation {
             self.plan_mode.lock().activate();
-            self.persist_plan_mode_state_durable().await?;
+            self.persist_plan_mode_state();
             let plan_has_content =
                 crate::session::plan_mode::plan_file_has_content(&plan_path).await;
             let template = self.plan_activation_template(is_reentry);
@@ -883,11 +268,6 @@ impl SessionActor {
                 }
             }
         }
-        if self.plan_mode.lock().is_active()
-            && let Some(overlay) = self.render_plan_profile_overlay().await
-        {
-            push_reminder(self, &overlay);
-        }
         if self.plan_mode.lock().has_pending_exit_reminder() {
             let plan_path = self.plan_mode.lock().plan_file_path().to_path_buf();
             let template = plan_mode_exit_reminder_template();
@@ -897,17 +277,11 @@ impl SessionActor {
             self.plan_mode.lock().clear_pending_exit_reminder();
             self.persist_plan_mode_state();
         }
-        Ok(())
     }
     /// Mid-turn counterpart of `inject_plan_mode_reminders` case 1. The user toggled plan mode ON (Shift+Tab) while the model was thinking, so the tracker sits in `Pending`.
     /// The running turn would otherwise proceed without any plan-mode instruction.
     /// No-op unless the tracker is `Pending`.
-    /// `enter_pending`'s `ExitPending` to `Active` re-entry needs no reminder.
-    /// The model already has plan-mode context and no exit reminder was injected yet.
-    ///
-    /// A failed template render still activates (without a buffer), keeping
-    /// gating in lockstep with the turn-start path.
-    pub(super) async fn activate_plan_mode_mid_turn(&self) -> Result<(), acp::Error> {
+    pub(super) async fn activate_plan_mode_mid_turn(&self) {
         use crate::session::plan_mode::PlanModeState;
         let activation = {
             let tracker = self.plan_mode.lock();
@@ -915,20 +289,13 @@ impl SessionActor {
                 .then(|| (tracker.is_reentry(), tracker.plan_file_path().to_path_buf()))
         };
         let Some((is_reentry, plan_path)) = activation else {
-            return Ok(());
+            return;
         };
         let plan_has_content = crate::session::plan_mode::plan_file_has_content(&plan_path).await;
         let template = self.plan_activation_template(is_reentry);
         let rendered = self
             .render_plan_template(template, &plan_path, plan_has_content)
             .await;
-        let overlay = self.render_plan_profile_overlay().await;
-        let rendered = match (rendered, overlay) {
-            (Some(reminder), Some(overlay)) => Some(format!("{reminder}\n\n{overlay}")),
-            (Some(reminder), None) => Some(reminder),
-            (None, Some(overlay)) => Some(overlay),
-            (None, None) => None,
-        };
         let tag = self.reminder_wrapper_tag();
         let buffered = rendered.is_some();
         let activated = match rendered {
@@ -946,16 +313,15 @@ impl SessionActor {
             }
         };
         if !activated {
-            return Ok(());
+            return;
         }
-        self.persist_plan_mode_state_durable().await?;
+        self.persist_plan_mode_state();
         tracing::info!(
             session_id = %self.session_info.id.0,
             is_reentry,
             buffered,
             "Plan mode activated mid-turn"
         );
-        Ok(())
     }
     /// The activation reminder template for the active template (no first-entry/reentry distinction), or grok's reentry/full variant.
     /// Shared by turn-start injection (`inject_plan_mode_reminders` case 1) and the mid-turn toggle (`activate_plan_mode_mid_turn`).

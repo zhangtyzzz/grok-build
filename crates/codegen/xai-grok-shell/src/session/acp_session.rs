@@ -919,12 +919,9 @@ pub(crate) struct SessionActor {
     /// NOT affected by `session/set_mode` (which only changes the next turn's start mode).
     /// Read at turn end for `end_prompt_mode` telemetry.
     pub(crate) turn_prompt_mode: Arc<parking_lot::Mutex<PromptMode>>,
-    /// Plan mode lifecycle tracker. Session-scoped dynamic state (not part
-    /// of `AgentDefinition`). All plan mode logic lives in `plan_mode.rs`;
-    /// the session actor just calls into the tracker at the appropriate points.
-    /// `Arc`-shared with the session handle for external mode inspection.
-    /// Agent-tool notifications never mutate it directly; they queue an
-    /// actor-owned transition.
+    /// Session-scoped dynamic plan-mode state (not part of `AgentDefinition`).
+    /// All plan mode logic lives in `plan_mode.rs`; the session actor just calls into the tracker at the appropriate points.
+    /// `Arc`-shared with the notification bridge so `PlanModeEntered` / `PlanModeExited` tool notifications can transition state directly.
     pub(crate) plan_mode: Arc<parking_lot::Mutex<crate::session::plan_mode::PlanModeTracker>>,
     /// Whether goal mode (`/goal`) is enabled for this session (feature flag).
     pub(crate) goal_enabled: bool,

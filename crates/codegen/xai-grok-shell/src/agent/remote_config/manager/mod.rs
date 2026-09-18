@@ -395,10 +395,6 @@ impl ModelsManager {
         self.inner.cfg.read().endpoints.clone()
     }
 
-    pub(crate) fn plan_mode_profile(&self) -> config::PlanModeProfileConfig {
-        self.inner.cfg.read().modes.plan.clone()
-    }
-
     /// Resolve a configured physical model id or logical route into the same
     /// fully-authenticated sampler configuration used by normal model
     /// switching, without changing the manager's process-global current model.
@@ -442,54 +438,6 @@ impl ModelsManager {
         let config = self.inner.cfg.read();
         let catalog = self.inner.catalog.read();
         resolve_model_ref_entry(&config, &catalog.models, model_ref)
-    }
-
-    /// Resolve a persisted model locator, preferring an exact endpoint match
-    /// when multiple provider entries share the same upstream model slug.
-    pub(crate) fn sampling_config_for_locator(
-        &self,
-        model_ref: Option<&str>,
-        model: &str,
-        base_url: &str,
-    ) -> Option<(ModelEntry, SamplingConfig)> {
-        if let Some(model_ref) = model_ref {
-            let resolved = self.sampling_config_for_model_ref(model_ref)?;
-            return (resolved.1.model == model && resolved.1.base_url == base_url)
-                .then_some(resolved);
-        }
-
-        // Backward compatibility for snapshots written before `model_ref`:
-        // accept only one physical entry whose resolved endpoint also matches.
-        let candidate_refs = {
-            let catalog = self.inner.catalog.read();
-            catalog
-                .models
-                .iter()
-                .filter(|(key, entry)| {
-                    entry.info.model == model
-                        && entry.info.model_ref.as_deref() == Some(key.as_str())
-                })
-                .map(|(key, _)| key.clone())
-                .collect::<Vec<_>>()
-        };
-        let mut exact = None;
-        for entry_ref in candidate_refs {
-            let Some(resolved) = self.sampling_config_for_model_ref(&entry_ref) else {
-                continue;
-            };
-            if resolved.1.base_url == base_url {
-                if exact.is_some() {
-                    tracing::warn!(
-                        model,
-                        base_url,
-                        "legacy plan model locator is ambiguous; refusing restore"
-                    );
-                    return None;
-                }
-                exact = Some(resolved);
-            }
-        }
-        exact
     }
 
     pub(crate) fn auto_compact_threshold_for_model(&self, model: &str) -> u8 {

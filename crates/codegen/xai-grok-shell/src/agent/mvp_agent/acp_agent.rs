@@ -1926,14 +1926,10 @@ impl acp::Agent for MvpAgent {
                     responds_to: tx,
                 });
         }
-        rx
+        let _ = rx
             .await
             .map_err(|_| {
                 acp::Error::internal_error().data("response to set session failed")
-            })?
-            .map_err(|error| {
-                acp::Error::internal_error()
-                    .data(format!("session mode transition failed: {error}"))
             })?;
         Ok(acp::SetSessionModeResponse::new())
     }
@@ -2474,23 +2470,12 @@ impl acp::Agent for MvpAgent {
                         session_mode: next_mode_id.clone(),
                         responds_to: tx,
                     });
-                match rx.await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => {
-                        tracing::warn!(
-                            session_id = %session_id_str,
-                            mode_id = %next_mode_id.0,
-                            %error,
-                            "toggle_plan_mode: durable session mode transition failed"
-                        );
-                    }
-                    Err(_) => {
-                        tracing::warn!(
-                            session_id = %session_id_str,
-                            mode_id = %next_mode_id.0,
-                            "toggle_plan_mode: session mode update failed"
-                        );
-                    }
+                if rx.await.is_err() {
+                    tracing::warn!(
+                        session_id = %session_id_str,
+                        mode_id = %next_mode_id.0,
+                        "toggle_plan_mode: session mode update failed"
+                    );
                 }
             } else {
                 tracing::warn!(

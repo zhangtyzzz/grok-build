@@ -259,19 +259,8 @@ pub struct ToolContext {
     pub blocking_wait_depth: Arc<BlockingWaitState>,
     pub task_output_token_budget: Option<TaskOutputTokenBudget>,
     pub(crate) sampler_retry_only_before_output: bool,
-    /// Sender back to the owning session actor.
-    ///
-    /// Tool execution runs in a separate local task while the actor mailbox
-    /// remains live. Plan-mode tool results use this channel with a oneshot
-    /// acknowledgement as an ordering barrier: the actor must finish the
-    /// transition (including the scoped model switch) before the tool loop can
-    /// sample again. Test-only contexts that never execute plan tools may leave
-    /// it unset.
-    pub(crate) session_cmd_tx:
-        Option<tokio::sync::mpsc::UnboundedSender<crate::session::SessionCommand>>,
-    /// This session's child-process reaper, set at session spawn; `None` for
-    /// contexts without one (subagents, defaults). Spawn sites enroll children
-    /// into it; enrolled children are killed when the session closes.
+    /// This session's child-process reaper, set at session spawn; `None` for contexts without one (subagents, defaults).
+    /// Spawn sites enroll children into it; enrolled children are killed when the session closes.
     pub process_scope: Option<ProcessScope>,
     /// Same Arc as `SessionRegistry`'s retained heal lock so the actor tick and tray `list_running` cannot double-emit `SubagentFinished`.
     pub(crate) live_orphan_heal_lock: Arc<tokio::sync::Mutex<()>>,
@@ -362,7 +351,6 @@ impl ToolContext {
             blocking_wait_depth: Arc::new(BlockingWaitState::new()),
             task_output_token_budget: None,
             sampler_retry_only_before_output: false,
-            session_cmd_tx: None,
             process_scope: None,
             live_orphan_heal_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
@@ -459,7 +447,6 @@ mod tests {
                 blocking_wait_depth: Arc::new(BlockingWaitState::new()),
                 task_output_token_budget: None,
                 sampler_retry_only_before_output: false,
-                session_cmd_tx: None,
                 process_scope: None,
                 live_orphan_heal_lock: Arc::new(tokio::sync::Mutex::new(())),
             }

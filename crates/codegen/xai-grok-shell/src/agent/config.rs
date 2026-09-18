@@ -1035,42 +1035,6 @@ pub struct ModelRouteConfig {
     pub candidates: Vec<String>,
 }
 
-/// Session-mode profiles from `[modes.*]`.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ModesConfig {
-    pub plan: PlanModeProfileConfig,
-}
-
-/// Scoped overrides applied while the same session is in Plan Mode.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default)]
-pub struct PlanModeProfileConfig {
-    /// Physical model id or logical `route:<name>`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    /// Skills whose full bodies are injected only for plan turns.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub skills: Vec<String>,
-    /// Extra plan-only instructions.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub instructions: Option<String>,
-    /// Restore the model that was active when Plan Mode was entered.
-    #[serde(default = "default_true")]
-    pub restore_model: bool,
-}
-
-impl Default for PlanModeProfileConfig {
-    fn default() -> Self {
-        Self {
-            model: None,
-            skills: Vec::new(),
-            instructions: None,
-            restore_model: true,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HarnessConfig {
@@ -1277,9 +1241,6 @@ pub struct Config {
         skip_serializing_if = "IndexMap::is_empty"
     )]
     pub model_routes: IndexMap<String, ModelRouteConfig>,
-    /// Scoped session-mode profiles from `[modes.*]`.
-    #[serde(default)]
-    pub modes: ModesConfig,
     pub grok_com_config: GrokComConfig,
     /// `[grok_com_config] login_device_flow` (or its `[auth]` alias), read from the raw merged toml.
     /// Not a `GrokComConfig` field (that struct is public and exhaustive); passed into the login flow by callers.
@@ -1667,7 +1628,6 @@ impl Default for Config {
             config_warnings: Vec::new(),
             provider_policies: IndexMap::new(),
             model_routes: IndexMap::new(),
-            modes: ModesConfig::default(),
             grok_com_config: GrokComConfig::default(),
             login_device_flow: None,
             auth_providers: IndexMap::new(),
@@ -1999,29 +1959,6 @@ impl Config {
                     "model_route.{route_id} has invalid candidate {candidate:?}; nested routes and empty candidates are not supported"
                 ));
             }
-        }
-        if let Some(plan_model) = self.modes.plan.model.as_deref() {
-            if plan_model.trim().is_empty() {
-                return Err("modes.plan.model must not be empty".to_owned());
-            }
-            if let Some(route_id) = plan_model.strip_prefix("route:")
-                && !self.model_routes.contains_key(route_id)
-            {
-                return Err(format!(
-                    "modes.plan.model references unknown route {plan_model:?}"
-                ));
-            }
-        }
-        if let Some(skill) = self
-            .modes
-            .plan
-            .skills
-            .iter()
-            .find(|skill| skill.trim().is_empty())
-        {
-            return Err(format!(
-                "modes.plan.skills contains an empty skill name ({skill:?})"
-            ));
         }
         Ok(())
     }

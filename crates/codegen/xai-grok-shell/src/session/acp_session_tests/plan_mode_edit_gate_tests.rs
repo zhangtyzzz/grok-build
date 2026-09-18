@@ -51,8 +51,8 @@ async fn plan_mode_rejects_grok_edit_outside_plan_file_despite_allow_all_permiss
             )
             .await;
             assert!(
-                matches!(result, Err(ToolLoop::PermissionReject { .. })),
-                "gate must reject the remaining tool batch (tool not executed); got {result:?}"
+                matches!(result, Err(ToolLoop::Continue)),
+                "gate must reject with Continue (tool not executed); got {result:?}"
             );
             let text = tool_result_text(&actor, "call_gate").await;
             assert!(
@@ -101,10 +101,6 @@ async fn inactive_plan_mode_does_not_gate_edits() {
         })
         .await;
 }
-/// The gate must see a PreToolUse hook's rewrite: the model edits the plan file
-/// (allowed), the hook redirects it outside, and the gate rejects the rest of
-/// the tool batch. Pins hook dispatch running before the plan gate without
-/// weakening the fork's fail-closed batch semantics.
 #[tokio::test(flavor = "current_thread")]
 async fn plan_gate_sees_hook_rewritten_path() {
     let local = tokio::task::LocalSet::new();
@@ -126,7 +122,7 @@ async fn plan_gate_sees_hook_rewritten_path() {
                 )
                 .await;
             assert!(
-                matches!(result, Err(ToolLoop::PermissionReject { .. })),
+                matches!(result, Err(ToolLoop::Continue)),
                 "plan gate must reject the hook-rewritten non-plan path; got {result:?}"
             );
         })

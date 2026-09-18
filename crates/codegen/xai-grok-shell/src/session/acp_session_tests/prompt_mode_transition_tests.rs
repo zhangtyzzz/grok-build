@@ -9,8 +9,7 @@ async fn actor_with_events() -> (
     tokio::sync::mpsc::UnboundedReceiver<SessionEvent>,
 ) {
     let (gateway_tx, _) = tokio::sync::mpsc::unbounded_channel();
-    let (persistence_tx, persistence_rx) = tokio::sync::mpsc::unbounded_channel();
-    spawn_test_persistence_acknowledger(persistence_rx);
+    let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel();
     create_test_actor_ex(0, 256_000, 85, gateway_tx, persistence_tx).await
 }
 /// Every mode id the actor has queued for the client so far, in order.
@@ -135,14 +134,8 @@ async fn a_declared_mode_change_is_published_to_the_client() {
     local
         .run_until(async {
             let (actor, mut event_rx) = actor_with_events().await;
-            actor
-                .reconcile_plan_mode_with_prompt(PromptMode::Plan)
-                .await
-                .expect("enter plan mode");
-            actor
-                .reconcile_plan_mode_with_prompt(PromptMode::Agent)
-                .await
-                .expect("leave plan mode");
+            actor.reconcile_plan_mode_with_prompt(PromptMode::Plan);
+            actor.reconcile_plan_mode_with_prompt(PromptMode::Agent);
             assert_eq!(actor.plan_mode.lock().state(), PlanModeState::Inactive);
             assert_eq!(
                 mode_updates(&mut event_rx),
@@ -158,14 +151,8 @@ async fn leaving_plan_for_ask_reports_ask() {
     local
         .run_until(async {
             let (actor, mut event_rx) = actor_with_events().await;
-            actor
-                .reconcile_plan_mode_with_prompt(PromptMode::Plan)
-                .await
-                .expect("enter plan mode");
-            actor
-                .reconcile_plan_mode_with_prompt(PromptMode::Ask)
-                .await
-                .expect("leave plan mode for ask");
+            actor.reconcile_plan_mode_with_prompt(PromptMode::Plan);
+            actor.reconcile_plan_mode_with_prompt(PromptMode::Ask);
             assert_eq!(
                 mode_updates(&mut event_rx),
                 vec!["plan".to_string(), "ask".to_string()],
@@ -181,29 +168,14 @@ async fn redeclaring_the_mode_already_in_effect_publishes_nothing() {
     local
         .run_until(async {
             let (actor, mut event_rx) = actor_with_events().await;
-            actor
-                .reconcile_plan_mode_with_prompt(PromptMode::Plan)
-                .await
-                .expect("enter plan mode");
+            actor.reconcile_plan_mode_with_prompt(PromptMode::Plan);
             assert_eq!(mode_updates(&mut event_rx), vec!["plan".to_string()]);
-            actor
-                .reconcile_plan_mode_with_prompt(PromptMode::Plan)
-                .await
-                .expect("redeclare plan mode");
-            actor
-                .reconcile_plan_mode_with_prompt(PromptMode::Plan)
-                .await
-                .expect("redeclare plan mode");
+            actor.reconcile_plan_mode_with_prompt(PromptMode::Plan);
+            actor.reconcile_plan_mode_with_prompt(PromptMode::Plan);
             assert!(mode_updates(&mut event_rx).is_empty());
-            actor
-                .reconcile_plan_mode_with_prompt(PromptMode::Agent)
-                .await
-                .expect("leave plan mode");
+            actor.reconcile_plan_mode_with_prompt(PromptMode::Agent);
             assert_eq!(mode_updates(&mut event_rx), vec!["default".to_string()]);
-            actor
-                .reconcile_plan_mode_with_prompt(PromptMode::Agent)
-                .await
-                .expect("redeclare agent mode");
+            actor.reconcile_plan_mode_with_prompt(PromptMode::Agent);
             assert!(mode_updates(&mut event_rx).is_empty());
         })
         .await;
@@ -217,10 +189,7 @@ async fn a_synthetic_turn_inherits_plan_mode_instead_of_ending_it() {
     local
         .run_until(async {
             let (actor, mut event_rx) = actor_with_events().await;
-            actor
-                .reconcile_plan_mode_with_prompt(PromptMode::Plan)
-                .await
-                .expect("enter plan mode");
+            actor.reconcile_plan_mode_with_prompt(PromptMode::Plan);
             actor.plan_mode.lock().activate();
             let _ = mode_updates(&mut event_rx);
             for prompt_id in [
@@ -234,10 +203,7 @@ async fn a_synthetic_turn_inherits_plan_mode_instead_of_ending_it() {
                 "plan-resume-1",
             ] {
                 let origin = crate::session::PromptOrigin::from_prompt_id(prompt_id);
-                let resolved = actor
-                    .resolve_turn_prompt_mode(&origin, PromptMode::Agent)
-                    .await
-                    .expect("resolve synthetic turn mode");
+                let resolved = actor.resolve_turn_prompt_mode(&origin, PromptMode::Agent);
                 assert_eq!(
                     actor.plan_mode.lock().state(),
                     PlanModeState::Active,
@@ -265,10 +231,7 @@ async fn a_user_turn_still_applies_its_declared_mode() {
             let (actor, mut event_rx) = actor_with_events().await;
             let origin = crate::session::PromptOrigin::from_prompt_id("prompt-1");
             assert!(!origin.is_synthetic(), "precondition");
-            let resolved = actor
-                .resolve_turn_prompt_mode(&origin, PromptMode::Plan)
-                .await
-                .expect("resolve user turn mode");
+            let resolved = actor.resolve_turn_prompt_mode(&origin, PromptMode::Plan);
             assert_eq!(resolved, PromptMode::Plan);
             assert_eq!(actor.plan_mode.lock().state(), PlanModeState::Pending);
             assert_eq!(mode_updates(&mut event_rx), vec!["plan".to_string()]);

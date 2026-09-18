@@ -652,7 +652,6 @@ pub(crate) async fn spawn_session_actor(
     *synthetic_trace_tx_shared.lock().unwrap() = tool_context.synthetic_trace_tx.clone();
     tool_context.synthetic_trace_tx_shared = Some(synthetic_trace_tx_shared.clone());
     let mut tool_context = tool_context.with_file_state_handle(file_state_handle);
-    tool_context.session_cmd_tx = Some(cmd_tx.clone());
     let index_root_for_session =
         xai_grok_workspace::session::git::find_git_root_from_path(tool_context.cwd.as_path())
             .unwrap_or_else(|_| tool_context.cwd.to_path_buf());
@@ -698,6 +697,9 @@ pub(crate) async fn spawn_session_actor(
             gateway_enabled: gateway_enabled.clone(),
             persistence: persistence.clone(),
             incremental_bash_output,
+            plan_mode: plan_mode.clone(),
+            current_prompt_mode: current_prompt_mode.clone(),
+            turn_prompt_mode: turn_prompt_mode.clone(),
             session_cmd_tx: cmd_tx.clone(),
             task_completion_reservations: task_completion_reservations.clone(),
             task_wake_suppressed: task_wake_suppressed.clone(),
@@ -705,6 +707,7 @@ pub(crate) async fn spawn_session_actor(
             task_output_tool_name: task_output_tool_name.clone(),
             read_tool_name: read_tool_name.clone(),
             auto_wake_enabled: tool_context.auto_wake_enabled,
+            queue_exit_reminder_on_approved_exit: queue_exit_reminder_on_approved_exit.clone(),
             goal_loop_active: tool_context.goal_loop_active_gate.clone(),
             background_tasks_snapshot_pending: background_tasks_snapshot_pending.clone(),
             emit_local_background_tasks: emit_local_background_tasks.clone(),
@@ -2136,16 +2139,11 @@ pub(crate) async fn spawn_session_actor(
         }
         {
             let plan_path = session.plan_mode.lock().plan_file_path().to_path_buf();
-            let bridge = session.agent.borrow().tool_bridge().clone();
-            bridge
-                .update_resource(xai_grok_tools::types::resources::PlanFilePath(
-                    plan_path.clone(),
-                ))
-                .await;
-            bridge
-                .update_resource(xai_grok_tools::types::resources::ProtectedPlanFilePath(
-                    plan_path,
-                ))
+            session
+                .agent
+                .borrow()
+                .tool_bridge()
+                .update_resource(xai_grok_tools::types::resources::PlanFilePath(plan_path))
                 .await;
         }
         session.inject_deny_read_globs().await;
