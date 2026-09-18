@@ -208,6 +208,15 @@ phase and produces effectively no hits. Release warmup does not save a second
 compiler cache per target because the exact final executable cache below is
 both smaller and able to skip compilation entirely.
 
+The fork's four lockstepped package versions deliberately track upstream's
+version line verbatim (no fork-side bump PRs), so upstream version bumps merge
+cleanly during daily syncs. Dispatch a release after a sync lands a new
+upstream version; the workflow's tag-versus-manifest check is unchanged. A
+fork-only hotfix that must ship before the next sync takes the next patch
+number above upstream's (for example `1.0.36` while upstream is at `1.0.35`);
+when upstream later reaches that number, resolve the one-time collision toward
+upstream's line plus the fork delta.
+
 To publish a version, manually dispatch `Publish release (warm, tag, Release)`
 from `main` after its required CI checks pass. Ordinary pushes and pull-request
 merges never create a tag. The publication workflow checks the four lockstepped

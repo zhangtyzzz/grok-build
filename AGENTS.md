@@ -33,6 +33,10 @@ rules.
   requested and `main` is ready, manually dispatch
   `Publish release (warm, tag, Release)` from `main`; it warms the exact release
   inputs before creating the version tag and starting `Release`.
+- The four lockstepped package versions track upstream's version line verbatim;
+  do not fork-bump them in separate PRs. A release is dispatched after a sync
+  carries a new upstream version. A fork-only hotfix takes the next patch
+  number above upstream's.
 - Ordinary pushes and pull-request merges must not publish a release. See
   `docs/release-distribution.md` for recovery and verification details.
 - Monitor long-running Actions and release workflows with one session-managed
