@@ -38,25 +38,9 @@ fn exit_plan_mode_call(id: &str) -> ToolCallResponse {
     }
 }
 
-fn install_plan_transition_barrier_stub(actor: &mut SessionActor) -> tokio::task::JoinHandle<()> {
-    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
-    actor.tool_context.session_cmd_tx = Some(cmd_tx);
-    tokio::task::spawn_local(async move {
-        while let Some(command) = cmd_rx.recv().await {
-            let SessionCommand::ApplyPlanToolTransition { responds_to, .. } = command else {
-                panic!("unexpected command in plan transition worker");
-            };
-            if let Some(responds_to) = responds_to {
-                let _ = responds_to.send(Ok(()));
-            }
-        }
-    })
-}
-
 async fn seeded_active_plan_actor_with_edit_tools() -> (
     SessionActor,
     tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
-    tokio::task::JoinHandle<()>,
     tempfile::TempDir,
     std::path::PathBuf,
 ) {
@@ -66,9 +50,9 @@ async fn seeded_active_plan_actor_with_edit_tools() -> (
 
     let (gateway_tx, gateway_rx) =
         tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
-    let (persistence_tx, persistence_rx) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
-    spawn_test_persistence_acknowledger(persistence_rx);
-    let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+    let (persistence_tx, _persistence_rx) =
+        tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+    let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
     *actor.agent.borrow_mut() = test_agent_with_tools(vec![
         ToolConfig::from_id("GrokBuild:read_file"),
         ToolConfig {
@@ -91,14 +75,11 @@ async fn seeded_active_plan_actor_with_edit_tools() -> (
     .await;
 
     let dir = tempfile::tempdir().unwrap();
-    // macOS tempdirs live under the `/var` symlink; the protected plan-file
-    // reader walks parents with O_NOFOLLOW, so use the canonical path.
-    let root = std::fs::canonicalize(dir.path()).unwrap();
-    let plan_path = root.join("plan.md");
+    let plan_path = dir.path().join("plan.md");
     std::fs::write(&plan_path, SEED_PLAN).unwrap();
     {
         let mut tracker = actor.plan_mode.lock();
-        *tracker = crate::session::plan_mode::PlanModeTracker::new(root);
+        *tracker = crate::session::plan_mode::PlanModeTracker::new(dir.path().to_path_buf());
         tracker.activate_from_tool();
     }
     actor
@@ -120,18 +101,17 @@ async fn seeded_active_plan_actor_with_edit_tools() -> (
             None,
         )
         .expect("bind_local_session must succeed");
-    let transition_worker = install_plan_transition_barrier_stub(&mut actor);
 
-    (actor, gateway_rx, transition_worker, dir, plan_path)
+    (actor, gateway_rx, dir, plan_path)
 }
 
 fn spawn_exit_capture(
     mut gateway_rx: tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
 ) -> (
     tokio::task::JoinHandle<()>,
-    std::sync::Arc<std::sync::Mutex<Option<Option<String>>>>,
+    std::sync::Arc<std::sync::Mutex<Option<String>>>,
 ) {
-    let captured = std::sync::Arc::new(std::sync::Mutex::new(None::<Option<String>>));
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
     let captured_for_task = captured.clone();
     let handle = tokio::task::spawn_local(async move {
         while let Some(msg) = gateway_rx.recv().await {
@@ -140,7 +120,7 @@ fn spawn_exit_capture(
                     if args.request.method.as_ref() == "x.ai/exit_plan_mode" {
                         let req: ExitPlanModeExtRequest =
                             serde_json::from_str(args.request.params.get()).unwrap();
-                        *captured_for_task.lock().unwrap() = Some(req.plan_content);
+                        *captured_for_task.lock().unwrap() = req.plan_content;
                         let _ = args
                             .response_tx
                             .send(Ok(acp::ExtResponse::new(ext_response("approved"))));
@@ -157,8 +137,7 @@ fn spawn_exit_capture(
 }
 
 async fn assert_mixed_batch_snapshot(write_first: bool) {
-    let (actor, gateway_rx, transition_worker, _dir, plan_path) =
-        seeded_active_plan_actor_with_edit_tools().await;
+    let (actor, gateway_rx, _dir, plan_path) = seeded_active_plan_actor_with_edit_tools().await;
     let plan_path_str = plan_path.to_string_lossy().into_owned();
     let (responder, captured) = spawn_exit_capture(gateway_rx);
 
@@ -169,6 +148,7 @@ async fn assert_mixed_batch_snapshot(write_first: bool) {
     } else {
         vec![exit, write]
     };
+
     tokio::time::timeout(
         std::time::Duration::from_secs(10),
         actor.execute_tool_calls(batch),
@@ -183,12 +163,10 @@ async fn assert_mixed_batch_snapshot(write_first: bool) {
         .lock()
         .unwrap()
         .clone()
-        .expect("gateway must receive x.ai/exit_plan_mode")
-        .expect("x.ai/exit_plan_mode must carry plan content");
+        .expect("gateway must receive x.ai/exit_plan_mode with plan content");
     assert_eq!(snapshot, NEW_PLAN);
 
     responder.abort();
-    transition_worker.abort();
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -209,13 +187,14 @@ fn bash_call(id: &str) -> ToolCallResponse {
         kind: "function".to_string(),
         function: crate::sampling::types::ToolCallFunction::new(
             "run_terminal_cmd",
-            r#"{"command":"echo mixed-batch-reject","description":"probe mixed-batch plan gate rejection"}"#,
+            // Must be a command the manager still prompts for (`echo` is safe-listed and auto-allows)
+            r#"{"command":"./probe-mixed-batch-reject.sh","description":"probe mixed-batch permission cancel"}"#,
         ),
     }
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn mixed_plan_gate_rejection_skips_exit_reverse_request() {
+async fn mixed_permission_cancel_skips_exit_reverse_request() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -231,6 +210,7 @@ async fn mixed_plan_gate_rejection_skips_exit_reverse_request() {
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor =
                 create_test_actor(0, 256_000, 85, gateway_tx.clone(), persistence_tx).await;
+            // Disable background bash so finalize does not require the get_task_output / kill_task companion tools
             *actor.agent.borrow_mut() = test_agent_with_tools(vec![
                 ToolConfig {
                     id: "GrokBuild:run_terminal_cmd".into(),
@@ -252,12 +232,12 @@ async fn mixed_plan_gate_rejection_skips_exit_reverse_request() {
             .await;
 
             let dir = tempfile::tempdir().unwrap();
-            let root = std::fs::canonicalize(dir.path()).unwrap();
-            let plan_path = root.join("plan.md");
+            let plan_path = dir.path().join("plan.md");
             std::fs::write(&plan_path, SEED_PLAN).unwrap();
             {
                 let mut tracker = actor.plan_mode.lock();
-                *tracker = crate::session::plan_mode::PlanModeTracker::new(root);
+                *tracker =
+                    crate::session::plan_mode::PlanModeTracker::new(dir.path().to_path_buf());
                 tracker.activate_from_tool();
             }
             actor
@@ -281,6 +261,7 @@ async fn mixed_plan_gate_rejection_skips_exit_reverse_request() {
                 None,
             );
             actor.permissions = perms;
+
             let exit_fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let exit_fired_task = exit_fired.clone();
             let responder = tokio::task::spawn_local(async move {
@@ -322,7 +303,7 @@ async fn mixed_plan_gate_rejection_skips_exit_reverse_request() {
 
             assert!(
                 !exit_fired.load(std::sync::atomic::Ordering::SeqCst),
-                "exit must not reverse-request after an earlier plan gate rejection"
+                "exit must not reverse-request after an earlier permission cancel"
             );
             responder.abort();
         })

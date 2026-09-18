@@ -101,10 +101,10 @@ max_retries = 5
 inference_idle_timeout_secs = 300
 prompt_cache = { mode = "stable_prefix", ttl = "1h" }
 
-[model.claude-planner]
+[model.claude-primary]
 model_provider = "anthropic"
 model = "claude-sonnet"
-name = "Claude planner"
+name = "Claude primary"
 context_window = 200000
 
 [model.claude-reviewer]
@@ -135,25 +135,25 @@ credentials keep the usual ambient credential resolution.
 > `model_provider` on one model, is a startup error. New configs should use
 > the `model_providers` spelling.
 
-Logical routes keep roles and mode profiles independent of one physical model:
+Logical routes keep agent roles independent of one physical model:
 
 ```toml
-[model_route.planner]
-candidates = ["claude-planner", "local-planner"]
+[model_route.primary]
+candidates = ["claude-primary", "local-fallback"]
 
 [model_route.reviewer]
 candidates = ["claude-reviewer", "local-reviewer"]
 
 [models]
-default = "route:planner"
+default = "route:primary"
 ```
 
 Candidates are evaluated in order before inference starts. Missing models and
 provider-bound models without usable credentials are skipped. The selected
 physical model remains fixed for the request; transport errors never cause a
 cross-provider switch after the request begins. Route aliases are hidden from
-the picker but can be referenced explicitly by mode/agent configuration and
-the default model.
+the picker but can be referenced explicitly by agent configuration and the
+default model.
 
 ### Anthropic Prompt Cache
 

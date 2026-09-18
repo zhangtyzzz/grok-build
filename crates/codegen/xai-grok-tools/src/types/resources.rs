@@ -355,26 +355,6 @@ pub struct Cwd(pub PathBuf);
 /// absent the tool falls back to `Cwd/.grok/plan.md`.
 #[derive(Debug, Clone)]
 pub struct PlanFilePath(pub PathBuf);
-/// Session-installed marker for the one plan path that must use the protected
-/// no-follow filesystem boundary. Kept separate from [`PlanFilePath`] so
-/// standalone tool tests and embedders do not unexpectedly bypass their
-/// injected filesystem merely by setting a display path.
-#[derive(Debug, Clone)]
-pub struct ProtectedPlanFilePath(pub PathBuf);
-/// Wrap `fs` so the session-owned plan path uses the no-follow host-local
-/// boundary. Without the session-installed marker this is a no-op.
-pub fn guard_protected_plan_file_system(
-    res: &Resources,
-    fs: Arc<dyn AsyncFileSystem>,
-) -> Arc<dyn AsyncFileSystem> {
-    match res.get::<ProtectedPlanFilePath>() {
-        Some(path) => Arc::new(
-            crate::computer::protected_plan_file::GuardedPlanFileSystem::new(fs, path.0.clone()),
-        ),
-        None => fs,
-    }
-}
-
 /// Default plan-file path (relative to the workspace root) used when no
 /// explicit [`PlanFilePath`] is set. Shared by the plan-mode tools.
 pub const PLAN_FILE_RELATIVE_PATH: &str = ".grok/plan.md";
@@ -924,7 +904,7 @@ mod tests {
         let mut state_map = HashMap::new();
         state_map.insert(
             "grok_build.ReadFile".to_string(),
-            serde_json::json!({ "files_read": ["loaded.rs"] }),
+            serde_json::json!({"files_read": ["loaded.rs"]}),
         );
         let mut params_map = HashMap::new();
         params_map.insert(
@@ -948,11 +928,11 @@ mod tests {
         let mut state_map = HashMap::new();
         state_map.insert(
             "unknown.Type".to_string(),
-            serde_json::json!({ "foo": "bar" }),
+            serde_json::json!({"foo": "bar"}),
         );
         state_map.insert(
             "grok_build.ReadFile".to_string(),
-            serde_json::json!({ "files_read": ["ok.rs"] }),
+            serde_json::json!({"files_read": ["ok.rs"]}),
         );
         let mut data = HashMap::new();
         data.insert("state".to_string(), state_map);
@@ -992,7 +972,7 @@ mod tests {
         let ok = res.set_json(
             "params",
             "grok_build.Edit",
-            serde_json::json!({ "skip_read_before_edit": true }),
+            serde_json::json!({"skip_read_before_edit": true}),
         );
         assert!(ok);
         let config = res.get::<Params<EditConfig>>().unwrap();

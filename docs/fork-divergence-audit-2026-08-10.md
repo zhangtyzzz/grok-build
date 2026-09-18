@@ -6,6 +6,10 @@
 判断口径只有一条：**上游已有对应能力的，跟随上游最新实现，不保留并行实现；只有上游
 确实没有、而我们确实需要的才留下。** 「感觉还有用」不作为依据。
 
+> **2026-09-18 更新：** 本文原先决定保留的 Plan Mode 分歧已经全部撤销，
+> 当前实现直接跟随 `upstream/main`。下文涉及 Plan mode gate、scoped planner
+> model、持久化 barrier 和 `plan.md` 特殊文件防护的旧结论，均以这次更新为准。
+
 ---
 
 ## 0. 差异边界怎么划的（为什么没把上游的更新算成我们的）
@@ -157,11 +161,11 @@ dd04f397 Synced from monorepo
 
 ---
 
-## 4. `xai-grok-tools` —— plan 文件防护
+## 4. `xai-grok-tools` —— plan 文件防护（已移除）
 
 | 项 | 结论 | 依据 |
 |---|---|---|
-| `computer/protected_plan_file.rs`（`plan.md` 的 symlink / TOCTOU 防护，`openat(2)` + `O_NOFOLLOW` + `renameat(2)`） | **保留** | Plan Mode 会对唯一一个文件自动放行写入，该文件因此成为安全边界。上游 `exit_plan_mode/mod.rs` 中 grep `symlink\|nofollow\|canonical\|protected` 无任何命中，即上游无等价防护。已接入 6 处调用点（tools / shell / pager）。**建议提交上游** |
+| `computer/protected_plan_file.rs`（`plan.md` 的 symlink / TOCTOU 防护） | **删除，跟随上游（2026-09-18）** | 为消除 Plan Mode fork 分歧，生产实现、接入点和测试均已恢复为当前 `upstream/main`。 |
 | `reminders/task_completion.rs` 新增 `is_reported()` 只读访问器 | 见 §7 暂缓项 | 这 2 行是为测试断言加的，本身无害，但它服务的那处断言掩盖了一个未定位的行为分歧 |
 
 ---
@@ -304,13 +308,9 @@ Rust 1.92.0（§13）。
   single-flight 测试**不再 flaky**，而 flaky 结论需要在 CI 上重复跑几十次，本轮预算不够；
   且它与生产文件成对耦合（只还原测试文件会直接编译失败）。
 
-**已顺带核实一项，避免后人误删：** `plan_mode_edit_gate_tests.rs`（`+2/−2`，把期望从
-`ToolLoop::Continue` 改成 `ToolLoop::PermissionReject`）以及与之配套的
-`plan_exit_batch_barrier_tests.rs`，**不是**被改松的断言，而是有我们自己的生产改动支撑的：
-上游 `tool_calls.rs:1021` 在 plan-mode 拒绝编辑时返回 `Ok(Err(ToolLoop::Continue))`，我们改成
-了 `PermissionReject`（配套还把 `leave_plan_mode_to_default` 改成 async 并加了持久化失败回滚）。
-这属于 §4 plan 文件防护那条线上的真实自有行为，**应当保留**，不要按"测试修补"处理。它和 §7.2
-的区别正是判定这批补丁的关键：看还原后失败的是"断言被改松"还是"生产行为确实不同"。
+**2026-09-18 更新：** 上述 Plan mode 判断已经撤销。`plan_mode_edit_gate_tests.rs`、
+`plan_exit_batch_barrier_tests.rs`、`ToolLoop::Continue` 行为、审批后的状态切换和持久化
+均恢复为当前上游实现，不再维护 fork 的 `PermissionReject` 或 durable transition 分支。
 
 ### 7.6 顺带发现：一个上游自身的非 hermetic 测试
 
@@ -394,7 +394,7 @@ cargo test -p xai-grok-shell                                 # 6115 passed，1 f
   crate 的 usage 字段都跟上游不同名，任何上游 usage 改动都会波及；现在字段名回到上游。
 - 反向的成本项：剩下 41% 的冲突面里，多 provider 运行时（shell 75 个文件）是不可压缩的
   —— 它是 fork 的立项理由。这部分的同步成本只能靠「把能提上游的提上游」来降，具体候选见
-  §4（plan 文件防护）、§1.2（空块守卫）、§7.3（single-flight 稳定化）、§7.6（上游非 hermetic
+  §1.2（空块守卫）、§7.3（single-flight 稳定化）、§7.6（上游非 hermetic
   测试）。
 - 如果 §7.1（smartstring）与 §7.4（孤立脚本）后续落地，文件数会再减约 22 个，但因为它们
   同步成本本来就是 0，**每日成本不会因此再降** —— 收益是仓库体积和审计面，不是同步成本。
@@ -430,10 +430,10 @@ cargo test -p xai-grok-shell                                 # 6115 passed，1 f
 
 | 项 | 涉及文件 | 结论 | 依据 |
 |---|---|---|---|
-| plan 文件 symlink / TOCTOU 防护 | `computer/protected_plan_file.rs`（新增 519 行）、`types/resources.rs` 的 `ProtectedPlanFilePath` + `guard_protected_plan_file_system`、`computer/mod.rs`，接入 `enter_plan_mode` / `exit_plan_mode` / `search_replace` / `opencode/write` / `grok_build_hashline/edit` | **保留** | 上游 `exit_plan_mode/mod.rs` 内 grep `symlink\|nofollow\|canonical\|protected` 无任何命中，上游无等价防护。Plan Mode 对唯一一个文件自动放行写入，该文件即安全边界。已有针对性测试 `protected_plan_hashline_write_rejects_final_symlink`（植入指向 secret 的 symlink 后断言写入被拒） |
+| plan 文件 symlink / TOCTOU 防护 | 原 `computer/protected_plan_file.rs` 及 tools / shell / pager 接入 | **删除，跟随上游（2026-09-18）** | 为消除 Plan Mode fork 分歧，相关实现和针对性测试已全部移除。 |
 | 内嵌搜索工具的发布方式改为 hard link（`3753e56f`） | `computer/local/embedded_search_tools.rs` | **保留** | 上游 `extract_bundled` 用 `fs::rename` 发布，会无条件替换目标 inode；我们改用 `hard_link`，遇到已存在的赢家就保留它。测试 `publishing_candidate_does_not_replace_existing_winner` 直接断言赢家 inode 不变 —— 即"正在被执行的二进制永远不会被换掉"这个不变量。顺带把手搓的临时文件名换成 `tempfile`，是净简化 |
 | bash 状态转储保留 allexport 但不导出内部变量（`f87dcb43` / `5636471e`） | `computer/local/shell_state.rs` | **保留** | 上游 `dump_bash_state` 的过滤器是 `grep -vE '^set [-+]o (nounset\|errexit\|pipefail)$'`，不含 `allexport`，也不在转储期间关掉它。用户若开着 `set -a`，转储自身的大块 `grok_snap_*` 变量会被导出，后续 execve 因环境过大失败（bash 报 126）。我们的版本在转储前关闭、转储末尾按用户原值恢复 |
-| 内嵌工具版本常量上调（rg 15.1.0 / bfs 4.1.4 / ugrep 7.8.2）+ `GROK_TOOLS_BUNDLE_*_VERSION` 覆盖与校验（`fd52ce42`） | `build.rs`、`Cargo.toml`（`dunce` build-dep、`libc` 从 linux-only 放宽到 unix） | **保留** | 三个常量与我们发布流水线的 pin 完全一致：`scripts/dist/tool-bundles.json` 为 ripgrep 15.1.0、bfs 4.1.4、ugrep 7.8.2。`_VERSION` 覆盖是 `scripts/dist/prepare-release-tools.sh` 注入 pinned 工具时使用的入口，上游没有这套分发流水线所以不需要它 |
+| 内嵌工具版本常量上调（rg 15.1.0 / bfs 4.1.4 / ugrep 7.8.2）+ `GROK_TOOLS_BUNDLE_*_VERSION` 覆盖与校验（`fd52ce42`） | `build.rs`、`Cargo.toml`（`dunce` build-dep） | **保留** | 三个常量与我们发布流水线的 pin 完全一致：`scripts/dist/tool-bundles.json` 为 ripgrep 15.1.0、bfs 4.1.4、ugrep 7.8.2。`_VERSION` 覆盖是 `scripts/dist/prepare-release-tools.sh` 注入 pinned 工具时使用的入口，上游没有这套分发流水线所以不需要它 |
 | `reminders/task_completion.rs` 的 `is_reported()` 只读访问器 | 同上 | **保留**（但见 §7.2） | 2 行只读访问器本身无害；它服务的那处断言所掩盖的行为分歧仍未定位，那条单独留在 §7.2 |
 
 **顺带确认的一件事（影响本地验证口径）：** `xai-grok-tools` 的 grep / 终端相关测试**在本机裸跑必然失败**
@@ -510,14 +510,13 @@ CI 上是绿的。**这不是 fork 引入的问题，也不需要打补丁 —�
 |---|---|---|---|
 | 1 | protoc 依赖追踪的可移植性：`--dependency_out=/dev/stdout` / `--descriptor_set_out=/dev/null` 在 Windows 上不存在 | `crates/build/xai-proto-build/src/lib.rs` | 纯可移植性缺陷 |
 | 2 | 缓存断点不应落在空 Text / 空 ToolResult 上（API 以 “text content blocks must be non-empty” 拒绝） | `xai-grok-sampling-types` `mark_message_cache_breakpoint` | 上游逻辑的真实缺陷 |
-| 3 | `plan.md` 的 symlink / TOCTOU 防护（Plan Mode 自动放行写入的那个文件即安全边界） | `xai-grok-tools/computer/protected_plan_file.rs` | 安全加固 |
-| 4 | bash 状态转储在用户开启 `set -a` 时导出内部大变量，导致后续 execve 因环境过大失败（bash 报 126） | `xai-grok-tools/computer/local/shell_state.rs` | 真实 bug |
-| 5 | 内嵌工具发布不应替换正在被执行的二进制（`rename` → `hard_link`） | `xai-grok-tools/computer/local/embedded_search_tools.rs` | 健壮性 |
-| 6 | 下载产物缺少 SHA256SUMS 校验 | `xai-grok-update/src/auto_update.rs` | 安全增强 |
-| 7 | 插件提供的 hooks 在会话启动时未合入 hook registry，只有显式 reload 后才生效 | `xai-grok-shell/.../spawn.rs` + `hooks_plugins.rs` | 行为缺陷 |
-| 8 | 全量 turn-loop 测试在 debug 构建下超出 libtest 默认线程栈，直接 SIGABRT 掉整个测试二进制 | `auth_retry_budget_tests.rs` / `chat_history_integrity_tests.rs` | 上游测试不可运行（本轮已复现） |
-| 9 | `claude_import` 的 marker 测试读取真实 `~/.claude/settings.json`，在任何存在该文件且带 `env` 段的机器上失败（违反 `AGENTS.md` 的 hermetic 要求） | `xai-grok-shell/src/claude_import.rs`（**纯上游文件**，我们没打补丁） | 上游测试非 hermetic |
-| 10 | doctor 报告断言精确 `issue_count()`，在缺 `pw-record`/`parec`/`arecord` 的宿主上会因多一条音频 Issue 而失败 | `pager/src/doctor_cmd/tests.rs` | 上游测试非 hermetic |
+| 3 | bash 状态转储在用户开启 `set -a` 时导出内部大变量，导致后续 execve 因环境过大失败（bash 报 126） | `xai-grok-tools/computer/local/shell_state.rs` | 真实 bug |
+| 4 | 内嵌工具发布不应替换正在被执行的二进制（`rename` → `hard_link`） | `xai-grok-tools/computer/local/embedded_search_tools.rs` | 健壮性 |
+| 5 | 下载产物缺少 SHA256SUMS 校验 | `xai-grok-update/src/auto_update.rs` | 安全增强 |
+| 6 | 插件提供的 hooks 在会话启动时未合入 hook registry，只有显式 reload 后才生效 | `xai-grok-shell/.../spawn.rs` + `hooks_plugins.rs` | 行为缺陷 |
+| 7 | 全量 turn-loop 测试在 debug 构建下超出 libtest 默认线程栈，直接 SIGABRT 掉整个测试二进制 | `auth_retry_budget_tests.rs` / `chat_history_integrity_tests.rs` | 上游测试不可运行（本轮已复现） |
+| 8 | `claude_import` 的 marker 测试读取真实 `~/.claude/settings.json`，在任何存在该文件且带 `env` 段的机器上失败（违反 `AGENTS.md` 的 hermetic 要求） | `xai-grok-shell/src/claude_import.rs`（**纯上游文件**，我们没打补丁） | 上游测试非 hermetic |
+| 9 | doctor 报告断言精确 `issue_count()`，在缺 `pw-record`/`parec`/`arecord` 的宿主上会因多一条音频 Issue 而失败 | `pager/src/doctor_cmd/tests.rs` | 上游测试非 hermetic |
 
 第 9 条按你的判断**不打补丁**：再加一个 fork 侧测试修补正是本轮要减少的东西，CI 上没有
 `~/.claude` 所以不会红。
@@ -714,7 +713,7 @@ in `provider.anthropic.prompt_cache.ttl`
 | `b96300ed` | 还原 13 个上游文件的零价值改动（10 处行尾空行 + 3 个宏体缩进） |
 | `8595f481` | 跟随上游的 Messages 缓存实现：删 tool-definition 断点、删 TTL 双桶 usage、TTL policy 改为上游放置之后的后处理、保留空块守卫；还原 `turn.rs`/`updates.rs` 被写坏的宏体；修订 RFC 与两篇用户文档 |
 | `ae7e0cb6` | 加入本评估报告 |
-| `ba5afb1b` | 记录 plan-mode gate 测试属于真实自有行为，避免后人误删 |
+| `ba5afb1b` | 当时记录 plan-mode gate 为自有行为；该决定已于 2026-09-18 撤销并恢复上游实现 |
 | `ec4bda42` | 1h prompt cache 通路补断言：请求体里**每一个**断点都必须带 `ttl:"1h"`；新增 `off` 的集成断言 |
 | `65ec6a04` | CI/release workflow 改为从 `rust-toolchain.toml` 解析工具链，删掉无效的 `rustup default 1.92.0` 与 8 处硬编码缓存键 |
 | `23f05ad7` | 删掉死代码 `SessionRegistry::mark_require_gateway`；完成宏体格式清理的第二批（44 行） |

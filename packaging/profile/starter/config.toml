@@ -22,9 +22,3 @@
 #
 # [model_route.main]
 # candidates = ["main-model"]
-#
-# [modes.plan]
-# model = "route:main"
-# skills = ["architecture"]
-# instructions = "Produce an implementation-ready plan with acceptance criteria."
-# restore_model = true

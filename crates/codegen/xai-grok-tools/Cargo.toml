@@ -98,8 +98,10 @@ zstd = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 command-fds = { version = "0.3", features = ["tokio"] }
-libc = { workspace = true }
 nix = { workspace = true, features = ["signal", "process", "fs"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }
 
 # windows: util::spawn uses Win32 Job Objects (CreateJobObjectW,
 # AssignProcessToJobObject, TerminateJobObject) and process creation flags

@@ -172,7 +172,6 @@ impl NotificationSource {
         }
     }
 }
-
 #[derive(Debug)]
 pub struct TaskWakeFallback {
     pub prompt_id: String,
@@ -406,19 +405,7 @@ pub enum SessionCommand {
     },
     SessionMode {
         session_mode: acp::SessionModeId,
-        responds_to: oneshot::Sender<Result<(), String>>,
-    },
-    /// Converge an agent tool's Plan Mode transition on actor-owned state.
-    ///
-    /// The tool notification bridge sends this without an acknowledgement as
-    /// an early, best-effort signal. The completed tool result sends the same
-    /// command with a oneshot and waits for it before returning to the agentic
-    /// loop. The transition handler is idempotent, so either delivery may win,
-    /// while the acknowledged delivery is an ordering barrier before the next
-    /// sampling request.
-    ApplyPlanToolTransition {
-        entering: bool,
-        responds_to: Option<oneshot::Sender<Result<(), String>>>,
+        responds_to: oneshot::Sender<()>,
     },
     SetSessionModel {
         switch: SessionModelSwitch,

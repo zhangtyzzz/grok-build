@@ -1,7 +1,7 @@
-# RFC 0001：Multi-provider、Plan Mode、异步 Reviewer 与可分发运行时
+# RFC 0001：Multi-provider、异步 Reviewer 与可分发运行时
 
 - 状态：Implemented（baseline）
-- 目标：用少量原生运行时原语支持可配置的 planner / executor / reviewer
+- 目标：用少量原生运行时原语支持多 provider、model route 和 reviewer
 - 影响范围：config、model catalog、session、sampler、hooks、distribution
 
 ## 1. 结论
@@ -12,8 +12,8 @@
 1. **Provider / model / route 是原生能力。** 每个 provider 有独立 endpoint、
    protocol、认证、headers、重试、超时和 cache policy；model 引用 provider；
    logical route 在请求开始前选择一个物理模型。
-2. **Planner 是同一 session 的 Mode Profile。** `/plan` 进入既有 Plan Mode，
-   临时应用单独的 model/route、instructions 和 skills；退出时安全恢复原模型。
+2. **Plan Mode 完全跟随上游。** fork 不增加 mode profile、scoped model、
+   持久化 barrier、文件防护或额外工具限制。
 3. **Executor 就是 main session。** 计划获批后仍由当前会话执行；用户可随时
    用 `/model` 切换 main 的模型，不需要复制上下文到一个 executor child。
 4. **Reviewer 是 main session 的只读 subagent。** `Stop` hook 在 turn 结束时
@@ -21,8 +21,8 @@
    只读 review subagent；结果沿 subagent 原生回传，由 main 判断修复、忽略、
    继续或请求用户输入。
 5. **Skill / agent / hook / plugin 负责编排内容，核心负责不变量。**
-   Prompt、工具集、模型选择和 hook 配置可以随 profile/plugin 分发；model
-   scope、只读边界、live-session 注入、幂等和持久化必须留在核心。
+   Prompt、工具集、模型选择和 hook 配置可以随 profile/plugin 分发；provider
+   凭据边界、live-session 注入、幂等和持久化必须留在核心。
 6. **Anthropic 1h cache 和 portable distribution 是原生能力。**
 7. **Reviewer 策略不随 terminal/runtime 分发。** 核心只提供 command hook、
    `Stop` block decision 和 subagent 原语；触发条件、prompt 和 adapter 由独立
@@ -37,9 +37,9 @@ review，并把请求交回 main；真正的执行由 session 自己的 subagent
 ### 2.1 目标
 
 - 同一进程中配置并使用多个 provider 和多个 model。
-- main、Plan Mode、subagent、reviewer 可分别选择物理模型或 logical route。
+- main、subagent、reviewer 可分别选择物理模型或 logical route。
 - provider-bound model 不会误用 xAI 登录 token。
-- `/plan` 使用同一 session 上下文，同时具备真正的只读运行时边界。
+- Plan Mode 的状态机、审批流和工具行为不引入 fork 分歧。
 - reviewer 不阻塞 commit tool，也不并发 resume 同一个 session。
 - reviewer 结果能进入当前 live session，并支持进程内幂等重试。
 - Messages adapter 支持 5m、1h 和 off cache policy（放置逻辑跟随上游）。
@@ -59,17 +59,13 @@ review，并把请求交回 main；真正的执行由 session 自己的 subagent
 ```mermaid
 flowchart TD
     User["User / TUI"]
-    Main["Main session\nexecutor + /model"]
-    Plan["Plan Mode profile\nmodel + skills + instructions"]
-    Gate["Plan runtime gate\nread-only except plan.md"]
+    Main["Main session\n/model"]
     Catalog["Model catalog\nprovider + model + route"]
     Sampler["Protocol adapters\nchat / responses / messages"]
     Hook["Stop command hook\nHEAD advanced by a commit"]
     Reviewer["Read-only review subagent\nchild of this session"]
 
-    User -->|"/plan"| Plan
-    Plan --> Main
-    Plan --> Gate
+    User --> Main
     Main --> Catalog
     Catalog --> Sampler
     Main -->|"turn end after a commit"| Hook
@@ -80,7 +76,7 @@ flowchart TD
 
 关键边界：
 
-- `xai-grok-shell` 拥有 session actor、mode scope、model resolution 和通知注入。
+- `xai-grok-shell` 拥有 session actor、model resolution 和通知注入。
 - `xai-grok-sampler` 只接收已解析的 transport/model/cache 配置。
 - `xai-grok-agent` 与 skills 提供 prompt 和工具组合。
 - `xai-grok-hooks` 只执行 hook command；脚本负责进程级编排。
@@ -136,12 +132,12 @@ base_url = "http://127.0.0.1:11434/v1"
 api_backend = "chat_completions"
 auth_scheme = "none"
 
-[model.claude-planner]
+[model.claude-primary]
 model_provider = "anthropic"
 model = "claude-sonnet"
 context_window = 200000
 
-[model.openai-executor]
+[model.openai-fallback]
 model_provider = "openai"
 model = "gpt-codex"
 context_window = 400000
@@ -151,11 +147,11 @@ model_provider = "local"
 model = "qwen-coder"
 context_window = 65536
 
-[model_route.planner]
-candidates = ["claude-planner", "openai-executor"]
+[model_route.primary]
+candidates = ["claude-primary", "openai-fallback"]
 
 [model_route.reviewer]
-candidates = ["local-reviewer", "claude-planner"]
+candidates = ["local-reviewer", "claude-primary"]
 ```
 
 Provider `auth_scheme` 取值：
@@ -186,73 +182,27 @@ Route 在 catalog 构建时按顺序选择第一个 preflight-ready candidate：
 - 未通过 preflight 时才尝试下一个 candidate。
 
 选中后 route 形成隐藏的 `route:<name>` catalog alias。它不会出现在 model
-picker 中，但可供 default、Plan Mode、agent 和 subagent 显式引用。
+picker 中，但可供 default、agent 和 subagent 显式引用。
 
 第一版只做 `preflight_only` fallback。请求一旦开始，retry 仍属于同一个
 provider/model；不会因 timeout、429、5xx 或已经产生语义事件而跨 provider。
 这样可以避免重复 tool call、重复计费和不同模型间的上下文漂移。
 
-## 5. Planner：同 session 的 `/plan`
+## 5. Plan Mode：跟随上游
 
-### 5.1 Mode Profile
+本 fork 不再扩展 Plan Mode。`/plan` 的状态机、`plan.md`、审批流程、
+工具 gate、持久化和恢复语义均直接跟随 `upstream/main`。配置中不提供
+`[modes.plan]`，也不会在进入 Plan Mode 时自动切换 model/route、注入额外
+instructions/skills，或在退出时恢复模型。
 
-```toml
-[modes.plan]
-model = "route:planner"
-skills = ["architecture", "risk-review"]
-instructions = """
-Produce an implementation-ready plan with explicit acceptance criteria and
-end-to-end verification.
-"""
-restore_model = true
-```
+上游 gate 只约束文件编辑工具：允许写 session 的 `plan.md`，拒绝其他文件
+编辑与 `apply_patch`。Bash、MCP、subagent、scheduler、media generator 和
+`todo_write` 等非编辑工具继续进入普通 permission 流程；always-approve 可自动
+运行这些工具。subagent 使用自己的 Plan Mode tracker，因此 parent 的 Plan Mode
+不会把 child 变成只读环境。
 
-进入 `/plan` 时：
-
-1. session actor 读取 `[modes.plan]`；
-2. 解析物理 model 或 `route:*`，但不修改 process-wide current model；
-3. 记录 `{base, applied}` model locator；
-4. 用已有 model-switch path 更新这个 session 的 sampler、context window、
-   credentials、cache policy 和 UI notification；
-5. 把 instructions 与配置 skill 的完整内容作为 plan-only overlay 注入；
-6. 继续使用已有 Plan Mode state machine 和 `plan.md` approval flow。
-
-退出时使用 compare-and-restore：
-
-- 当前仍等于 `applied` 且 `restore_model = true`：恢复 `base`；
-- 用户在 Plan Mode 中手动执行过 `/model`：认为 ownership 已转移，不覆盖；
-- 原模型暂时不可解析或恢复失败：保留 scope，后续恢复时重试；
-- `restore_model = false`：释放 scope，保留当前模型。
-
-scope 使用 write-ahead snapshot 持久化到 `plan_mode.json`。进入与退出的
-状态、session current-model 和 scope commit 都必须收到实际文件写入与
-`fsync` ACK；任一步失败都会保留可重试记录并阻止下一次 sampling。进程重启
-时，已经 collapse 为 Inactive 的 transient state 会在接收新 prompt 前先
-尝试恢复，避免 session 卡在 planner 模型上。
-
-Planner 仍使用同一 session transcript。因此配置的 planner provider 会收到
-本轮请求携带的既有对话与 read/search 结果；mode profile 不是数据隔离或隐私
-边界，部署方必须只选择允许接收这些项目数据的 provider。
-
-### 5.2 真正的只读边界
-
-Prompt 不是安全边界。Active Plan Mode 在 tool dispatch 前执行原生 gate：
-
-- 只允许 `plan.md` 的 edit/write；
-- 拒绝其他 edit、write、delete 和 apply-patch；
-- 拒绝 Bash/monitor，防止 shell redirection 写文件；
-- 拒绝 Task/subagent，防止 child 获得更宽工具集；
-- 拒绝 MCP、dynamic/use-tool、scheduler mutation 和 media generators；
-- 保留 read/list/grep/search/memory/LSP/web fetch、ask-user、exit-plan 等
-  purpose-built read/control tools。
-
-该 gate 优先于 permission manager，因此 always-approve 不能绕过。
-在 Unix 上，`plan.md` 本身通过 descriptor-relative no-follow 文件边界
-访问：逐级拒绝 symlink parent，拒绝 final symlink、非普通文件与 hard
-link，并用同目录临时文件、`fsync`、原子 rename 写入，避免
-auto-approve 被路径替换竞态利用。非 Unix fallback 会拒绝校验时发现的
-link，但因为缺少 handle-relative parent walk，不承诺抵御并发
-reparse-point 替换的同等级保证。
+需要为规划选择其他 provider 时，用户仍可通过普通 `/model` 或 agent 配置显式
+选择；fork 不为 Plan Mode 增加隐式、session-scoped 的模型 ownership。
 
 ## 6. Executor：main session
 
@@ -263,7 +213,7 @@ reparse-point 替换的同等级保证。
 - 现有 permission、sandbox、compaction、usage 和 cancellation 路径全部复用。
 
 Main 的模型继续由现有 `/model` 控制，也可以把 `[models].default` 指向
-`route:executor`。未来如果需要隔离执行，仍可使用现有 subagent/worktree，
+`route:primary`。未来如果需要隔离执行，仍可使用现有 subagent/worktree，
 但它不是这套 baseline 的必选步骤。
 
 ## 7. Reviewer：Stop hook + 只读 subagent
@@ -345,8 +295,6 @@ system 指令。Reviewer 无权替 main 作最终决定，也不能通过输出�
 必须原生实现：
 
 - provider/model/route resolution；
-- session-scoped mode model ownership；
-- Plan Mode tool gate；
 - session actor queue/wake 语义；
 - subagent 生命周期与结果回传；
 - prompt-cache wire contract；
@@ -356,8 +304,7 @@ system 指令。Reviewer 无权替 main 作最终决定，也不能通过输出�
 
 ### 8.2 什么放在 Skill / Agent / Hook
 
-- Planner 的领域方法：skill；
-- Planner 的额外约束：`[modes.plan].instructions`；
+- 规划领域方法和额外约束：普通 skill 或 agent definition；
 - Reviewer 默认沿用普通 headless 配置；可选的专用 persona、模型、tools、
   skills 才放在用户自己的 agent definition；
 - 何时触发 review：hook matcher/adapter；
@@ -379,7 +326,6 @@ scripts/reviewer-hook.sh
 
 未来可按需要增加：
 
-- `modes.design`、`modes.debug` 等通用 mode profile；
 - 面向真正外部事件（CI、webhook）的 live-session 注入通道；
 - hook event filters（commit、push、PR、test completion）；
 - reviewer fan-out 与结果聚合；
@@ -515,8 +461,7 @@ Verification 拒绝：
 
 - provider credential isolation、header merge、配置冲突；
 - route 顺序、缺 credential fallback、hidden alias、explicit default；
-- Plan Mode model scope capture/restore/manual switch/persistence；
-- Plan Mode 对 Bash、subagent、MCP 和非 plan edit 的 fail-closed gate；
+- upstream Plan Mode 定向测试保持不变；
 - Messages 5m/1h/off request JSON；
 - cache usage wire parsing、ledger fold 和 response metadata；
 - subagent 生命周期：spawn、只读 capability、结果回传；
@@ -552,13 +497,13 @@ git diff --check
 ### 固定 workflow engine
 
 暂不采用。它会立即引入 stage schema、artifact protocol、repair budget、
-recovery 和 UI 等大量状态，而当前需求用 Mode Profile + hook + subagent 就能
+recovery 和 UI 等大量状态，而当前需求用已有 Plan Mode、hook 和 subagent 就能
 完整表达。
 
 ### 只用 prompt/skill
 
-不采用。Skill 适合规划方法，不适合 credential isolation、tool gate、actor
-queue、幂等和 cache wire semantics。
+不采用。Skill 适合规划方法，不适合 credential isolation、actor queue、幂等和
+cache wire semantics。
 
 ### Hook 内直接 resume parent session
 

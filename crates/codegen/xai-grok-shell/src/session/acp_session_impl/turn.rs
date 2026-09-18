@@ -569,9 +569,8 @@ impl SessionActor {
                     .collect(),
             ),
         };
-        let prompt_mode = self
-            .resolve_turn_prompt_mode(input_origin.as_prompt_origin(), prompt_mode)
-            .await?;
+        let prompt_mode =
+            self.resolve_turn_prompt_mode(input_origin.as_prompt_origin(), prompt_mode);
         *self.turn_start_prompt_mode.lock() = prompt_mode;
         *self.turn_prompt_mode.lock() = prompt_mode;
         let _turn_active_guard =
@@ -1109,7 +1108,7 @@ impl SessionActor {
             }
             self.maybe_inject_mcp_reminder().await;
             self.maybe_inject_date_rollover_reminder().await;
-            self.inject_plan_mode_reminders().await?;
+            self.inject_plan_mode_reminders().await;
             self.inject_fork_reminder().await;
             self.inject_resumed_tasks_reminder();
             if policy.authority.is_human_intent() {

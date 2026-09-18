@@ -363,31 +363,6 @@ pub(super) async fn run_session(
 ) {
     let (completion_tx, mut completion_rx) =
         mpsc::unbounded_channel::<super::turn_task::TurnCompletionMsg>();
-    // Reconcile the scoped model write-ahead record before accepting prompts.
-    // Active sessions finish/retry entry; collapsed transient states restore
-    // or release the scope. This closes both sides of a crash between the
-    // plan_mode.json and CurrentModel persistence records.
-    let plan_scope_recovery = {
-        let tracker = session.plan_mode.lock();
-        match tracker.state() {
-            crate::session::plan_mode::PlanModeState::Active => Some(true),
-            crate::session::plan_mode::PlanModeState::Inactive if tracker.has_any_model_scope() => {
-                Some(false)
-            }
-            _ => None,
-        }
-    };
-    if let Some(entering) = plan_scope_recovery
-        && let Err(error) = session.apply_plan_model_scope(entering, false).await
-    {
-        tracing::error!(
-            session_id = %session.session_info.id.0,
-            ?error,
-            entering,
-            "Session startup stopped: Plan mode model recovery is not durable"
-        );
-        return;
-    }
     let mut turn_end_queue = super::turn_end_hooks::TurnEndQueue::spawn(session.clone());
     tracing::debug!("fs_notify_config: {:?}", fs_notify_config);
     let mut replay_buffer = ReplayBuffer::new(session.buffering_settings.clone());
@@ -858,48 +833,8 @@ pub(super) async fn run_session(
                                 .await;
                         }
                         SessionCommand::SessionMode { session_mode, responds_to } => {
-                            let outcome = session
-                                .handle_session_mode(session_mode)
-                                .await
-                                .map_err(|error| error.to_string());
-                            if outcome.is_err() && session.state.lock().await.running_task.is_some() {
-                                if let Some(notification) = replay_buffer.flush() {
-                                    session.emit_buffered(notification).await;
-                                }
-                                let _ = session
-                                    .cancel_running_task(crate::session::CancelOptions {
-                                        trigger: Some(crate::session::CancelTrigger::Client(
-                                            "plan_transition_failed".to_owned(),
-                                        )),
-                                        ..Default::default()
-                                    })
-                                    .await;
-                            }
-                            let _ = responds_to.send(outcome);
-                        }
-                        SessionCommand::ApplyPlanToolTransition {
-                            entering,
-                            responds_to,
-                        } => {
-                            let outcome = session
-                                .apply_plan_tool_transition(entering)
-                                .await
-                                .map(|_| ())
-                                .map_err(|error| error.to_string());
-                            match responds_to {
-                                Some(tx) => {
-                                    let _ = tx.send(outcome);
-                                }
-                                None => {
-                                    if let Err(error) = outcome {
-                                        tracing::error!(
-                                            %error,
-                                            entering,
-                                            "fire-and-forget Plan Mode transition failed durable barrier"
-                                        );
-                                    }
-                                }
-                            }
+                            session.handle_session_mode(session_mode).await;
+                            let _ = responds_to.send(());
                         }
                         SessionCommand::SetSessionModel { switch, responds_to } => {
                             let updated_model_id = session.handle_set_session_model(switch).await;

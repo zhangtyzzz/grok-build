@@ -476,14 +476,7 @@ impl SessionActor {
             }
             let plan_path = self.plan_mode.lock().plan_file_path().to_path_buf();
             bridge
-                .update_resource(xai_grok_tools::types::resources::PlanFilePath(
-                    plan_path.clone(),
-                ))
-                .await;
-            bridge
-                .update_resource(xai_grok_tools::types::resources::ProtectedPlanFilePath(
-                    plan_path,
-                ))
+                .update_resource(xai_grok_tools::types::resources::PlanFilePath(plan_path))
                 .await;
             if let Some(display_cwd) = self.display_cwd.get() {
                 bridge

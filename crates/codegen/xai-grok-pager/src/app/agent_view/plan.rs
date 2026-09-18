@@ -260,11 +260,7 @@ impl AgentView {
             return Some(content);
         }
         self.plan_file_path()
-            .and_then(|p| {
-                xai_grok_tools::computer::protected_plan_file::read_blocking(&p)
-                    .ok()
-                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-            })
+            .and_then(|p| std::fs::read_to_string(p).ok())
             .filter(|s| !s.trim().is_empty())
     }
     /// An in-turn review's ext method dies with the turn. A post-turn review stays until the user decides.
@@ -364,6 +360,8 @@ impl AgentView {
                 crate::views::plan_approval_view::EMPTY_PLAN_PLACEHOLDER.to_owned(),
                 None,
             )
+        } else if let Some(plan_path) = self.plan_file_path() {
+            LineViewerState::open_markdown(&plan_path, None)
         } else {
             None
         }) else {

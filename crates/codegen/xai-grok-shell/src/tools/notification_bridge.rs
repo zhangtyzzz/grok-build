@@ -35,8 +35,17 @@ pub(crate) struct NotificationBridgeConfig {
     /// When true, send incremental `output_delta` instead of full `output` in bash streaming updates.
     /// The client must opt in via the `x.ai/incrementalBashOutput` capability.
     pub incremental_bash_output: bool,
-    /// Session command channel for actor-owned plan transitions, monitor
-    /// events, and task-completed injections.
+    /// Plan mode tracker shared with the session actor.
+    /// Used to transition state on `PlanModeEntered` / `PlanModeExited` tool notifications.
+    pub plan_mode: Arc<parking_lot::Mutex<crate::session::plan_mode::PlanModeTracker>>,
+    /// Session-level prompt mode shared with the session actor.
+    /// Updated on `PlanModeEntered` / `PlanModeExited` and `session/set_mode` so the next turn starts in the correct mode.
+    pub current_prompt_mode: Arc<parking_lot::Mutex<crate::session::plan_mode::PromptMode>>,
+    /// Set at turn start, then updated only by agent tool calls (`EnterPlanMode` / `ExitPlanMode`).
+    /// NOT affected by `session/set_mode`.
+    /// Read at turn end for `end_prompt_mode`.
+    pub turn_prompt_mode: Arc<parking_lot::Mutex<crate::session::plan_mode::PromptMode>>,
+    /// Session command channel for monitor events and task-completed injections.
     pub session_cmd_tx: mpsc::UnboundedSender<SessionCommand>,
     pub task_completion_reservations:
         xai_grok_tools::reminders::task_completion::TaskCompletionReservations,
@@ -60,9 +69,12 @@ pub(crate) struct NotificationBridgeConfig {
     pub read_tool_name: Arc<std::sync::OnceLock<Option<String>>>,
     /// When `false`, bash task completions fall back to the idle-gated `InjectNotification` path instead of immediate synthetic prompts.
     pub auto_wake_enabled: bool,
-    /// When `true`, suppress the bash auto-wake synthetic prompt. Shared `Arc`
-    /// written at one chokepoint — see
-    /// `SessionActor::set_goal_loop_active_resource` for the rationale.
+    /// When `true`, an approved `PlanModeExited` also queues the tracker's next-turn exit reminder.
+    /// Grok-build leaves this `false`: its exit-plan tool result already informs the model, and a deferred reminder would arrive stale. Shared with the session actor (the `gateway_enabled` pattern).
+    /// Refreshed on zero-turn rebuilds so the bridge always agrees with the live session gate.
+    pub queue_exit_reminder_on_approved_exit: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// When `true`, suppress the bash auto-wake synthetic prompt.
+    /// Shared `Arc` written in one place; see `SessionActor::set_goal_loop_active_resource` for the rationale.
     pub goal_loop_active: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Coalesce live `EmitBackgroundTasksSnapshot` requests. Last-wins only
     /// needs the latest list; a burst of completions shares one emit.
@@ -207,7 +219,23 @@ pub(crate) fn spawn_notification_bridge(
     });
     handle
 }
-/// Handle a single notification by forwarding it to the appropriate shell system.
+/// The update is persisted to `updates.jsonl` so session replay re-applies the mode, and forwarded to the gateway so the pager updates live.
+async fn emit_current_mode_update(
+    config: &NotificationBridgeConfig,
+    mode: xai_grok_tools::types::SessionMode,
+) {
+    let mut notification = acp::SessionNotification::new(
+        config.session_id.clone(),
+        acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(
+            acp::SessionModeId::new(mode.as_id()),
+        )),
+    );
+    stamp_event_id(config, &mut notification.meta);
+    let _ = config.persistence.tx.send(PersistenceMsg::Update(
+        crate::session::storage::SessionUpdate::Acp(Box::new(notification.clone())),
+    ));
+    config.gateway.forward_fire_and_forget(notification);
+}
 async fn handle_notification(
     config: &NotificationBridgeConfig,
     notification: ToolNotification,
@@ -588,37 +616,51 @@ async fn handle_notification(
             request_background_tasks_snapshot(config);
         }
         ToolNotification::PlanModeEntered(entered) => {
-            // The bridge deliberately does not mutate shared mode state. It
-            // only queues the actor-owned, idempotent transition. The
-            // completed tool result queues the same transition with an
-            // acknowledgement and waits, forming the hard before-next-sample
-            // barrier even if this best-effort notification is delayed.
-            let queued = config
-                .session_cmd_tx
-                .send(SessionCommand::ApplyPlanToolTransition {
-                    entering: true,
-                    responds_to: None,
-                })
-                .is_ok();
+            let activated = config.plan_mode.lock().activate_from_tool();
+            if activated {
+                *config.current_prompt_mode.lock() = crate::session::plan_mode::PromptMode::Plan;
+                *config.turn_prompt_mode.lock() = crate::session::plan_mode::PromptMode::Plan;
+                let snapshot = config.plan_mode.lock().snapshot();
+                let _ = config
+                    .persistence
+                    .tx
+                    .send(PersistenceMsg::PlanModeState(snapshot));
+                emit_current_mode_update(config, xai_grok_tools::types::SessionMode::Plan).await;
+            }
             tracing::info!(
                 tool_call_id = %entered.tool_call_id,
-                queued,
-                "Queued Plan Mode entry from EnterPlanMode notification"
+                activated,
+                "Plan mode entered via EnterPlanMode tool"
             );
         }
         ToolNotification::PlanModeExited(exited) => {
-            let queued = config
-                .session_cmd_tx
-                .send(SessionCommand::ApplyPlanToolTransition {
-                    entering: false,
-                    responds_to: None,
-                })
-                .is_ok();
+            let deactivated = {
+                let mut tracker = config.plan_mode.lock();
+                let deactivated = tracker.deactivate_approved();
+                if deactivated
+                    && config
+                        .queue_exit_reminder_on_approved_exit
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    tracker.queue_exit_reminder();
+                }
+                deactivated
+            };
+            if deactivated {
+                *config.current_prompt_mode.lock() = crate::session::plan_mode::PromptMode::Agent;
+                *config.turn_prompt_mode.lock() = crate::session::plan_mode::PromptMode::Agent;
+                let snapshot = config.plan_mode.lock().snapshot();
+                let _ = config
+                    .persistence
+                    .tx
+                    .send(PersistenceMsg::PlanModeState(snapshot));
+                emit_current_mode_update(config, xai_grok_tools::types::SessionMode::Default).await;
+            }
             tracing::info!(
                 tool_call_id = %exited.tool_call_id,
-                queued,
+                deactivated,
                 has_plan = exited.plan_content.is_some(),
-                "Queued Plan Mode exit from ExitPlanMode notification"
+                "Plan mode exited via ExitPlanMode tool"
             );
         }
         ToolNotification::UserQuestionAsked(asked) => {
@@ -742,7 +784,7 @@ async fn handle_notification(
         }
         ToolNotification::ScheduledTaskRemoved(removed) => {
             if let Err(error) = handle_scheduled_task_removed(config, removed, None).await {
-                tracing::warn!(% error, "Failed to handle scheduled task removal");
+                tracing::warn!(%error, "Failed to handle scheduled task removal");
             }
         }
         ToolNotification::ScheduledTaskCreated(created) => {

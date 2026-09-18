@@ -313,37 +313,20 @@ impl SessionActor {
         }
         // Auto-compact runs inline in process_conversation_turn, so nothing queues it here after the turn
 
-        // If the user toggled plan mode off while this turn was in-flight
-        // (state == ExitPending), complete the deferred exit now that the
-        // turn is finished. The next handle_prompt() will inject the exit
-        // reminder via has_pending_exit_reminder().
-        let plan_mode_before_deferred_exit = self.plan_mode.lock().clone();
-        let deferred_plan_exit = {
+        // If the user toggled plan mode off while this turn ran (state == ExitPending), complete the deferred exit now that the turn is finished
+        // The next handle_prompt() will inject the exit reminder via has_pending_exit_reminder()
+        {
             let mut tracker = self.plan_mode.lock();
             let transitioned =
                 tracker.state() == crate::session::plan_mode::PlanModeState::ExitPending;
             tracker.complete_deferred_exit();
-            transitioned
-        };
-        // Drop the state guard before the async emit so the persist/broadcast
-        // fork doesn't run under the state lock.
-        drop(state);
-        if deferred_plan_exit {
-            if let Err(error) = self.persist_plan_mode_state_durable().await {
-                *self.plan_mode.lock() = plan_mode_before_deferred_exit;
-                tracing::error!(
-                    session_id = %self.session_info.id.0,
-                    ?error,
-                    "Deferred Plan mode exit was rolled back after durable persistence failed"
-                );
-            } else if let Err(error) = self.apply_plan_model_scope(false, false).await {
-                tracing::error!(
-                    session_id = %self.session_info.id.0,
-                    ?error,
-                    "Deferred Plan mode model restore is incomplete; next prompt will retry"
-                );
+            drop(tracker);
+            if transitioned {
+                self.persist_plan_mode_state();
             }
         }
+        // Drop the state guard before sends and async emits.
+        drop(state);
         Self::settle_parent_message_completions(message_completions, &result);
 
         if let Some(held) = held_rows_notice {

@@ -101,10 +101,10 @@ shell's session actor, agent assembly, sampler, tools, workspace boundary, and
 persistence. This is an important design constraint: behavior that should be
 consistent across interactive, CI, and editor use belongs below the pager.
 
-## Provider, Plan Mode, and external-agent extensions
+## Provider and external-agent extensions
 
 The multi-agent baseline is deliberately composed from native primitives
-instead of a fixed planner/executor/reviewer workflow engine.
+instead of a fixed executor/reviewer workflow engine.
 
 ### Provider and model resolution
 
@@ -120,34 +120,22 @@ transport retries stay inside `xai-grok-sampler` and never fail over to another
 provider after a request has begun. The sampler receives only the resolved
 model, transport, credential, and cache configuration.
 
-### Planner and executor
+### Plan Mode and execution
 
-`/plan` remains a mode transition inside the current session. The
-`[modes.plan]` profile can temporarily apply a different model or route plus
-plan-only instructions and skills. The session actor snapshots the original
-model and restores it on exit only if the user has not manually switched
-models in the meantime. Scoped-model transitions use a write-ahead
-`plan_mode.json` record and acknowledge state/model/commit writes only after
-the session files are synced; sampling does not cross a failed transition
-barrier. Startup reconciles any pending record before accepting prompts.
+Plan Mode follows upstream without a fork-specific model profile, persistence
+barrier, or tool policy. `/plan` remains a mode transition inside the current
+session, and the same session executes an approved plan.
 
-The planner remains in the same conversation. Consequently, the selected
-provider receives the transcript and read/search results carried by that
-request; a mode-specific model is not a data-isolation boundary.
+The upstream dispatch gate applies to file-edit tools: writes to the session's
+`plan.md` are allowed, edits to other files and `apply_patch` are rejected, and
+non-edit tools continue through normal permission handling. Consequently,
+always-approve may run shell commands, MCP tools, or subagents while Plan Mode
+is active; Plan Mode is not a complete filesystem sandbox.
 
-Active Plan Mode is enforced at tool dispatch, before normal permission
-handling. It permits read-oriented tools and writes to the session's
-`plan.md`, while rejecting shell commands, subagents, arbitrary extension
-tools, generators, and other side-effecting operations. After plan approval,
-the same main session is the executor, preserving transcript, permissions,
-compaction, cancellation, and usage accounting.
-
-The auto-approved plan path is a separate filesystem boundary. Unix access
-walks parent directory descriptors without following links, rejects final
-symlinks and hard links, and writes via a synced same-directory temporary file
-plus atomic rename. The non-Unix fallback rejects links seen during validation
-but, because it lacks a handle-relative parent walk, does not claim the same
-protection against a concurrent reparse-point swap.
+Keeping planning and execution in one session preserves the transcript,
+permissions, compaction, cancellation, and usage accounting. Any provider
+selected for that session receives the conversation and tool results included
+in its requests, so model selection is not a data-isolation boundary.
 
 ### Asynchronous commit review
 
@@ -306,9 +294,8 @@ recommended targeted Cargo commands.
 - `README.md` — product overview, source build, repository layout, development.
 - `AGENTS.md` — repository-wide editing and validation rules.
 - `docs/rfcs/0001-multi-provider-multi-agent-runtime.md` — implemented
-  provider registry, model routing, scoped Plan Mode, external-agent
-  notification, Anthropic cache policy, extension strategy, and standalone
-  distribution.
+  provider registry, model routing, external-agent notification, Anthropic
+  cache policy, extension strategy, and standalone distribution.
 - `crates/codegen/xai-grok-pager/README.md` — pager-internal architecture.
 - `crates/codegen/xai-grok-agent/README.md` — agent definition and prompt
   assembly architecture.
