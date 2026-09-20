@@ -276,14 +276,15 @@ impl SessionActor {
                 "handle_set_session_model: skipping prompt rewrite (just rebuilt harness)"
             );
         }
-        let agent_name = self.agent.borrow().definition().name.clone();
+        let agent =
+            crate::session::persistence::PersistedAgent::from(self.agent.borrow().definition());
         let persistence = if durable_persistence {
             let (respond_to, response) = tokio::sync::oneshot::channel();
             self.notifications
                 .persistence_tx
                 .send(PersistenceMsg::CurrentModelAndAck {
                     model_id: model_id.clone(),
-                    agent_name: Some(agent_name),
+                    agent,
                     reasoning_effort: Some(sampling_config.reasoning_effort),
                     respond_to,
                 })
@@ -306,7 +307,7 @@ impl SessionActor {
                 .persistence_tx
                 .send(PersistenceMsg::CurrentModel {
                     model_id: model_id.clone(),
-                    agent_name: Some(agent_name),
+                    agent,
                     reasoning_effort: Some(sampling_config.reasoning_effort),
                 })
                 .map(|_| ())
@@ -395,7 +396,7 @@ impl SessionActor {
             .persistence_tx
             .send(PersistenceMsg::CurrentModel {
                 model_id: model_id.clone(),
-                agent_name: Some(agent_name),
+                agent: crate::session::persistence::PersistedAgent::Named(agent_name),
                 reasoning_effort: Some(Some(effort)),
             });
         self.emit_status_snapshot_detached();

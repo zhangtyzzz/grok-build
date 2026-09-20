@@ -13606,6 +13606,7 @@ dependencies = [
  "xai-grok-config",
  "xai-grok-hooks",
  "xai-grok-sampling-types",
+ "xai-grok-telemetry",
  "xai-grok-tools",
  "xai-token-estimation",
  "xai-tool-types",
@@ -13873,11 +13874,13 @@ dependencies = [
  "chrono",
  "filetime",
  "fs2",
+ "indexmap",
  "jsonwebtoken",
  "libc",
  "loom",
  "obfstr",
  "parking_lot",
+ "pretty_assertions",
  "prost",
  "rand 0.9.5",
  "reqwest 0.12.24",
@@ -13901,6 +13904,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "webbrowser",
+ "wiremock",
  "xai-file-utils",
  "xai-grok-auth",
  "xai-grok-config",
@@ -14084,7 +14088,7 @@ dependencies = [
 
 [[package]]
 name = "xai-grok-pager"
-version = "1.0.36"
+version = "1.0.38"
 dependencies = [
  "agent-client-protocol",
  "ansi-to-tui",
@@ -14189,7 +14193,7 @@ dependencies = [
 
 [[package]]
 name = "xai-grok-pager-bin"
-version = "1.0.36"
+version = "1.0.38"
 dependencies = [
  "anyhow",
  "clap",
@@ -14524,7 +14528,7 @@ dependencies = [
 
 [[package]]
 name = "xai-grok-shell"
-version = "1.0.36"
+version = "1.0.38"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -15000,7 +15004,7 @@ dependencies = [
 
 [[package]]
 name = "xai-grok-version"
-version = "1.0.36"
+version = "1.0.38"
 dependencies = [
  "semver",
 ]
