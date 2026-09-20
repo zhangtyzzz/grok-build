@@ -482,52 +482,28 @@ fn write_summary(
 ) {
     let session_dir = cwd_dir.join(session_id);
     fs::create_dir(&session_dir).expect("create session directory");
-    let summary = Summary {
-        info: Info {
+    let mut summary: Summary = serde_json::from_value(serde_json::json!({
+        "info": Info {
             id: acp::SessionId::new(session_id),
             cwd: cwd.to_owned(),
         },
-        agent_id: None,
-        attempt_id: None,
-        cwd_generation: 0,
-        previous_cwd: None,
-        pending_cwd_switch_reminder: None,
-        cwd_switch_bookkeeping_generation: 0,
-        session_summary: format!("Deterministic benchmark session {ordinal}"),
-        created_at: active_at - ChronoDuration::minutes(5),
-        updated_at: active_at,
-        num_messages: 8 + ordinal % 24,
-        num_chat_messages: 8 + ordinal % 24,
-        current_model_id: acp::ModelId::new("benchmark-model"),
-        parent_session_id: None,
-        forked_at: None,
-        collection_id: None,
-        next_trace_turn: 0,
-        chat_format_version: 1,
-        prompt_display_cwd: None,
-        session_kind: None,
-        fork_context_source: None,
-        fork_parent_prompt_id: None,
-        inherited_prefix_len: None,
-        hidden: None,
-        source_workspace_dir: None,
-        git_root_dir: Some(cwd.to_owned()),
-        git_remotes: vec!["git@github.com:xai-org/benchmark.git".to_owned()],
-        head_commit: Some(format!("{ordinal:040x}")),
-        head_branch: Some("main".to_owned()),
-        request_id: None,
-        grok_home: None,
-        last_active_at: Some(active_at),
-        generated_title: Some(format!("Benchmark session {ordinal}")),
-        title_is_manual: false,
-        worktree_label: worktree_label.map(str::to_owned),
-        agent_name: Some("benchmark-agent".to_owned()),
-        sandbox_profile: Some("workspace".to_owned()),
-        reasoning_effort: None,
-        last_turn_summary: None,
-        last_turn_summary_prompt_id: None,
-        last_recap: None,
-    };
+        "session_summary": format!("Deterministic benchmark session {ordinal}"),
+        "created_at": active_at - ChronoDuration::minutes(5),
+        "updated_at": active_at,
+        "num_messages": 8 + ordinal % 24,
+        "num_chat_messages": 8 + ordinal % 24,
+        "current_model_id": acp::ModelId::new("benchmark-model"),
+        "agent_name": "benchmark-agent",
+    }))
+    .expect("build benchmark summary");
+    summary.git_root_dir = Some(cwd.to_owned());
+    summary.git_remotes = vec!["git@github.com:xai-org/benchmark.git".to_owned()];
+    summary.head_commit = Some(format!("{ordinal:040x}"));
+    summary.head_branch = Some("main".to_owned());
+    summary.last_active_at = Some(active_at);
+    summary.generated_title = Some(format!("Benchmark session {ordinal}"));
+    summary.worktree_label = worktree_label.map(str::to_owned);
+    summary.sandbox_profile = Some("workspace".to_owned());
     let summary_path = session_dir.join("summary.json");
     let bytes = serde_json::to_vec_pretty(&summary).expect("serialize summary");
     fs::write(&summary_path, bytes).expect("write summary");
