@@ -211,6 +211,8 @@ pub(crate) enum EnforcedSetting {
     ProjectMcpServers,
     /// `plugin_auto_update = false` pin: session-start plugin auto-update off.
     PluginAutoUpdate,
+    /// `allow_managed_hooks_only = true` pin: hooks that are not managed policy do not run.
+    NonManagedHooks,
 }
 
 #[derive(Debug, Serialize)]
@@ -779,6 +781,7 @@ fn permission_policy_report(
     for (pin, setting) in [
         (&ms.project_mcp, EnforcedSetting::ProjectMcpServers),
         (&ms.plugin_auto_update, EnforcedSetting::PluginAutoUpdate),
+        (&ms.non_managed_hooks, EnforcedSetting::NonManagedHooks),
     ] {
         if let Some(source) = pin.source() {
             enforced.push(EnforcedPolicy {
@@ -1416,6 +1419,7 @@ fn enforced_label(p: &EnforcedPolicy) -> String {
         EnforcedSetting::Feedback => "Feedback",
         EnforcedSetting::ProjectMcpServers => "Project MCP servers",
         EnforcedSetting::PluginAutoUpdate => "Plugin auto-update",
+        EnforcedSetting::NonManagedHooks => "Hooks outside managed policy",
     };
     let state = if p.enabled { "enabled" } else { "disabled" };
     format!("{name} {state}")
@@ -2214,6 +2218,13 @@ mod tests {
             "Permissions mode: always-approve disabled"
         );
         assert!(!enforced_label(&p).contains("yolo"));
+
+        let p = EnforcedPolicy {
+            setting: EnforcedSetting::NonManagedHooks,
+            enabled: false,
+            source: "requirements.toml".into(),
+        };
+        assert_eq!(enforced_label(&p), "Hooks outside managed policy disabled");
     }
 
     fn permissions_report(
@@ -2400,6 +2411,10 @@ mod tests {
             source: "/etc/grok/requirements.toml".into(),
             ownership: PolicyLayerOwnership::Admin,
         };
+        ms.non_managed_hooks = PolicyPin::Disabled {
+            source: "/Users/me/.grok/requirements.toml".into(),
+            ownership: PolicyLayerOwnership::User,
+        };
         let PermissionPolicyReport { enforced, .. } = permission_policy_report(&ms, None);
         assert_eq!(
             serde_json::to_value(&enforced).unwrap(),
@@ -2413,6 +2428,11 @@ mod tests {
                     "setting": "pluginAutoUpdate",
                     "enabled": false,
                     "source": "/etc/grok/requirements.toml",
+                },
+                {
+                    "setting": "nonManagedHooks",
+                    "enabled": false,
+                    "source": "/Users/me/.grok/requirements.toml",
                 },
             ])
         );
