@@ -482,28 +482,27 @@ fn write_summary(
 ) {
     let session_dir = cwd_dir.join(session_id);
     fs::create_dir(&session_dir).expect("create session directory");
-    let mut summary: Summary = serde_json::from_value(serde_json::json!({
-        "info": Info {
-            id: acp::SessionId::new(session_id),
-            cwd: cwd.to_owned(),
-        },
+    let created_at = active_at - ChronoDuration::minutes(5);
+    let summary: Summary = serde_json::from_value(serde_json::json!({
+        "info": { "id": session_id, "cwd": cwd },
         "session_summary": format!("Deterministic benchmark session {ordinal}"),
-        "created_at": active_at - ChronoDuration::minutes(5),
-        "updated_at": active_at,
+        "created_at": created_at.to_rfc3339(),
+        "updated_at": active_at.to_rfc3339(),
         "num_messages": 8 + ordinal % 24,
         "num_chat_messages": 8 + ordinal % 24,
-        "current_model_id": acp::ModelId::new("benchmark-model"),
+        "current_model_id": "benchmark-model",
+        "chat_format_version": 1,
+        "git_root_dir": cwd,
+        "git_remotes": ["git@github.com:xai-org/benchmark.git"],
+        "head_commit": format!("{ordinal:040x}"),
+        "head_branch": "main",
+        "last_active_at": active_at.to_rfc3339(),
+        "generated_title": format!("Benchmark session {ordinal}"),
+        "worktree_label": worktree_label,
         "agent_name": "benchmark-agent",
+        "sandbox_profile": "workspace",
     }))
-    .expect("build benchmark summary");
-    summary.git_root_dir = Some(cwd.to_owned());
-    summary.git_remotes = vec!["git@github.com:xai-org/benchmark.git".to_owned()];
-    summary.head_commit = Some(format!("{ordinal:040x}"));
-    summary.head_branch = Some("main".to_owned());
-    summary.last_active_at = Some(active_at);
-    summary.generated_title = Some(format!("Benchmark session {ordinal}"));
-    summary.worktree_label = worktree_label.map(str::to_owned);
-    summary.sandbox_profile = Some("workspace".to_owned());
+    .expect("summary fixture");
     let summary_path = session_dir.join("summary.json");
     let bytes = serde_json::to_vec_pretty(&summary).expect("serialize summary");
     fs::write(&summary_path, bytes).expect("write summary");
