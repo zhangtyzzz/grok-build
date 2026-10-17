@@ -344,6 +344,17 @@ GitHub must allow Actions to create pull requests. Keep default token
 permissions read-only; the workflow grants narrowly scoped writes only to its
 trusted PR and merge jobs. No personal GitHub token is needed.
 
+Use `Check conflict resolver subscription` for a manual credential/model check.
+It runs the same pinned, restricted CLI against a synthetic temporary file,
+without checking out repository code or exposing GitHub write credentials.
+It validates authentication and a real file edit, not only secret existence.
+
+If dispatch reports `Actions has been disabled for this repository`, open the
+repository's Actions page and inspect the fork-disabled notice. GitHub can
+disable fork execution independently of the permissions API reporting
+`enabled: true`. Re-enable understood workflows there, then trigger validation
+again; absent checks must never be counted as passing CI.
+
 ### Resolution and validation boundaries
 
 The resolver receives the subscription key but no GitHub token, shell tool,
