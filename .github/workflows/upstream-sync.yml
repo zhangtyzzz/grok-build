@@ -1,0 +1,202 @@
+name: Sync upstream and release validated versions
+
+on:
+  schedule:
+    - cron: "23 1 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Prepare bounded upstream resolution
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      changed: ${{ steps.prepare.outputs.changed }}
+      base: ${{ steps.prepare.outputs.base }}
+      upstream: ${{ steps.prepare.outputs.upstream }}
+    steps:
+      - name: Require trusted default branch
+        env:
+          REQUESTED_REF: ${{ github.ref }}
+        run: test "$REQUESTED_REF" = refs/heads/main
+      - name: Check out trusted orchestration
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Keep helper and policy outside the candidate checkout
+        run: |
+          mkdir -p "$RUNNER_TEMP/sync-control"
+          cp scripts/automation/upstream_sync.py "$RUNNER_TEMP/sync-control/helper.py"
+          cp .github/sync-prompt.md "$RUNNER_TEMP/sync-control/prompt.md"
+          python3 -m unittest discover -s scripts/automation -p 'test_*.py'
+      - name: Defer synchronization while release publication is active
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 "$RUNNER_TEMP/sync-control/helper.py" guard --repo "$GH_REPO"
+      - name: Lock commits and attempt merge
+        id: prepare
+        env:
+          TRUSTED_BASE: ${{ github.sha }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          python3 "$RUNNER_TEMP/sync-control/helper.py" prepare \
+            --base "$TRUSTED_BASE" --state "$RUNNER_TEMP/sync-control/state.json"
+      - name: Require an explicitly configured subscription key on conflict
+        if: steps.prepare.outputs.conflicts == 'true'
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: |
+          if [ -z "$LLM_API_KEY" ]; then
+            echo '::error::Upstream conflicts require LLM_API_KEY. Create a BigModel Coding Plan key and save it as an Actions secret, or resolve this sync manually.'
+            exit 1
+          fi
+      - name: Set up supported CLI runtime
+        if: steps.prepare.outputs.conflicts == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - name: Install supported conflict-resolution CLI
+        if: steps.prepare.outputs.conflicts == 'true'
+        env:
+          CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || '2.1.296' }}
+        run: |
+          [[ "$CLAUDE_CODE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          npm install --global "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
+      - name: Resolve only original regular-file conflicts with GLM
+        if: steps.prepare.outputs.conflicts == 'true'
+        timeout-minutes: 15
+        env:
+          ANTHROPIC_BASE_URL: ${{ vars.LLM_BASE_URL || 'https://open.bigmodel.cn/api/anthropic' }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.LLM_API_KEY }}
+          ANTHROPIC_MODEL: ${{ vars.LLM_MODEL || 'glm-5.3-flash' }}
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+        run: |
+          # No GitHub token is passed to this step. Project hooks/settings/MCP and
+          # Bash are disabled; the agent edits text, trusted helpers handle git.
+          python3 -c 'import json,os; s=json.load(open(os.environ["RUNNER_TEMP"]+"/sync-control/state.json")); print("\nOriginal conflict paths:\n"+"\n".join(sorted(s["conflicts"])))' >> "$RUNNER_TEMP/sync-control/prompt.md"
+          timeout 840 claude -p "$(cat "$RUNNER_TEMP/sync-control/prompt.md")" \
+            --model "$ANTHROPIC_MODEL" --max-turns 30 \
+            --tools 'Read,Edit,Write' --allowedTools 'Read,Edit,Write' \
+            --restricted --safe-mode --disable-slash-commands \
+            --setting-sources '' --settings '{"disableAllHooks":true}' \
+            --strict-mcp-config --mcp-config '{"mcpServers":{}}'
+      - name: Verify scope and export data-only resolution
+        if: steps.prepare.outputs.changed == 'true'
+        run: |
+          python3 "$RUNNER_TEMP/sync-control/helper.py" export \
+            --state "$RUNNER_TEMP/sync-control/state.json" \
+            --artifact "$RUNNER_TEMP/sync-resolution.json"
+      - name: Upload untrusted resolution transport
+        if: steps.prepare.outputs.changed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sync-resolution
+          path: ${{ runner.temp }}/sync-resolution.json
+          if-no-files-found: error
+          retention-days: 3
+
+  publish-pr:
+    name: Independently reconstruct merge and open PR
+    needs: resolve
+    if: needs.resolve.outputs.changed == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+    outputs:
+      head: ${{ steps.publish.outputs.head }}
+      tree: ${{ steps.publish.outputs.tree }}
+      pr: ${{ steps.publish.outputs.pr }}
+    steps:
+      - name: Check out trusted helper, never an AI-produced commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Preserve trusted helper outside merge
+        run: |
+          mkdir -p "$RUNNER_TEMP/sync-control"
+          cp scripts/automation/upstream_sync.py "$RUNNER_TEMP/sync-control/helper.py"
+      - name: Download data-only resolution
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sync-resolution
+          path: ${{ runner.temp }}/sync-input
+      - name: Independently validate and reconstruct both merge parents
+        id: reconstruct
+        env:
+          TRUSTED_BASE: ${{ github.sha }}
+          LOCKED_UPSTREAM: ${{ needs.resolve.outputs.upstream }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          python3 "$RUNNER_TEMP/sync-control/helper.py" reconstruct \
+            --base "$TRUSTED_BASE" --upstream "$LOCKED_UPSTREAM" \
+            --artifact "$RUNNER_TEMP/sync-input/sync-resolution.json"
+      - name: Push verified commit and create PR with trusted orchestration only
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TRUSTED_BASE: ${{ github.sha }}
+          LOCKED_UPSTREAM: ${{ needs.resolve.outputs.upstream }}
+          CANDIDATE_HEAD: ${{ steps.reconstruct.outputs.head }}
+          CANDIDATE_TREE: ${{ steps.reconstruct.outputs.tree }}
+        run: |
+          python3 "$RUNNER_TEMP/sync-control/helper.py" publish \
+            --repo "$GH_REPO" --base "$TRUSTED_BASE" --upstream "$LOCKED_UPSTREAM" \
+            --head "$CANDIDATE_HEAD" --tree "$CANDIDATE_TREE"
+
+  ci:
+    name: Validate exact synchronization candidate
+    needs: publish-pr
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      checkout_ref: ${{ needs.publish-pr.outputs.head }}
+      compiler_cache_read_only: true
+
+  merge-release:
+    name: Merge tested tree and request standard release
+    needs: [resolve, publish-pr, ci]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - name: Check out trusted control code only
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require unchanged base and PR head, then merge and dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TRUSTED_BASE: ${{ github.sha }}
+          TESTED_HEAD: ${{ needs.publish-pr.outputs.head }}
+          TESTED_TREE: ${{ needs.publish-pr.outputs.tree }}
+          PR_NUMBER: ${{ needs.publish-pr.outputs.pr }}
+        run: |
+          python3 scripts/automation/upstream_sync.py merge-release \
+            --repo "$GH_REPO" --base "$TRUSTED_BASE" --head "$TESTED_HEAD" \
+            --tree "$TESTED_TREE" --pr "$PR_NUMBER"

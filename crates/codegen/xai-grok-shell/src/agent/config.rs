@@ -1431,14 +1431,14 @@ impl Config {
                 }
                 _ => {}
             }
-            let protected = auth.protected_header();
             if let Some(header) = provider
                 .extra_headers
                 .keys()
-                .find(|header| header.eq_ignore_ascii_case(protected))
+                .chain(provider.env_http_headers.keys())
+                .find(|header| auth.protects_header(header))
             {
                 return Err(format!(
-                    "model_providers.{provider_id}.extra_headers must not set authentication header {header}; configure the provider credential instead"
+                    "model_providers.{provider_id} headers must not set authentication header {header}; configure the provider credential instead"
                 ));
             }
         }
@@ -1460,10 +1460,11 @@ impl Config {
             if let Some(header) = model
                 .extra_headers
                 .keys()
-                .find(|header| header.eq_ignore_ascii_case(auth.protected_header()))
+                .chain(model.env_http_headers.keys())
+                .find(|header| auth.protects_header(header))
             {
                 return Err(format!(
-                    "model.{model_id}.extra_headers must not override provider authentication header {header}"
+                    "model.{model_id} headers must not override provider authentication header {header}"
                 ));
             }
         }
@@ -3093,7 +3094,12 @@ pub(crate) fn resolve_model_list(
         if let Some(pid) = model_override.model_provider.as_deref()
             && let Some(policy) = cfg.provider_policies.get(pid)
         {
-            super::provider_policy::apply_provider_policy(&mut entry, pid, policy);
+            super::provider_policy::apply_provider_policy(
+                &mut entry,
+                pid,
+                policy,
+                model_override.prompt_cache,
+            );
         }
         tracing::debug!(
             model_key = %key,
@@ -3361,7 +3367,16 @@ pub fn find_model_by_locator<'a>(
     }
 
     let mut matches = models
-        .values()
+        .iter()
+        .filter(|(key, entry)| {
+            !key.starts_with("route:")
+                && !entry
+                    .info
+                    .id
+                    .as_deref()
+                    .is_some_and(|id| id.starts_with("route:"))
+        })
+        .map(|(_, entry)| entry)
         .filter(|entry| entry.info.has_model_id(model))
         .filter(endpoint_matches);
     let first = matches.next()?;
@@ -4790,19 +4805,43 @@ pub(crate) fn resolve_model_auth_facts_for_locator(
     model_id: &str,
     base_url: &str,
 ) -> ModelAuthFacts {
+    resolve_model_auth_facts_and_provider_for_locator(model_ref, model_id, base_url).0
+}
+
+/// Resolve the helper and auth facts from the same exact physical locator.
+/// Never select another provider merely because it exposes the same wire slug.
+pub(crate) fn resolve_model_auth_facts_and_provider_for_locator(
+    model_ref: Option<&str>,
+    model_id: &str,
+    base_url: &str,
+) -> (ModelAuthFacts, Option<xai_grok_login::AuthProviderRef>) {
     if model_id.is_empty() || base_url.is_empty() {
-        return ModelAuthFacts {
-            byok: ModelByok::Unknown,
-            auth_scheme: AuthScheme::default(),
-        };
+        return (
+            ModelAuthFacts {
+                byok: ModelByok::Unknown,
+                auth_scheme: AuthScheme::default(),
+            },
+            None,
+        );
     }
-    with_resolved_model_locator(model_ref, model_id, base_url, |lookup| ModelAuthFacts {
+    with_resolved_model_locator(model_ref, model_id, base_url, auth_state_for_locator_lookup)
+}
+
+fn auth_state_for_locator_lookup(
+    lookup: ModelLookup<'_>,
+) -> (ModelAuthFacts, Option<xai_grok_login::AuthProviderRef>) {
+    let facts = ModelAuthFacts {
         byok: byok_from_locator_lookup(&lookup),
         auth_scheme: match lookup {
             ModelLookup::Loaded(Some(entry)) => entry.info().auth_scheme,
             _ => AuthScheme::default(),
         },
-    })
+    };
+    let provider = match lookup {
+        ModelLookup::Loaded(Some(entry)) => entry.effective_auth_provider().cloned(),
+        _ => None,
+    };
+    (facts, provider)
 }
 /// An exact physical locator that is absent from the current catalog is not
 /// evidence that it may use ambient session credentials. Treat it as unknown

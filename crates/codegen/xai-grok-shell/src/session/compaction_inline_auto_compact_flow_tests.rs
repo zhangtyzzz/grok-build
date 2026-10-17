@@ -1567,9 +1567,12 @@ async fn compaction_paths_note_survives_second_compaction_and_filters_missing_fi
         .run_until(async {
             let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
             let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel();
-            let actor = Arc::new(
-                create_test_actor(50_000, 200_000, 85, gateway_tx, persistence_tx).await,
-            );
+            let mut actor =
+                create_test_actor(50_000, 200_000, 85, gateway_tx, persistence_tx).await;
+            // Filesystem tests must not share the fixture's fixed session id:
+            // another test may remove its entire session directory in parallel.
+            actor.session_info.id = acp::SessionId::new(format!("paths-note-{}", uuid::Uuid::new_v4()));
+            let actor = Arc::new(actor);
             let assets_dir = crate::session::image_describe::session_assets_dir(
                 &crate::session::persistence::ensure_owner_only_session_dir(
                         &actor.session_info,
@@ -2112,6 +2115,8 @@ async fn get_transcript_path_returns_some_when_file_exists() {
             let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor =
                 create_test_actor(50_000, 200_000, 85, gateway_tx, persistence_tx).await;
+            actor.session_info.id =
+                acp::SessionId::new(format!("transcript-path-{}", uuid::Uuid::new_v4()));
             actor.compaction.compaction_mode = xai_chat_state::CompactionMode::Transcript;
             let session_dir = crate::session::persistence::session_dir(&actor.session_info);
             std::fs::create_dir_all(&session_dir).unwrap();

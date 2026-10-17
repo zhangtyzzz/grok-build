@@ -277,15 +277,6 @@ pub enum PersistenceMsg {
         /// Outer `None` keeps the saved context window. `Some(None)` resets it to the model default.
         context_window: Option<Option<std::num::NonZeroU64>>,
     },
-    /// Durably persist the current model and report the actual storage result.
-    /// Unlike the legacy fire-and-forget variant, a failed write or sync is
-    /// observable to the caller.
-    CurrentModelAndAck {
-        model_id: acp::ModelId,
-        agent: PersistedAgent,
-        reasoning_effort: Option<Option<ReasoningEffort>>,
-        respond_to: tokio::sync::oneshot::Sender<Result<(), String>>,
-    },
     PlanState(TodoState),
     PlanModeState(crate::session::plan_mode::PlanModeSnapshot),
     /// A rewind point to persist
@@ -2273,30 +2264,6 @@ impl SessionPersistence {
                     if let Some(sync) = &self.remote_sync {
                         sync.set_model_id(model_id.0.to_string());
                     }
-                }
-                PersistenceMsg::CurrentModelAndAck {
-                    model_id,
-                    agent,
-                    reasoning_effort,
-                    respond_to,
-                } => {
-                    let result = self
-                        .storage
-                        .update_current_model_and_agent(
-                            &self.info,
-                            &model_id,
-                            Some(&agent),
-                            reasoning_effort,
-                            None,
-                        )
-                        .await
-                        .map_err(|error| error.to_string());
-                    if let Err(error) = &result {
-                        tracing::error!(%error, "failed durable current-model update");
-                    } else if let Some(sync) = &self.remote_sync {
-                        sync.set_model_id(model_id.0.to_string());
-                    }
-                    let _ = respond_to.send(result);
                 }
                 PersistenceMsg::PlanState(state) => {
                     // Atomic-rename: durable at write time, never on the dirty set A failed plan write must not latch into `pending_write_error`.

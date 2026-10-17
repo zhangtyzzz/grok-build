@@ -2,6 +2,12 @@ name: Publish release (warm, tag, Release)
 
 on:
   workflow_dispatch:
+    inputs:
+      expected_commit:
+        description: Exact already-validated main SHA (optional for manual publication)
+        required: false
+        default: ""
+        type: string
 
 permissions: {}
 
@@ -33,12 +39,23 @@ jobs:
         env:
           REQUESTED_COMMIT: ${{ github.sha }}
           REQUESTED_REF: ${{ github.ref }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
         run: |
           set -euo pipefail
           test "$REQUESTED_REF" = refs/heads/main || {
             echo "release publication must be dispatched from main" >&2
             exit 1
           }
+          if [[ -n "$EXPECTED_COMMIT" ]]; then
+            [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "expected_commit must be a full commit SHA" >&2
+              exit 1
+            }
+            test "$REQUESTED_COMMIT" = "$EXPECTED_COMMIT" || {
+              echo "main no longer matches validated commit $EXPECTED_COMMIT; refusing publication" >&2
+              exit 1
+            }
+          fi
           checkout_commit="$(git rev-parse HEAD)"
           test "$checkout_commit" = "$REQUESTED_COMMIT" || {
             echo "checkout $checkout_commit does not match requested commit $REQUESTED_COMMIT" >&2
@@ -119,8 +136,8 @@ jobs:
           set -euo pipefail
           current_main="$(gh api "repos/$GH_REPO/commits/main" --jq .sha)"
           if [[ "$current_main" != "$RELEASE_COMMIT" ]]; then
-            echo "main advanced to $current_main; a newer successful CI run will release it"
-            exit 0
+            echo "main advanced to $current_main; validate that commit and dispatch publication again" >&2
+            exit 1
           fi
           if gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
             echo "$RELEASE_TAG already exists"
@@ -138,7 +155,7 @@ jobs:
           current_main="$(gh api "repos/$GH_REPO/commits/main" --jq .sha)"
           if [[ "$current_main" != "$RELEASE_COMMIT" ]]; then
             echo "main advanced while preparing $RELEASE_TAG; leaving the unattached tag object unused"
-            exit 0
+            exit 1
           fi
           if gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
             echo "$RELEASE_TAG was created by another run"

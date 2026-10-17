@@ -1751,7 +1751,8 @@ async fn download_verified_from_base(
 
     // Best-effort and base-dependent, so it belongs to this phase; a miss never fails the install.
     #[cfg(windows)]
-    let payload = windows_payload::download(gcs_base_url, &version, &platform, &download_dir).await;
+    let payload =
+        windows_payload::download(&artifact_base, &version, &platform, &download_dir).await;
     #[cfg(not(windows))]
     let payload = windows_payload::Payload::default();
 

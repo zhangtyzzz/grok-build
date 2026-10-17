@@ -400,8 +400,9 @@ impl ModelsManager {
     }
 
     /// Resolve a configured physical model id or logical route into the same
-    /// fully-authenticated sampler configuration used by normal model
-    /// switching, without changing the manager's process-global current model.
+    /// sampler configuration used by normal model switching, without changing
+    /// the manager's process-global current model. A cold auth helper remains
+    /// eligible; the request path must mint its token before dispatch.
     pub(crate) fn sampling_config_for_model_ref(
         &self,
         model_ref: &str,
@@ -417,6 +418,7 @@ impl ModelsManager {
             .as_ref()
             .is_some_and(|provider| provider.auth_required)
             && credentials.api_key.is_none()
+            && entry.effective_auth_provider().is_none()
         {
             return None;
         }

@@ -39,6 +39,12 @@ rules.
   number above upstream's.
 - Ordinary pushes and pull-request merges must not publish a release. See
   `docs/release-distribution.md` for recovery and verification details.
+- The owner-authorized upstream-sync workflow may merge its own exact tested
+  PR head after all reusable CI jobs succeed, then dispatch the existing
+  publication coordinator with `expected_commit` set to the validated main
+  SHA. This is a separate gated publication step, not a tag-on-push trigger.
+  Conflict resolution must not receive GitHub write credentials or change
+  protected automation, policy, or release paths. Follow `FORK_CHANGES.md`.
 - Monitor long-running Actions and release workflows with one session-managed
   watcher, then keep the current agent turn alive with the platform wait
   mechanism until success, failure, or watcher error. Do not repeatedly

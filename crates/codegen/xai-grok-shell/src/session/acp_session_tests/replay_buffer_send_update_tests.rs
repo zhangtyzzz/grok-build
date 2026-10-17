@@ -586,6 +586,56 @@ async fn server_overflow_clears_a_larger_context_window_selection() {
         .await;
 }
 #[tokio::test]
+async fn server_overflow_preserves_route_and_physical_model_identity() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            for route_ref in [Some("route:main"), None] {
+                let ReplaySendUpdateFixture {
+                    actor,
+                    event_rx: _event_rx,
+                    sent: _sent,
+                    sent_ext,
+                    mut persistence_rx,
+                } = make_replay_send_update_fixture().await;
+                let mut cfg = selected_window_config(&actor, 500_000);
+                cfg.route_ref = route_ref.map(str::to_owned);
+                cfg.model_ref = Some("physical-provider-model".to_owned());
+                let expected_id = route_ref.unwrap_or("physical-provider-model");
+                let server_window = std::num::NonZeroU64::new(256_000).unwrap();
+                assert_eq!(
+                    actor.context_window_after_overflow(&cfg, server_window),
+                    server_window
+                );
+                let Ok(PersistenceMsg::CurrentModel {
+                    model_id,
+                    context_window,
+                    ..
+                }) = persistence_rx.try_recv()
+                else {
+                    panic!("the cleared selection is saved");
+                };
+                assert_eq!(model_id.0.as_ref(), expected_id);
+                assert_eq!(context_window, Some(None));
+                for _ in 0..50 {
+                    if !sent_ext.lock().await.is_empty() {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                let ext = sent_ext
+                    .lock()
+                    .await
+                    .first()
+                    .cloned()
+                    .expect("ModelChanged broadcast reached the gateway");
+                let value: serde_json::Value = serde_json::from_str(ext.params.get()).unwrap();
+                assert_eq!(value["update"]["model_id"].as_str(), Some(expected_id));
+            }
+        })
+        .await;
+}
+
+#[tokio::test]
 async fn server_overflow_keeps_a_smaller_context_window_selection() {
     let local = tokio::task::LocalSet::new();
     local

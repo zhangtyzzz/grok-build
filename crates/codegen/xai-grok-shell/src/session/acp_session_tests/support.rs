@@ -711,9 +711,6 @@ pub(crate) fn spawn_test_persistence_acknowledger(
     tokio::task::spawn_local(async move {
         while let Some(message) = persistence_rx.recv().await {
             match message {
-                PersistenceMsg::CurrentModelAndAck { respond_to, .. } => {
-                    let _ = respond_to.send(Ok(()));
-                }
                 PersistenceMsg::FlushAndAck { respond_to } => {
                     let _ = respond_to.send(Ok(()));
                 }

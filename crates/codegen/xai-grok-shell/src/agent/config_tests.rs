@@ -8646,3 +8646,95 @@ fn test_model_entry(
         provider: None,
     }
 }
+
+#[tokio::test]
+async fn locator_auth_helper_disambiguates_shared_slug_without_provider_fallback() {
+    let first_dir = tempfile::tempdir().unwrap();
+    let second_dir = tempfile::tempdir().unwrap();
+    let first_provider = xai_grok_login::test_counting_provider("locator-first", first_dir.path());
+    let second_provider =
+        xai_grok_login::test_counting_provider("locator-second", second_dir.path());
+    let mut first = test_model_entry(
+        "shared-wire-slug",
+        "https://first.example/v1",
+        None,
+        None,
+        None,
+    );
+    first.auth_provider = Some(first_provider);
+    let mut second = test_model_entry(
+        "shared-wire-slug",
+        "https://second.example/v1",
+        None,
+        None,
+        None,
+    );
+    second.auth_provider = Some(second_provider);
+    let models = IndexMap::from([("first".to_owned(), first), ("second".to_owned(), second)]);
+    assert!(find_model_by_id(&models, "shared-wire-slug").is_none());
+
+    for (model_ref, endpoint, provider_name) in [
+        ("first", "https://first.example/v1", "locator-first"),
+        ("second", "https://second.example/v1", "locator-second"),
+    ] {
+        let (facts, provider) = auth_state_for_locator_lookup(ModelLookup::Loaded(
+            find_model_by_locator(&models, Some(model_ref), "shared-wire-slug", endpoint),
+        ));
+        assert!(matches!(facts.byok, ModelByok::Byok));
+        let provider = provider.expect("exact locator retains its cold helper");
+        assert_eq!(provider.name, provider_name);
+        assert!(provider.cached_token().is_none());
+        assert_eq!(
+            provider.ensure_fresh_token(None).await.rotated().as_deref(),
+            Some("tok-1")
+        );
+    }
+
+    for (model_ref, endpoint) in [
+        (Some("missing"), "https://first.example/v1"),
+        (Some("first"), "https://second.example/v1"),
+        (None, "https://missing.example/v1"),
+    ] {
+        let (facts, provider) = auth_state_for_locator_lookup(ModelLookup::Loaded(
+            find_model_by_locator(&models, model_ref, "shared-wire-slug", endpoint),
+        ));
+        assert!(matches!(facts.byok, ModelByok::Unknown));
+        assert!(provider.is_none(), "never borrow another provider's helper");
+    }
+}
+
+#[test]
+fn legacy_locator_ignores_route_aliases_but_rejects_duplicate_physical_entries() {
+    let physical = test_model_entry(
+        "shared-wire-slug",
+        "https://provider.example/v1",
+        None,
+        None,
+        None,
+    );
+    let mut alias = physical.clone();
+    alias.info.id = Some("route:main".to_owned());
+    let mut models = IndexMap::from([
+        ("physical".to_owned(), physical.clone()),
+        ("route:main".to_owned(), alias),
+    ]);
+    let resolved = find_model_by_locator(
+        &models,
+        None,
+        "shared-wire-slug",
+        "https://provider.example/v1",
+    )
+    .expect("a virtual route is not a second physical provider");
+    assert!(std::ptr::eq(resolved, &models["physical"]));
+    models.insert("another-physical".to_owned(), physical);
+    assert!(
+        find_model_by_locator(
+            &models,
+            None,
+            "shared-wire-slug",
+            "https://provider.example/v1",
+        )
+        .is_none(),
+        "two physical matches remain ambiguous"
+    );
+}

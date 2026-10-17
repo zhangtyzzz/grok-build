@@ -249,6 +249,28 @@ impl ChatStateHandle {
         .await
     }
 
+    /// Replace a resolved route only while the full configuration and credentials
+    /// still match the captured snapshot. `Some(false)` discards stale preflight
+    /// after a concurrent model/settings change or credential rotation.
+    pub async fn replace_sampling_config_and_credentials_if_matches(
+        &self,
+        expected: SamplingConfig,
+        expected_credentials: Credentials,
+        config: SamplingConfig,
+        credentials: Credentials,
+    ) -> Option<bool> {
+        self.query("ReplaceSamplingConfigAndCredentialsIfMatches", |reply| {
+            ChatStateCommand::ReplaceSamplingConfigAndCredentialsIfMatches {
+                expected: Box::new(expected),
+                expected_credentials,
+                config: Box::new(config),
+                credentials,
+                reply,
+            }
+        })
+        .await
+    }
+
     /// Apply refreshed credentials only while the physical sampling locator
     /// remains unchanged. Returns `Some(false)` after a concurrent switch and
     /// `None` if the actor is dead.

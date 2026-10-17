@@ -673,7 +673,8 @@ impl PreparedToolCall {
 #[cfg(test)]
 pub(crate) use crate::session::streaming_capture::STREAMING_CAPTURE_MAX_BYTES;
 pub(crate) use crate::session::streaming_capture::StreamingTurnCapture;
-/// One memoized model's auth state, keyed by model id; see [`SessionActor::model_auth_memo`] for the invalidation contract.
+/// One memoized model's auth state, keyed by its physical locator.
+/// Legacy memo tests may use a model id; see [`SessionActor::model_auth_memo`].
 #[derive(Clone)]
 pub(crate) struct ModelAuthMemo {
     pub(crate) model_id: String,
@@ -760,10 +761,10 @@ pub(crate) struct SessionActor {
     pub(crate) model_auth_facts:
         std::cell::RefCell<Option<(String, crate::agent::config::ModelAuthFacts)>>,
     /// Memoized per-model auth state, read through
-    /// [`SessionActor::model_auth_facts`] and
-    /// [`SessionActor::model_auth_provider`].
+    /// [`SessionActor::model_auth_provider`] and the locator-based BYOK gate.
     ///
-    /// A fresh `Unknown` (config currently unparseable) falls back to the last definite value for the same model.
+    /// A fresh `Unknown` (config currently unparseable) falls back to the last
+    /// definite value only for the same physical ref, wire slug and endpoint.
     /// That avoids demoting a live session to non-refreshable api-key mode.
     /// Because a config edit can turn the selected model into a per-model BYOK model without changing its id, keying on the id alone is insufficient.
     /// Each model/credential chokepoint must clear this memo (`replace(None)`).

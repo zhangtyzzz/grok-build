@@ -56,7 +56,6 @@ impl SessionActor {
                 skip_prompt_rewrite,
                 auto_compact_threshold_percent,
                 system_prompt_label,
-                false,
             )
             .await?;
         let turn_in_flight = self.state.lock().await.running_task.is_some();
@@ -86,34 +85,6 @@ impl SessionActor {
         Ok(model_id)
     }
 
-    /// Plan-scope model switch whose `CurrentModel` record is acknowledged
-    /// only after the persistence actor reports a successful write + sync.
-    pub(super) async fn handle_set_session_model_durable(
-        &self,
-        sampling_config: xai_grok_sampler::SamplerConfig,
-        use_concise: bool,
-        apply_prompt_override: bool,
-        skip_prompt_rewrite: bool,
-        auto_compact_threshold_percent: u8,
-    ) -> Result<acp::ModelId, acp::Error> {
-        let system_prompt_label = self
-            .agent
-            .borrow()
-            .prompt_context()
-            .system_prompt_label
-            .clone();
-        self.handle_set_session_model_inner(
-            sampling_config,
-            use_concise,
-            apply_prompt_override,
-            skip_prompt_rewrite,
-            auto_compact_threshold_percent,
-            system_prompt_label,
-            true,
-        )
-        .await
-    }
-
     async fn handle_set_session_model_inner(
         &self,
         sampling_config: xai_grok_sampler::SamplerConfig,
@@ -122,7 +93,6 @@ impl SessionActor {
         skip_prompt_rewrite: bool,
         auto_compact_threshold_percent: u8,
         system_prompt_label: String,
-        durable_persistence: bool,
     ) -> Result<acp::ModelId, acp::Error> {
         // Persist the logical route selection when present; otherwise persist
         // the exact physical catalog identity, never the ambiguous upstream
@@ -300,50 +270,19 @@ impl SessionActor {
         }
         let agent =
             crate::session::persistence::PersistedAgent::from(self.agent.borrow().definition());
-        let persistence = if durable_persistence {
-            let (respond_to, response) = tokio::sync::oneshot::channel();
-            self.notifications
-                .persistence_tx
-                .send(PersistenceMsg::CurrentModelAndAck {
-                    model_id: model_id.clone(),
-                    agent,
-                    reasoning_effort: Some(sampling_config.reasoning_effort),
-                    respond_to,
-                })
-                .map_err(|_| {
-                    acp::Error::internal_error()
-                        .data("durable current-model persistence actor is unavailable")
-                })?;
-            response
-                .await
-                .map_err(|_| {
-                    acp::Error::internal_error()
-                        .data("durable current-model acknowledgement channel closed")
-                })?
-                .map_err(|error| {
-                    acp::Error::internal_error()
-                        .data(format!("durable current-model write failed: {error}"))
-                })
-        } else {
-            self.notifications
-                .persistence_tx
-                .send(PersistenceMsg::CurrentModel {
-                    model_id: model_id.clone(),
-                    agent,
-                    reasoning_effort: Some(sampling_config.reasoning_effort),
-                    context_window: Some(crate::session::handle::load_context_window_selection(
-                        &self.compaction.context_window_selection,
-                    )),
-                })
-                .map(|_| ())
-                .map_err(|_| {
-                    acp::Error::internal_error().data("current-model persistence actor unavailable")
-                })
-        };
-        if let Err(error) = persistence {
-            if durable_persistence {
-                return Err(error);
-            }
+        if self
+            .notifications
+            .persistence_tx
+            .send(PersistenceMsg::CurrentModel {
+                model_id: model_id.clone(),
+                agent,
+                reasoning_effort: Some(sampling_config.reasoning_effort),
+                context_window: Some(crate::session::handle::load_context_window_selection(
+                    &self.compaction.context_window_selection,
+                )),
+            })
+            .is_err()
+        {
             tracing::warn!(
                 session_id = %self.session_info.id.0,
                 "current-model best-effort persistence actor unavailable"

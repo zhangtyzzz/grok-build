@@ -3,6 +3,11 @@ name: CI
 on:
   workflow_call:
     inputs:
+      checkout_ref:
+        description: Exact commit to validate when called by the upstream sync workflow
+        required: false
+        default: ""
+        type: string
       compiler_cache_read_only:
         description: Prevent a reusable caller from writing compiler cache entries
         required: false
@@ -34,6 +39,7 @@ jobs:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
           persist-credentials: false
 
       - name: Resolve the pinned Rust toolchain
@@ -71,13 +77,14 @@ jobs:
           revision: ${{ github.sha }}
           cache-size: 3G
 
-      - name: Prepare pinned protobuf compiler
+      # Shell telemetry tests execute real grep calls. Debug builds otherwise
+      # rely on an unpinned (and potentially absent) rg on the runner's PATH.
+      - name: Prepare pinned protobuf and search tools
         run: |
           bash scripts/dist/prepare-release-tools.sh \
             --target x86_64-unknown-linux-gnu \
             --output-dir "$RUNNER_TEMP/grok-ci-tools" \
-            --github-env "$GITHUB_ENV" \
-            --protoc-only
+            --github-env "$GITHUB_ENV"
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -116,7 +123,7 @@ jobs:
             -p xai-grok-update
 
       - name: Save Cargo source cache
-        if: success() && github.event_name != 'pull_request' && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: success() && github.event_name != 'pull_request' && !inputs.compiler_cache_read_only && steps.cargo-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -142,6 +149,7 @@ jobs:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
           persist-credentials: false
           fetch-depth: 0
 
@@ -153,6 +161,9 @@ jobs:
       - name: Test deterministic distribution
         run: bash scripts/dist/test.sh
 
+      - name: Test bounded upstream synchronization
+        run: python3 -m unittest discover -s scripts/automation -p 'test_*.py'
+
   terminal:
     name: Terminal, tools, and CLI
     runs-on: ubuntu-22.04
@@ -161,6 +172,7 @@ jobs:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
           persist-credentials: false
 
       - name: Resolve the pinned Rust toolchain
@@ -226,7 +238,7 @@ jobs:
             -p xai-grok-pager-bin
 
       - name: Save Cargo source cache
-        if: success() && github.event_name != 'pull_request' && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: success() && github.event_name != 'pull_request' && !inputs.compiler_cache_read_only && steps.cargo-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -255,6 +267,7 @@ jobs:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
           persist-credentials: false
 
       - name: Resolve the pinned Rust toolchain
@@ -318,8 +331,12 @@ jobs:
             exit 1
           }
 
+      - name: Test PowerShell installer tagged payload requests
+        shell: pwsh
+        run: ./scripts/dist/install-powershell.test.ps1
+
       - name: Save Cargo source cache
-        if: success() && github.event_name != 'pull_request' && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: success() && github.event_name != 'pull_request' && !inputs.compiler_cache_read_only && steps.cargo-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

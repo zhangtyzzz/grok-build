@@ -1,0 +1,65 @@
+name: Check conflict resolver subscription
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/llm-smoke.yml
+
+permissions: {}
+
+jobs:
+  check:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-22.04
+    timeout-minutes: 8
+    steps:
+      # No repository checkout or GitHub credentials are needed. The only
+      # writable input is a synthetic fixture in the runner's temporary folder.
+      - name: Set up CLI runtime
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - name: Install pinned supported CLI
+        env:
+          CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || '2.1.296' }}
+        run: |
+          [[ "$CLAUDE_CODE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          npm install --global "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
+          mkdir -p "$RUNNER_TEMP/glm-smoke"
+          printf '<<<<<<< ours\nleft\n=======\nright\n>>>>>>> theirs\n' > "$RUNNER_TEMP/glm-smoke/sample.txt"
+      - name: Verify subscription authentication and restricted file editing
+        working-directory: ${{ runner.temp }}/glm-smoke
+        env:
+          ANTHROPIC_BASE_URL: ${{ vars.LLM_BASE_URL || 'https://open.bigmodel.cn/api/anthropic' }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.LLM_API_KEY }}
+          ANTHROPIC_MODEL: ${{ vars.LLM_MODEL || 'glm-5.3-flash' }}
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+        run: |
+          test -n "$ANTHROPIC_AUTH_TOKEN" || { echo '::error::LLM_API_KEY is missing'; exit 1; }
+          set +e
+          timeout 300 claude -p 'This is an isolated integration test. Read sample.txt, then use Edit or Write to replace its entire contents with exactly merged followed by a newline. Only edit sample.txt. Do not run commands. Briefly confirm when done.' \
+            --model "$ANTHROPIC_MODEL" --max-turns 5 --output-format json \
+            --tools 'Read,Edit,Write' --allowedTools 'Read,Edit,Write' \
+            --restricted --safe-mode --disable-slash-commands \
+            --setting-sources '' --settings '{"disableAllHooks":true}' \
+            --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
+            > "$RUNNER_TEMP/glm-smoke-result.json"
+          cli_status=$?
+          set -e
+          CLI_STATUS="$cli_status" python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          report = Path(os.environ['RUNNER_TEMP']) / 'glm-smoke-result.json'
+          try:
+              result = json.loads(report.read_text())
+          except (ValueError, OSError):
+              result = {'is_error': True, 'result': 'No completed response; check CLI exit status and service latency.'}
+          if os.environ['CLI_STATUS'] != '0' or result.get('is_error') or Path('sample.txt').read_bytes() != b'merged\n':
+              detail = str(result.get('result', result.get('subtype', 'No diagnostic detail')))
+              detail = detail.replace(os.environ['ANTHROPIC_AUTH_TOKEN'], '[REDACTED]')
+              print('CLI exit status:', os.environ['CLI_STATUS'])
+              print('Provider/CLI diagnostic:', detail[:1000])
+              raise SystemExit('Resolver did not complete the synthetic file edit')
+          print('Subscription authentication, model response, and restricted file editing passed')
+          PY

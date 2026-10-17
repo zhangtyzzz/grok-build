@@ -51,6 +51,7 @@ auto_compact_threshold_percent = 70
 provider = "secondary"
 model = "shared-upstream-slug"
 context_window = 65536
+context_windows = [32768, 65536]
 auto_compact_threshold_percent = 80
 
 [model_route.main]
@@ -185,6 +186,24 @@ async fn resident_session_reselects_route_before_each_request_and_fails_closed()
             unsafe {
                 std::env::set_var(PRIMARY, "primary-secret");
             }
+            actor.refresh_sampler_for_retry().await;
+            let retried = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("retry config");
+            assert_eq!(retried.model_ref.as_deref(), Some("secondary-shared"));
+            assert_eq!(retried.base_url, "https://secondary.example/v1");
+            assert_eq!(
+                actor
+                    .chat_state_handle
+                    .get_credentials()
+                    .await
+                    .api_key
+                    .as_deref(),
+                Some("secondary-secret"),
+                "retry must not adopt a newly available candidate"
+            );
             actor
                 .preflight_active_route_for_request()
                 .await
@@ -228,6 +247,69 @@ async fn resident_session_reselects_route_before_each_request_and_fails_closed()
                 .expect("diagnostic snapshot remains available");
             assert_eq!(unchanged.route_ref.as_deref(), Some("route:main"));
             assert_eq!(unchanged.model_ref.as_deref(), Some("primary-shared"));
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn route_preflight_preserves_supported_context_window_selection() {
+    const PRIMARY: &str = "GROK_ACTOR_ROUTE_PRIMARY_KEY";
+    const SECONDARY: &str = "GROK_ACTOR_ROUTE_SECONDARY_KEY";
+    let _primary_restore = EnvRestore::set(PRIMARY, None);
+    let _secondary_restore = EnvRestore::set(SECONDARY, Some("secondary-secret"));
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _persistence_rx) =
+                tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let (mut actor, _event_rx) =
+                create_test_actor_ex(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            actor.models_manager = route_manager();
+            let actor = std::sync::Arc::new(actor);
+            let (entry, sampling_config) = actor
+                .models_manager
+                .sampling_config_for_model_ref("route:main")
+                .expect("secondary route candidate");
+            let selection = std::num::NonZeroU64::new(32_768).unwrap();
+            actor
+                .handle_set_session_model(crate::session::SessionModelSwitch {
+                    sampling_config,
+                    use_concise: false,
+                    is_family_switch: false,
+                    apply_prompt_override: false,
+                    skip_prompt_rewrite: true,
+                    auto_compact_threshold_percent: 80,
+                    system_prompt_label: xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_owned(),
+                    context_window_selection: crate::session::SwitchContextWindow::Set(Some(
+                        selection,
+                    )),
+                    supported_context_windows: entry.info.context_windows.clone(),
+                })
+                .await
+                .expect("select the route with a smaller context window");
+            actor
+                .prepare_sampler_for_turn()
+                .await
+                .expect("supported selection preflight");
+            let selected = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            assert_eq!(selected.context_window, selection);
+
+            unsafe {
+                std::env::set_var(PRIMARY, "primary-secret");
+            }
+            actor
+                .prepare_sampler_for_turn()
+                .await
+                .expect("new candidate preflight");
+            let fallback = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            assert_eq!(fallback.model_ref.as_deref(), Some("primary-shared"));
+            assert_eq!(
+                fallback.context_window.get(),
+                131_072,
+                "a selection unsupported by the new candidate uses its default"
+            );
         })
         .await;
 }
@@ -430,4 +512,169 @@ async fn auth_none_provider_never_emits_session_authorization_for_direct_or_rout
             server.abort();
         })
         .await;
+}
+
+fn cold_helper_route_manager(
+    provider: xai_grok_login::AuthProviderRef,
+) -> crate::agent::remote_config::ModelsManager {
+    let raw = toml::from_str::<toml::Value>(
+        r#"
+        [auth_provider.route-helper]
+        command = "false"
+
+        [model_providers.gateway]
+        base_url = "https://helper-route.example/v1"
+        auth_scheme = "bearer"
+        auth_provider = "route-helper"
+
+        [model.selected]
+        model_provider = "gateway"
+        model = "shared-wire-slug"
+
+        [model_route.main]
+        candidates = ["selected"]
+        "#,
+    )
+    .unwrap();
+    let cfg = crate::agent::config::Config::new_from_toml_cfg(&raw).unwrap();
+    let mut catalog = crate::agent::remote_config::resolve_model_catalog(&cfg, None);
+    catalog.get_mut("selected").unwrap().auth_provider = Some(provider);
+    let auth_root = tempfile::tempdir().unwrap();
+    let auth_manager = std::sync::Arc::new(crate::auth::AuthManager::new(
+        auth_root.path(),
+        crate::auth::GrokComConfig::default(),
+    ));
+    crate::agent::remote_config::ModelsManager::new(
+        None,
+        catalog,
+        acp::ModelId::new("route:main"),
+        auth_manager,
+        cfg,
+    )
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cold_route_helper_mints_before_first_request_and_failure_blocks_dispatch() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            for mint_succeeds in [true, false] {
+                let dir = tempfile::tempdir().unwrap();
+                let provider = if mint_succeeds {
+                    xai_grok_login::test_counting_provider("route-cold-counting", dir.path())
+                } else {
+                    xai_grok_login::AuthProviderRef::new(
+                        "route-cold-failing".to_owned(),
+                        xai_grok_login::AuthProviderConfig {
+                            command: "exit 1".to_owned(),
+                            args: None,
+                            token_ttl_secs: Some(3600),
+                            timeout_secs: None,
+                            cwd: None,
+                        },
+                    )
+                };
+                let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+                let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+                let (mut actor, _event_rx) =
+                    create_test_actor_ex(0, 256_000, 85, gateway_tx, persistence_tx).await;
+                actor.models_manager = cold_helper_route_manager(provider);
+                let actor = std::sync::Arc::new(actor);
+                let (_entry, initial) = actor
+                    .models_manager
+                    .sampling_config_for_model_ref("route:main")
+                    .expect("cold helper remains a selectable candidate");
+                assert!(initial.api_key.is_none());
+                let mut cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
+                cfg.route_ref = Some("route:main".to_owned());
+                cfg.base_url = "https://previous-provider.example/v1".to_owned();
+                actor.chat_state_handle.update_sampling_config(cfg);
+                let mut credentials = actor.chat_state_handle.get_credentials().await;
+                credentials.api_key = Some("previous-provider-token".to_owned());
+                actor.chat_state_handle.update_credentials(credentials);
+
+                let result = actor.preflight_active_route_for_request().await;
+                let current = actor.chat_state_handle.get_sampling_config().await.unwrap();
+                let credentials = actor.chat_state_handle.get_credentials().await;
+                if mint_succeeds {
+                    result.expect("mint before the first route request");
+                    assert_eq!(current.model_ref.as_deref(), Some("selected"));
+                    assert_eq!(current.base_url, "https://helper-route.example/v1");
+                    assert_eq!(credentials.api_key.as_deref(), Some("tok-1"));
+                    actor.preflight_active_route_for_request().await.unwrap();
+                    assert_eq!(
+                        std::fs::read_to_string(dir.path().join("count"))
+                            .unwrap()
+                            .lines()
+                            .count(),
+                        1
+                    );
+                } else {
+                    assert!(result.is_err(), "failed helper must block dispatch");
+                    assert_eq!(current.base_url, "https://previous-provider.example/v1");
+                    assert_eq!(
+                        credentials.api_key.as_deref(),
+                        Some("previous-provider-token")
+                    );
+                }
+            }
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn delayed_route_helper_cannot_overwrite_a_concurrent_model_switch() {
+    let local = tokio::task::LocalSet::new();
+    local.run_until(async {
+        let dir = tempfile::tempdir().unwrap();
+        let started = dir.path().join("started");
+        let release = dir.path().join("release");
+        let provider = xai_grok_login::AuthProviderRef::new(
+            "delayed-route-selection-cas".to_owned(),
+            xai_grok_login::AuthProviderConfig {
+                command: format!(
+                    "touch '{}'; while [ ! -f '{}' ]; do sleep 0.01; done; printf old-route-token",
+                    started.display(), release.display(),
+                ),
+                args: None,
+                token_ttl_secs: Some(3600),
+                timeout_secs: Some(5),
+                cwd: None,
+            },
+        );
+        let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut actor, _event_rx) = create_test_actor_ex(
+            0, 256_000, 85, gateway_tx, persistence_tx,
+        ).await;
+        actor.models_manager = cold_helper_route_manager(provider);
+        let actor = std::sync::Arc::new(actor);
+        let mut cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
+        cfg.route_ref = Some("route:main".to_owned());
+        actor.chat_state_handle.update_sampling_config(cfg.clone());
+        let preflight = async { actor.preflight_active_route_for_request().await };
+        let switch = async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !started.exists() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }).await.expect("route helper reached the barrier");
+            cfg.model_ref = Some("new-user-selection".to_owned());
+            cfg.route_ref = None;
+            cfg.base_url = "https://user-selection.example/v1".to_owned();
+            let mut credentials = actor.chat_state_handle.get_credentials().await;
+            credentials.api_key = Some("new-user-token".to_owned());
+            actor.chat_state_handle.replace_sampling_config_and_credentials(
+                cfg, credentials,
+            ).await.unwrap();
+            std::fs::write(&release, "continue").unwrap();
+        };
+        let (result, _) = tokio::join!(preflight, switch);
+        assert!(result.is_err(), "stale route preflight must block dispatch");
+        let (cfg, credentials) = actor.chat_state_handle.get_sampling_config_and_credentials().await.unwrap();
+        assert_eq!(cfg.model_ref.as_deref(), Some("new-user-selection"));
+        assert!(cfg.route_ref.is_none());
+        assert_eq!(credentials.api_key.as_deref(), Some("new-user-token"));
+        assert!(actor.model_auth_memo.borrow().is_none(), "stale result must not publish provider memo");
+    }).await;
 }

@@ -236,6 +236,21 @@ impl ChatStateActor {
                 self.state.credentials = credentials;
                 let _ = reply.send(());
             }
+            ChatStateCommand::ReplaceSamplingConfigAndCredentialsIfMatches {
+                expected,
+                expected_credentials,
+                config,
+                credentials,
+                reply,
+            } => {
+                let snapshot_matches = self.state.sampling_config == *expected
+                    && self.state.credentials == expected_credentials;
+                if snapshot_matches {
+                    self.state.sampling_config = *config;
+                    self.state.credentials = credentials;
+                }
+                let _ = reply.send(snapshot_matches);
+            }
             ChatStateCommand::UpdateCredentialsIfSamplingConfigMatches {
                 expected,
                 credentials,
