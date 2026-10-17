@@ -146,6 +146,8 @@ async fn resident_session_reselects_route_before_each_request_and_fails_closed()
                         system_prompt_label: entry.info.system_prompt_label.clone().unwrap_or_else(
                             || xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_owned(),
                         ),
+                        context_window_selection: crate::session::SwitchContextWindow::Preserve,
+                        supported_context_windows: Vec::new(),
                     })
                     .await
                     .expect("route model switch");
@@ -347,6 +349,8 @@ async fn auth_none_provider_never_emits_session_authorization_for_direct_or_rout
                         .system_prompt_label
                         .clone()
                         .unwrap_or_else(|| xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_owned()),
+                    context_window_selection: crate::session::SwitchContextWindow::Preserve,
+                    supported_context_windows: Vec::new(),
                 })
                 .await
                 .expect("switch to direct auth-none provider");
@@ -388,6 +392,8 @@ async fn auth_none_provider_never_emits_session_authorization_for_direct_or_rout
                         .system_prompt_label
                         .clone()
                         .unwrap_or_else(|| xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_owned()),
+                    context_window_selection: crate::session::SwitchContextWindow::Preserve,
+                    supported_context_windows: Vec::new(),
                 })
                 .await
                 .expect("switch to auth-none route");

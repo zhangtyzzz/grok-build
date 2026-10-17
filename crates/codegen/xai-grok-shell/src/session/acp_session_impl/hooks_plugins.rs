@@ -17,88 +17,6 @@ fn hooks_trust_key(
     }
 }
 
-/// Parse every hook contributed by active plugins, injecting the plugin-owned
-/// environment values required by their command adapters.
-///
-/// Session startup and the hooks/plugins reload paths must use this shared
-/// loader so a newly created session has the same plugin hooks as one that was
-/// reloaded from the Extensions modal.
-pub(super) fn plugin_hook_specs(
-    plugin_registry: &xai_grok_agent::plugins::PluginRegistry,
-) -> Vec<xai_grok_hooks::config::HookSpec> {
-    let mut specs = Vec::new();
-    for plugin in plugin_registry.active_plugins() {
-        if let Some(ref hooks_path) = plugin.hooks_path {
-            let (parsed, warnings) = xai_grok_agent::plugins::hooks_adapter::parse_plugin_hooks(
-                hooks_path,
-                &plugin.name,
-                &plugin.root_str(),
-                &plugin.data_dir_str(),
-            );
-            for warning in warnings {
-                tracing::warn!(plugin = %plugin.name, "{warning}");
-            }
-            specs.extend(parsed);
-        }
-        if let Some(ref inline_value) = plugin.inline_hooks {
-            let (parsed, warnings) =
-                xai_grok_agent::plugins::hooks_adapter::parse_plugin_hooks_from_value(
-                    inline_value,
-                    &plugin.name,
-                    &plugin.root_str(),
-                    &plugin.data_dir_str(),
-                );
-            for warning in warnings {
-                tracing::warn!(plugin = %plugin.name, "{warning}");
-            }
-            specs.extend(parsed);
-        }
-    }
-    specs
-}
-
-/// Merge active plugin hooks into a freshly discovered hook registry.
-pub(super) fn append_plugin_hooks(
-    hook_registry: &mut xai_grok_hooks::discovery::HookRegistry,
-    plugin_registry: &xai_grok_agent::plugins::PluginRegistry,
-) -> usize {
-    let specs = plugin_hook_specs(plugin_registry);
-    let count = specs.len();
-    hook_registry.append_specs(specs);
-    count
-}
-
-/// Replace the plugin-owned portion of a live or inherited hook registry.
-///
-/// Subagents inherit their parent's hooks, so startup must replace the
-/// `plugin/` namespace rather than append it a second time. The same operation
-/// also removes stale plugin hooks when a rebuilt registry has none.
-pub(super) fn reconcile_plugin_hooks(
-    hook_registry: &mut Option<Arc<xai_grok_hooks::discovery::HookRegistry>>,
-    plugin_registry: Option<&xai_grok_agent::plugins::PluginRegistry>,
-) -> usize {
-    let specs = plugin_registry.map(plugin_hook_specs).unwrap_or_default();
-    let count = specs.len();
-
-    if let Some(registry) = hook_registry.as_mut() {
-        let registry = Arc::make_mut(registry);
-        registry.remove_by_prefix("plugin/");
-        registry.append_specs(specs);
-    } else if !specs.is_empty() {
-        let mut registry = xai_grok_hooks::discovery::HookRegistry::default();
-        registry.append_specs(specs);
-        *hook_registry = Some(Arc::new(registry));
-    }
-
-    if hook_registry
-        .as_ref()
-        .is_some_and(|registry| registry.is_empty())
-    {
-        *hook_registry = None;
-    }
-    count
-}
-
 impl SessionActor {
     // ── Shared hook/plugin operation functions ────────────────────────
 
@@ -817,31 +735,28 @@ impl SessionActor {
         let cwd = std::path::Path::new(&self.session_info.cwd);
         let is_trusted = crate::agent::folder_trust::resolve_and_record(cwd, None, false);
         // discover_hooks is the single load entry point, so all vendors (compat and native) and custom hook-paths match the session-startup sites
-        let (mut registry, errors) = crate::util::hooks::discover_hooks(
+        let (inputs, disabled) = crate::util::hooks::session_hook_inputs();
+        let (registry, errors) = crate::util::hooks::discover_hooks(
+            &inputs,
             git_root.as_deref(),
             &self.rebuild_spec.compat,
-            is_trusted,
+            xai_grok_hooks::trust::Trust::from_verdict(is_trusted),
         );
         for err in &errors {
             tracing::warn!("hook reload error: {err}");
         }
         *self.hook_load_errors.borrow_mut() = errors.iter().map(|e| e.to_string()).collect();
-        // Re-append plugin hooks from current plugin registry.
         // Clone the Arc out of the RefCell so the borrow is dropped immediately.
         let plugin_registry_snapshot = self.plugin_registry.borrow().clone();
-        if let Some(ref plugin_registry) = plugin_registry_snapshot {
-            append_plugin_hooks(&mut registry, plugin_registry);
-        }
-        let hook_count = registry.len();
-        {
-            let mut reg = self.hook_registry.borrow_mut();
-            if registry.is_empty() {
-                *reg = None;
-            } else {
-                *reg = Some(std::sync::Arc::new(registry));
-            }
-        }
-        self.refresh_hook_disabled();
+        let registry = xai_grok_agent::plugins::hooks_adapter::with_plugin_hooks(
+            (!registry.is_empty()).then(|| Arc::new(registry)),
+            xai_grok_agent::plugins::hooks_adapter::PluginHookSource::Registry(
+                plugin_registry_snapshot.as_deref(),
+            ),
+        );
+        let hook_count = registry.as_ref().map_or(0, |registry| registry.len());
+        *self.hook_registry.borrow_mut() = registry;
+        *self.hook_disabled.borrow_mut() = Arc::new(disabled);
         tracing::info!(hook_count, "hooks reloaded mid-session");
 
         // Notify pager about hooks change.
@@ -876,7 +791,7 @@ impl SessionActor {
         xai_grok_telemetry::unified_log::info("reload_plugins_impl: start", Some(sid), None);
 
         // Folder-trust gates repo-local project plugins (hooks/MCP).
-        // Resolve and record the verdict for this cwd before the plugins-config read below, whose project-paths merge reads the gate.
+        // Resolve and record the verdict for this cwd; the plugins-config read below gates project paths on it.
         // commands/list and the fan-out order these the same way, so no gate read ever precedes the site's own resolve.
         let project_trusted =
             crate::agent::folder_trust::resolve_and_record(session_cwd, None, false);
@@ -884,11 +799,19 @@ impl SessionActor {
         let t0 = std::time::Instant::now();
         // Resolve the effective [plugins] config: global, ancestor project configs, and the compat merge
         // Shared with commands/list and the eager fan-out so all paths discover the same plugins for this cwd
-        let plugins_cfg = crate::config::resolve_effective_plugins_config(session_cwd);
+        let discovery_config = xai_grok_workspace::plugins::resolve_effective_plugins_config(
+            xai_grok_workspace::plugins::PluginConfigInputs {
+                effective_config: crate::config::load_effective_config().ok().as_ref(),
+                home: xai_dirs::home_dir().as_deref(),
+                grok_home: xai_grok_config::user_grok_home().as_deref(),
+                cwd: session_cwd,
+                trust: xai_grok_hooks::trust::Trust::from_verdict(project_trusted),
+                claude_import: crate::claude_import::import_marker(),
+            },
+        );
         let config_read_ms = t0.elapsed().as_millis();
 
         let t2 = std::time::Instant::now();
-        let discovery_config = plugins_cfg.to_discovery_config();
         let count = handle.reload(Some(session_cwd), &discovery_config, project_trusted, force);
         let discover_ms = t2.elapsed().as_millis();
 
@@ -953,10 +876,18 @@ impl SessionActor {
             return incoming;
         };
         let session_cwd = std::path::Path::new(&self.session_info.cwd);
-        let disk_cfg =
-            crate::config::resolve_effective_plugins_config(session_cwd).to_discovery_config();
         // Reads the stored verdict only; the session's spawn resolve already recorded this cwd with the real remote
         let project_trusted = crate::agent::folder_trust::project_scope_allowed(session_cwd);
+        let disk_cfg = xai_grok_workspace::plugins::resolve_effective_plugins_config(
+            xai_grok_workspace::plugins::PluginConfigInputs {
+                effective_config: crate::config::load_effective_config().ok().as_ref(),
+                home: xai_dirs::home_dir().as_deref(),
+                grok_home: xai_grok_config::user_grok_home().as_deref(),
+                cwd: session_cwd,
+                trust: xai_grok_hooks::trust::Trust::from_verdict(project_trusted),
+                claude_import: crate::claude_import::import_marker(),
+            },
+        );
         handle.build_for_cwd(session_cwd, &disk_cfg, &dirs, project_trusted)
     }
 
@@ -974,10 +905,33 @@ impl SessionActor {
 
         // Reload hooks in the current session
         let t_hooks = std::time::Instant::now();
-        let hooks_reloaded = {
-            let mut hook_registry = self.hook_registry.borrow_mut();
-            reconcile_plugin_hooks(&mut hook_registry, new_registry_snapshot.as_deref())
+        let new_specs = new_registry_snapshot
+            .as_deref()
+            .map(xai_grok_agent::plugins::hooks_adapter::active_plugin_hook_specs)
+            .unwrap_or_default();
+        let hooks_reloaded = new_specs.len();
+        let current = self.hook_registry.borrow().clone();
+        let base = match current {
+            Some(registry) => Some(registry),
+            None if new_specs.is_empty() => None,
+            None => {
+                // No registry yet: bootstrap config-layer and file hooks the way reload_hooks_impl does
+                // Starting from empty sources instead would let a plugin-first snapshot drop config hooks
+                let git_root =
+                    xai_grok_workspace::session::git::find_git_root_from_path(session_cwd).ok();
+                let is_trusted =
+                    crate::agent::folder_trust::resolve_and_record(session_cwd, None, false);
+                let (registry, _errs) = crate::util::hooks::discover_hooks(
+                    &crate::util::hooks::process_hook_inputs(),
+                    git_root.as_deref(),
+                    &self.rebuild_spec.compat,
+                    xai_grok_hooks::trust::Trust::from_verdict(is_trusted),
+                );
+                (!registry.is_empty()).then(|| Arc::new(registry))
+            }
         };
+        *self.hook_registry.borrow_mut() =
+            xai_grok_agent::plugins::hooks_adapter::replace_plugin_hooks(base, new_specs);
 
         xai_grok_telemetry::unified_log::info(
             "reload_plugins_impl: hooks done",
@@ -992,11 +946,16 @@ impl SessionActor {
         // Unchanged servers stay connected; only added, changed, or removed ones are re-initialized.
         // The order-sensitive `update_configs` would tear everything down instead, because merge order is non-deterministic.
         let t_mcp = std::time::Instant::now();
-        let new_mcp_servers = crate::session::managed_mcp::merge_managed_mcp_servers(
-            self.initial_client_mcp_servers.clone(),
-            session_cwd,
-            new_registry_snapshot.as_deref(),
-            &self.rebuild_spec.compat,
+        let client_seed = self.initial_client_mcp_servers.borrow().clone();
+        let new_mcp_servers = crate::session::agent_mcp::rematerialize_with_agent_overlay(
+            crate::session::agent_mcp::RematerializeParams {
+                initial_client_mcp_servers: client_seed,
+                cwd: session_cwd,
+                parent_cwd: self.startup_hints.parent_cwd.as_deref(),
+                plugin_registry: new_registry_snapshot.as_deref(),
+                compat: &self.rebuild_spec.compat,
+                definition: self.agent.borrow().definition(),
+            },
         );
         let (mcp_change, dispatch_event_tx) = {
             let mut mcp_state = self.mcp_state.lock().await;
@@ -1097,93 +1056,5 @@ impl SessionActor {
         );
 
         (hooks_reloaded, mcp_changed, skill_count)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::reconcile_plugin_hooks;
-    use xai_grok_agent::plugins::discovery::{DiscoveredPlugin, PluginId};
-    use xai_grok_agent::plugins::manifest::PluginManifest;
-    use xai_grok_agent::plugins::{PluginOrigin, PluginRegistry, PluginScope};
-    use xai_grok_hooks::event::HookEventName;
-
-    #[test]
-    fn active_plugin_hooks_are_merged_into_initial_hook_registry() {
-        let temp_dir = tempfile::tempdir().expect("create temporary plugin directory");
-        let plugin_root = temp_dir.path().join("commit-reviewer");
-        let hooks_path = plugin_root.join("hooks/hooks.json");
-        std::fs::create_dir_all(
-            hooks_path
-                .parent()
-                .expect("hooks path has a parent directory"),
-        )
-        .expect("create hooks directory");
-        std::fs::write(
-            &hooks_path,
-            r#"{
-                "hooks": {
-                    "PostToolUse": [{
-                        "matcher": "run_terminal_command",
-                        "hooks": [{"type": "command", "command": "echo review"}]
-                    }]
-                }
-            }"#,
-        )
-        .expect("write plugin hook configuration");
-
-        let manifest = PluginManifest {
-            name: "commit-reviewer".to_string(),
-            version: None,
-            description: None,
-            author: None,
-            homepage: None,
-            repository: None,
-            license: None,
-            keywords: vec![],
-            skills: None,
-            commands: None,
-            agents: None,
-            hooks: None,
-            mcp_servers: None,
-            lsp_servers: None,
-        };
-        let plugin = DiscoveredPlugin {
-            id: PluginId::new(PluginScope::User, &plugin_root, "commit-reviewer"),
-            manifest,
-            root: plugin_root.clone(),
-            canonical_root: plugin_root.clone(),
-            scope: PluginScope::User,
-            origin: PluginOrigin::UserGrok,
-            trusted: true,
-            skill_dirs: vec![],
-            command_dirs: vec![],
-            agent_dirs: vec![],
-            hooks_path: Some(hooks_path),
-            mcp_config_path: None,
-            lsp_config_path: None,
-            conflict: None,
-        };
-        let plugin_registry =
-            PluginRegistry::from_discovered(vec![plugin], &[], &["commit-reviewer".to_string()]);
-        let mut hook_registry = None;
-        assert_eq!(
-            reconcile_plugin_hooks(&mut hook_registry, Some(&plugin_registry)),
-            1,
-            "the active plugin hook must be injected at session startup"
-        );
-        assert_eq!(
-            reconcile_plugin_hooks(&mut hook_registry, Some(&plugin_registry)),
-            1,
-            "an inherited plugin hook must be replaced instead of duplicated"
-        );
-        let hook_registry = hook_registry.expect("plugin-only hooks must create a registry");
-        let hooks = hook_registry.all_hooks();
-        assert_eq!(hooks.len(), 1);
-        let hook = hooks[0];
-        assert_eq!(hook.event, HookEventName::PostToolUse);
-        assert!(hook.name.starts_with("plugin/commit-reviewer/"));
-        let plugin_root = plugin_root.to_string_lossy().into_owned();
-        assert_eq!(hook.extra_env.get("GROK_PLUGIN_ROOT"), Some(&plugin_root));
     }
 }
