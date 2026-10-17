@@ -160,6 +160,8 @@ helper 回归覆盖同 slug 不同 provider、缺失 ref 不降级、legacy alia
 
 ## 5. 同步任务的取证与执行方法
 
+Windows 的 `cc 1.2.48` 不能搭配 `find-msvc-tools 0.1.13`：后者将公开 Windows 常量的类型变为 `i32`，导致原生编译失败。本轮只把 lockfile 中后者更新到官方修复版 `0.1.14`，保持 cc 和根 manifest 不变。未来同步若调整这组依赖，必须通过 Windows 原生构建，不能直接恢复已知不兼容组合。
+
 ### 5.1 每次重新确定差异边界
 
 在干净、独立的工作树操作；不能覆盖维护者未提交的文稿、配置或 WIP。固定本轮 `origin/main` 和 `upstream/main` 的 SHA，并记录 merge base。
