@@ -77,13 +77,14 @@ jobs:
           revision: ${{ github.sha }}
           cache-size: 3G
 
-      - name: Prepare pinned protobuf compiler
+      # Shell telemetry tests execute real grep calls. Debug builds otherwise
+      # rely on an unpinned (and potentially absent) rg on the runner's PATH.
+      - name: Prepare pinned protobuf and search tools
         run: |
           bash scripts/dist/prepare-release-tools.sh \
             --target x86_64-unknown-linux-gnu \
             --output-dir "$RUNNER_TEMP/grok-ci-tools" \
-            --github-env "$GITHUB_ENV" \
-            --protoc-only
+            --github-env "$GITHUB_ENV"
 
       - name: Check formatting
         run: cargo fmt --all -- --check

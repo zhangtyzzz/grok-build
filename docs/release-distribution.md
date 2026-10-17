@@ -322,6 +322,11 @@ In repository **Settings → Secrets and variables → Actions**, add:
 
 - Secret `LLM_API_KEY`: a key created for your own BigModel GLM Coding Plan.
   Enter it directly in GitHub; never commit it or copy desktop login tokens.
+  Create it under **Personal Coding Plan → Overview**, not **Standard API Key**.
+  BigModel separates newly created standard and subscription keys; having an
+  active subscription does not make a new standard key eligible for its quota.
+  A standard key can return code `1113` even while the subscription has quota.
+  See the official [key-type notice](https://docs.bigmodel.cn/cn/coding-plan/notice/api-key-management).
 - Optional variable `LLM_BASE_URL`: defaults to
   `https://open.bigmodel.cn/api/anthropic` (domestic BigModel subscription).
 - Optional variable `LLM_MODEL`: defaults to `glm-5.3-flash`; select a model
