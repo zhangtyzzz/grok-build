@@ -37,6 +37,7 @@ jobs:
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
         run: |
           test -n "$ANTHROPIC_AUTH_TOKEN" || { echo '::error::LLM_API_KEY is missing'; exit 1; }
+          set +e
           timeout 300 claude -p 'This is an isolated integration test. Read sample.txt, then use Edit or Write to replace its entire contents with exactly merged followed by a newline. Only edit sample.txt. Do not run commands. Briefly confirm when done.' \
             --model "$ANTHROPIC_MODEL" --max-turns 5 --output-format json \
             --tools 'Read,Edit,Write' --allowedTools 'Read,Edit,Write' \
@@ -44,11 +45,21 @@ jobs:
             --setting-sources '' --settings '{"disableAllHooks":true}' \
             --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
             > "$RUNNER_TEMP/glm-smoke-result.json"
-          python3 - <<'PY'
+          cli_status=$?
+          set -e
+          CLI_STATUS="$cli_status" python3 - <<'PY'
           import json, os
           from pathlib import Path
-          result = json.loads((Path(os.environ['RUNNER_TEMP']) / 'glm-smoke-result.json').read_text())
-          if result.get('is_error') or Path('sample.txt').read_bytes() != b'merged\n':
+          report = Path(os.environ['RUNNER_TEMP']) / 'glm-smoke-result.json'
+          try:
+              result = json.loads(report.read_text())
+          except (ValueError, OSError):
+              result = {'is_error': True, 'result': 'No completed response; check CLI exit status and service latency.'}
+          if os.environ['CLI_STATUS'] != '0' or result.get('is_error') or Path('sample.txt').read_bytes() != b'merged\n':
+              detail = str(result.get('result', result.get('subtype', 'No diagnostic detail')))
+              detail = detail.replace(os.environ['ANTHROPIC_AUTH_TOKEN'], '[REDACTED]')
+              print('CLI exit status:', os.environ['CLI_STATUS'])
+              print('Provider/CLI diagnostic:', detail[:1000])
               raise SystemExit('Resolver did not complete the synthetic file edit')
           print('Subscription authentication, model response, and restricted file editing passed')
           PY
