@@ -405,7 +405,7 @@ Write-Host "  Installed to $BinDir\grok.exe and $BinDir\agent.exe." -ForegroundC
 
 # --- Windows payload (best-effort): grove hook exes beside grok.exe + bundled MinGit ---
 
-Install-WindowsPayload $BaseUrl $resolvedVersion $platform $BinDir $DownloadDir
+Install-WindowsPayload $ReleaseBase $resolvedVersion $platform $BinDir $DownloadDir
 
 # --- Generate completions (best-effort) ---
 

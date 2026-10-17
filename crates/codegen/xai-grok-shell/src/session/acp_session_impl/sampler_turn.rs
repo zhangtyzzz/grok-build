@@ -453,15 +453,24 @@ impl SessionActor {
 
     /// Memoized auth facts for legacy model-id lookups. Provider-aware callers
     /// share the same memo so helper-token refresh and BYOK gating stay aligned.
+    #[cfg(test)]
     pub(super) fn model_auth_facts(&self, model_id: &str) -> crate::agent::config::ModelAuthFacts {
         self.model_auth_state(model_id).0
     }
 
     pub(super) fn model_auth_provider(
         &self,
+        model_ref: Option<&str>,
         model_id: &str,
+        base_url: &str,
     ) -> Option<xai_grok_login::AuthProviderRef> {
-        self.model_auth_state(model_id).1
+        let cache_key = format!("{}\0{model_id}\0{base_url}", model_ref.unwrap_or_default());
+        self.model_auth_state_cached(cache_key, || {
+            crate::agent::config::resolve_model_auth_facts_and_provider_for_locator(
+                model_ref, model_id, base_url,
+            )
+        })
+        .1
     }
     /// Drop both auth memos whenever the active model or its credentials change.
     pub(crate) fn invalidate_model_auth_memo(&self) {
@@ -478,7 +487,7 @@ impl SessionActor {
     ) -> crate::agent::config::ModelAuthFacts {
         use crate::agent::auth_method::ModelByok;
         let cache_key = format!("{}\0{model_id}\0{base_url}", model_ref.unwrap_or_default());
-        self.model_auth_facts_cached(cache_key, || {
+        self.model_auth_facts_cached(cache_key.clone(), || {
             let resolved = crate::agent::config::resolve_model_auth_facts_for_locator(
                 model_ref, model_id, base_url,
             );
@@ -488,7 +497,7 @@ impl SessionActor {
             self.model_auth_memo
                 .borrow()
                 .as_ref()
-                .filter(|memo| memo.model_id == model_id && memo.provider.is_some())
+                .filter(|memo| memo.model_id == cache_key && memo.provider.is_some())
                 .map_or(resolved, |memo| memo.facts)
         })
     }
@@ -518,6 +527,7 @@ impl SessionActor {
     }
     /// Reads and populates the auth-provider memo; a fresh `Unknown` falls
     /// back to the last definite entry for the same model id.
+    #[cfg(test)]
     fn model_auth_state(
         &self,
         model_id: &str,
@@ -525,37 +535,65 @@ impl SessionActor {
         crate::agent::config::ModelAuthFacts,
         Option<xai_grok_login::AuthProviderRef>,
     ) {
+        self.model_auth_state_cached(model_id.to_owned(), || {
+            crate::agent::config::resolve_model_auth_facts_and_provider(model_id)
+        })
+    }
+
+    fn model_auth_state_cached(
+        &self,
+        cache_key: String,
+        resolve: impl FnOnce() -> (
+            crate::agent::config::ModelAuthFacts,
+            Option<xai_grok_login::AuthProviderRef>,
+        ),
+    ) -> (
+        crate::agent::config::ModelAuthFacts,
+        Option<xai_grok_login::AuthProviderRef>,
+    ) {
         use crate::agent::auth_method::ModelByok;
         use crate::session::acp_session::ModelAuthMemo;
         if let Some(memo) = self.model_auth_memo.borrow().as_ref()
-            && memo.model_id == model_id
+            && memo.model_id == cache_key
             && memo.facts.byok != ModelByok::Unknown
         {
             return (memo.facts, memo.provider.clone());
         }
-        let (fresh, provider) =
-            crate::agent::config::resolve_model_auth_facts_and_provider(model_id);
+        let (fresh, provider) = resolve();
         if fresh.byok == ModelByok::Unknown {
             if let Some(memo) = self.model_auth_memo.borrow().as_ref()
-                && memo.model_id == model_id
+                && memo.model_id == cache_key
             {
                 return (memo.facts, memo.provider.clone());
             }
             return (fresh, provider);
         }
         *self.model_auth_memo.borrow_mut() = Some(ModelAuthMemo {
-            model_id: model_id.to_string(),
+            model_id: cache_key,
             facts: fresh,
             provider: provider.clone(),
         });
         (fresh, provider)
     }
 
-    /// The single writer of a provider mint/rotation into chat-state credentials.
-    async fn set_chat_api_key(&self, new_key: String) {
-        let mut creds = self.chat_state_handle.get_credentials().await;
-        creds.api_key = Some(new_key);
-        self.chat_state_handle.update_credentials(creds);
+    /// Commit a helper result only to the exact selection that requested it.
+    async fn set_chat_api_key(
+        &self,
+        expected: xai_grok_sampling_types::SamplingConfig,
+        credentials: xai_chat_state::Credentials,
+        new_key: String,
+    ) -> bool {
+        let mut refreshed = credentials.clone();
+        refreshed.api_key = Some(new_key);
+        self.chat_state_handle
+            .replace_sampling_config_and_credentials_if_matches(
+                expected.clone(),
+                credentials,
+                expected,
+                refreshed,
+            )
+            .await
+            == Some(true)
     }
 
     /// Pre-turn arm for a provider-backed model: mint on a cold cache,
@@ -563,9 +601,11 @@ impl SessionActor {
     async fn refresh_provider_token_pre_turn(
         &self,
         provider: &xai_grok_login::AuthProviderRef,
-        current_key: Option<&str>,
-        model_id: &str,
+        expected: xai_grok_sampling_types::SamplingConfig,
+        credentials: xai_chat_state::Credentials,
     ) {
+        let current_key = credentials.api_key.as_deref();
+        let model_id = expected.model.as_str();
         match provider.ensure_fresh_token(current_key).await {
             xai_grok_login::ProviderRefreshOutcome::Rotated(new_key) => {
                 tracing::info!(
@@ -574,7 +614,7 @@ impl SessionActor {
                     cold = current_key.is_none(),
                     "auth provider token rotated pre-turn"
                 );
-                self.set_chat_api_key(new_key).await;
+                self.set_chat_api_key(expected, credentials, new_key).await;
             }
             xai_grok_login::ProviderRefreshOutcome::Unchanged => {}
             // A genuine mint failure; the 401 arm handles the rejection.
@@ -602,10 +642,15 @@ impl SessionActor {
 
     /// 401 arm for a provider-backed model: re-run the helper once and
     /// resubmit. Returns `false` when the helper declined or failed.
-    async fn try_provider_401_recovery(&self, provider: &crate::auth::AuthProviderRef) -> bool {
-        let rejected_key = self.chat_state_handle.get_credentials().await.api_key;
+    async fn try_provider_401_recovery(
+        &self,
+        provider: &crate::auth::AuthProviderRef,
+        expected: xai_grok_sampling_types::SamplingConfig,
+        credentials: xai_chat_state::Credentials,
+    ) -> bool {
+        let rejected_key = credentials.api_key.as_deref();
         let recovered = match rejected_key {
-            Some(ref rejected_key) => provider.recover_rejected_token(rejected_key).await,
+            Some(rejected_key) => provider.recover_rejected_token(rejected_key).await,
             None => provider.ensure_fresh_token(None).await.rotated(),
         };
         let Some(new_key) = recovered else {
@@ -631,8 +676,7 @@ impl SessionActor {
             Some(self.session_info.id.0.as_ref()),
             None,
         );
-        self.set_chat_api_key(new_key).await;
-        true
+        self.set_chat_api_key(expected, credentials, new_key).await
     }
     /// Gate inputs for one physical model routed to `base_url`. See
     /// [`crate::agent::auth_method::session_token_auth_gate`] for the rationale
@@ -700,7 +744,7 @@ impl SessionActor {
         let Some(route_ref) = current.route_ref.clone() else {
             return Ok(());
         };
-        let Some((entry, fresh)) = self
+        let Some((entry, mut fresh)) = self
             .models_manager
             .sampling_config_for_model_ref(&route_ref)
         else {
@@ -714,9 +758,34 @@ impl SessionActor {
             )));
         };
 
+        let selection = crate::session::handle::load_context_window_selection(
+            &self.compaction.context_window_selection,
+        )
+        .filter(|window| entry.info.supports_context_window(*window));
+        // Mint only the selected physical provider's helper token, before
+        // replacing the transport or dispatching its first request. A cold
+        // helper is preflight-ready, but a failed mint must not send an
+        // unauthenticated request or borrow the previous provider's token.
+        let provider = entry.effective_auth_provider().cloned();
+        if let Some(provider) = &provider {
+            match provider.ensure_fresh_token(fresh.api_key.as_deref()).await {
+                xai_grok_login::ProviderRefreshOutcome::Rotated(token) => {
+                    fresh.api_key = Some(token);
+                }
+                xai_grok_login::ProviderRefreshOutcome::Unchanged => {}
+                xai_grok_login::ProviderRefreshOutcome::Unusable
+                | xai_grok_login::ProviderRefreshOutcome::MintFailed => {
+                    return Err(acp::Error::invalid_params().data(format!(
+                        "model route {route_ref:?} authentication helper is unavailable"
+                    )));
+                }
+            }
+        }
+
         let context_window = self
             .compaction
             .context_window_override
+            .or(selection)
             .or_else(|| std::num::NonZeroU64::new(fresh.context_window))
             .expect("catalog context windows are non-zero");
         let resolved = xai_grok_sampling_types::SamplingConfig {
@@ -761,20 +830,31 @@ impl SessionActor {
                     existing_credentials.auth_type,
                 )
             },
-            alpha_test_key: existing_credentials.alpha_test_key,
+            alpha_test_key: existing_credentials.alpha_test_key.clone(),
             client_version: fresh
                 .client_version
                 .clone()
-                .or(existing_credentials.client_version),
+                .or(existing_credentials.client_version.clone()),
         };
-        if self
+        match self
             .chat_state_handle
-            .replace_sampling_config_and_credentials(resolved, resolved_credentials)
+            .replace_sampling_config_and_credentials_if_matches(
+                current,
+                existing_credentials,
+                resolved,
+                resolved_credentials,
+            )
             .await
-            .is_none()
         {
-            return Err(acp::Error::internal_error()
-                .data("chat-state actor unavailable while applying model route preflight"));
+            Some(true) => {}
+            Some(false) => {
+                return Err(acp::Error::invalid_params()
+                    .data("model changed during route preflight; stale result discarded"));
+            }
+            None => {
+                return Err(acp::Error::internal_error()
+                    .data("chat-state actor unavailable while applying model route preflight"));
+            }
         }
 
         self.supports_backend_search
@@ -795,13 +875,18 @@ impl SessionActor {
         } else {
             crate::agent::auth_method::ModelByok::NotByok
         };
-        self.model_auth_facts.replace(Some((
-            cache_key,
-            crate::agent::config::ModelAuthFacts {
-                byok,
-                auth_scheme: fresh.auth_scheme,
-            },
-        )));
+        let facts = crate::agent::config::ModelAuthFacts {
+            byok,
+            auth_scheme: fresh.auth_scheme,
+        };
+        self.model_auth_facts
+            .replace(Some((cache_key.clone(), facts)));
+        self.model_auth_memo
+            .replace(Some(crate::session::acp_session::ModelAuthMemo {
+                model_id: cache_key,
+                facts,
+                provider,
+            }));
         Ok(())
     }
 
@@ -1559,18 +1644,24 @@ impl SessionActor {
             .data(detailed_message);
             return Err(acp_err);
         }
-        let (failed_model_ref, failed_model_id, failed_base_url) = self
+        let failed_snapshot = self
             .chat_state_handle
-            .get_sampling_config()
-            .await
-            .map(|c| (c.model_ref, c.model, c.base_url))
+            .get_sampling_config_and_credentials()
+            .await;
+        let (failed_model_ref, failed_model_id, failed_base_url) = failed_snapshot
+            .as_ref()
+            .map(|(c, _)| (c.model_ref.clone(), c.model.clone(), c.base_url.clone()))
             .unwrap_or_default();
 
         // Provider-backed models recover via arm 4c below
         // The provider is resolved before the eligibility check so its warnings stay quiet for a 401 that 4c handles
         let auth_provider =
             if matches!(error.kind, SamplingErrorKind::Auth) || error.status_code == Some(401) {
-                self.model_auth_provider(&failed_model_id)
+                self.model_auth_provider(
+                    failed_model_ref.as_deref(),
+                    &failed_model_id,
+                    &failed_base_url,
+                )
             } else {
                 None
             };
@@ -1671,9 +1762,12 @@ impl SessionActor {
 
         // 4c. Auth failure or bare 401 on a provider-backed model (gateway 401s can classify under other error kinds).
         if let Some(ref provider) = auth_provider
-            && self.try_provider_401_recovery(provider).await
+            && let Some((expected, credentials)) = failed_snapshot
+            && self
+                .try_provider_401_recovery(provider, expected, credentials)
+                .await
         {
-            self.prepare_sampler_for_turn().await?;
+            self.refresh_sampler_for_retry().await;
             return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
                 credential: error.credential,
                 store: RecoveredStore::AuthProvider,
@@ -1889,10 +1983,14 @@ impl SessionActor {
             .context_window_selection
             .store(0, std::sync::atomic::Ordering::Relaxed);
 
-        // The summary and clients key models by catalog id, not by the routing slug `cfg.model` may hold
-        let model_id = self
-            .models_manager
-            .catalog_key(&cfg.model)
+        // Clearing a window selection must not replace the persisted logical
+        // route or physical identity with its potentially ambiguous wire slug.
+        let model_id = cfg
+            .route_ref
+            .as_ref()
+            .or(cfg.model_ref.as_ref())
+            .map(|model_ref| acp::ModelId::new(model_ref.clone()))
+            .or_else(|| self.models_manager.catalog_key(&cfg.model))
             .unwrap_or_else(|| acp::ModelId::new(cfg.model.clone()));
         let agent_name = self.agent.borrow().definition().name.clone();
         let _ = self
@@ -2242,13 +2340,13 @@ impl SessionActor {
         else {
             return;
         };
-        if let Some(provider) = self.model_auth_provider(&sampling_config.model) {
-            self.refresh_provider_token_pre_turn(
-                &provider,
-                creds.api_key.as_deref(),
-                &sampling_config.model,
-            )
-            .await;
+        if let Some(provider) = self.model_auth_provider(
+            sampling_config.model_ref.as_deref(),
+            &sampling_config.model,
+            &sampling_config.base_url,
+        ) {
+            self.refresh_provider_token_pre_turn(&provider, sampling_config, creds)
+                .await;
             return;
         }
         if let Some(ref am) = self.auth_manager {

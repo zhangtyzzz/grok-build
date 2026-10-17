@@ -1119,14 +1119,7 @@ mod xai_event_id_stamping_tests {
                 let (observed_tx, mut prx) = tokio::sync::mpsc::unbounded_channel();
                 tokio::task::spawn_local(async move {
                     while let Some(message) = persistence_rx.recv().await {
-                        match message {
-                            PersistenceMsg::CurrentModelAndAck { respond_to, .. } => {
-                                let _ = respond_to.send(Ok(()));
-                            }
-                            other => {
-                                let _ = observed_tx.send(other);
-                            }
-                        }
+                        let _ = observed_tx.send(message);
                     }
                 });
                 let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;

@@ -514,8 +514,16 @@ pub(crate) fn resolve_model_ref_entry(
                 first
             }
         };
-        if let Some(resolved) = resolved {
-            resolved_candidates.push(resolved);
+        if let Some((key, entry)) = resolved {
+            // A route alias cannot grant access to a physical model excluded
+            // by managed fleet policy, including after credential changes.
+            // User allowlists may deliberately authorize a route alias, so
+            // retain their existing alias-level selection semantics.
+            let allowlist = effective_allowlist(cfg);
+            if allowlist.is_fleet() && !allowlist.is_selected(key, &entry.info.model) {
+                continue;
+            }
+            resolved_candidates.push((key, entry));
         }
     }
     let baseline = resolved_candidates.first()?.1;
@@ -633,4 +641,96 @@ pub(crate) fn validate_selectable(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod route_policy_tests {
+    use super::*;
+
+    fn route_config() -> config::Config {
+        let raw = toml::from_str::<toml::Value>(
+            r#"
+            [model_providers.local]
+            base_url = "http://127.0.0.1:11434/v1"
+            auth_scheme = "none"
+
+            [model.first]
+            model_provider = "local"
+            model = "allowed-slug"
+
+            [model.second]
+            model_provider = "local"
+            model = "denied-slug"
+
+            [model_route.main]
+            candidates = ["first", "second"]
+            "#,
+        )
+        .unwrap();
+        config::Config::new_from_toml_cfg(&raw).unwrap()
+    }
+
+    #[test]
+    fn route_fleet_policy_blocks_denied_fallback_after_initial_selection() {
+        let mut cfg = route_config();
+        cfg.requirements.allowed_models.pin(
+            config::AllowlistPin::List(vec!["allowed-slug".to_owned()]),
+            crate::config::RequirementSource::Unknown,
+        );
+        let mut catalog = resolve_model_catalog(&cfg, None);
+        assert!(catalog["route:main"].info.user_selectable);
+        assert_eq!(
+            resolve_model_ref_entry(&cfg, &catalog, "route:main")
+                .unwrap()
+                .info
+                .model_ref
+                .as_deref(),
+            Some("first")
+        );
+        // Simulate the initially allowed candidate becoming unavailable while
+        // the catalog still contains the previously allowed route alias.
+        catalog.shift_remove("first");
+        assert!(resolve_model_ref_entry(&cfg, &catalog, "route:main").is_none());
+    }
+
+    #[test]
+    fn route_fleet_policy_selects_only_allowed_physical_slug() {
+        let mut cfg = route_config();
+        cfg.requirements.allowed_models.pin(
+            config::AllowlistPin::List(vec!["denied-slug".to_owned()]),
+            crate::config::RequirementSource::Unknown,
+        );
+        let catalog = resolve_model_catalog(&cfg, None);
+        assert_eq!(
+            resolve_model_ref_entry(&cfg, &catalog, "route:main")
+                .unwrap()
+                .info
+                .model_ref
+                .as_deref(),
+            Some("second")
+        );
+        cfg.requirements.allowed_models.pin(
+            config::AllowlistPin::FailClosed,
+            crate::config::RequirementSource::Unknown,
+        );
+        assert!(resolve_model_ref_entry(&cfg, &catalog, "route:main").is_none());
+    }
+
+    #[test]
+    fn user_allowlist_can_still_authorize_route_alias() {
+        let mut cfg = route_config();
+        cfg.models.allowed_models = Some(vec!["route:main".to_owned()]);
+        let mut catalog = resolve_model_catalog(&cfg, None);
+        assert!(catalog["route:main"].info.user_selectable);
+        assert!(!catalog["first"].info.user_selectable);
+        catalog.shift_remove("first");
+        assert_eq!(
+            resolve_model_ref_entry(&cfg, &catalog, "route:main")
+                .unwrap()
+                .info
+                .model_ref
+                .as_deref(),
+            Some("second")
+        );
+    }
 }

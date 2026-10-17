@@ -148,6 +148,16 @@ pub enum ChatStateCommand {
         reply: oneshot::Sender<()>,
     },
 
+    /// Atomically replace transport only if both the full configuration and
+    /// credentials still match the snapshot captured before async resolution.
+    ReplaceSamplingConfigAndCredentialsIfMatches {
+        expected: Box<SamplingConfig>,
+        expected_credentials: Credentials,
+        config: Box<SamplingConfig>,
+        credentials: Credentials,
+        reply: oneshot::Sender<bool>,
+    },
+
     /// Replace credentials only if the actor still holds the expected physical
     /// sampling locator. This prevents an async token refresh from writing an
     /// old provider's secret after a concurrent route/model switch.
@@ -484,6 +494,7 @@ mod tests {
                 query_params: Default::default(),
                 env_http_headers: Default::default(),
                 context_window: std::num::NonZeroU64::new(128_000).unwrap(),
+                max_request_bytes: None,
                 reasoning_effort: None,
                 reasoning_summary: None,
                 stream_tool_calls: None,
@@ -509,6 +520,7 @@ mod tests {
                 query_params: Default::default(),
                 env_http_headers: Default::default(),
                 context_window: std::num::NonZeroU64::new(128_000).unwrap(),
+                max_request_bytes: None,
                 reasoning_effort: None,
                 reasoning_summary: None,
                 stream_tool_calls: None,
@@ -536,6 +548,7 @@ mod tests {
                 query_params: Default::default(),
                 env_http_headers: Default::default(),
                 context_window: std::num::NonZeroU64::new(128_000).unwrap(),
+                max_request_bytes: None,
                 reasoning_effort: None,
                 reasoning_summary: None,
                 stream_tool_calls: None,

@@ -1617,7 +1617,14 @@ async fn seed_provider_memo(actor: &Arc<SessionActor>, provider: xai_grok_login:
         .chat_state_handle
         .get_sampling_config()
         .await
-        .map(|c| c.model)
+        .map(|c| {
+            format!(
+                "{}\0{}\0{}",
+                c.model_ref.as_deref().unwrap_or_default(),
+                c.model,
+                c.base_url
+            )
+        })
         .unwrap_or_default();
     actor
         .model_auth_memo
@@ -1993,4 +2000,129 @@ async fn sampler_401_on_fresh_provider_token_surfaces_error() {
             );
         })
         .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cold_helper_memo_uses_physical_locator_not_shared_wire_slug() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = counting_provider("cold-locator-memo", dir.path());
+            let (actor, _rx) = make_actor_with_auth_and_credentials(
+                None,
+                xai_chat_state::AuthType::ApiKey,
+                "unused".to_owned(),
+            )
+            .await;
+            let mut cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            cfg.model_ref = Some("physical-first".to_owned());
+            cfg.model = "shared-wire-slug".to_owned();
+            cfg.base_url = "https://first.example/v1".to_owned();
+            actor.chat_state_handle.update_sampling_config(cfg.clone());
+            let mut creds = actor.chat_state_handle.get_credentials().await;
+            creds.api_key = None;
+            actor.chat_state_handle.update_credentials(creds.clone());
+            seed_provider_memo(&actor, provider).await;
+
+            actor.refresh_token_if_expired().await;
+            assert_eq!(
+                actor
+                    .chat_state_handle
+                    .get_credentials()
+                    .await
+                    .api_key
+                    .as_deref(),
+                Some("tok-1")
+            );
+
+            // Even without explicit invalidation, a same-slug endpoint/ref change
+            // cannot adopt the previous provider's helper or its minted token.
+            cfg.model_ref = Some("physical-second".to_owned());
+            cfg.base_url = "https://second.example/v1".to_owned();
+            actor.chat_state_handle.update_sampling_config(cfg);
+            actor.chat_state_handle.update_credentials(creds);
+            actor.refresh_token_if_expired().await;
+            assert!(
+                actor
+                    .chat_state_handle
+                    .get_credentials()
+                    .await
+                    .api_key
+                    .is_none()
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn asynchronous_helper_refresh_cannot_write_into_a_new_provider_selection() {
+    let local = tokio::task::LocalSet::new();
+    local.run_until(async {
+        for (recover_401, same_locator) in [(false, false), (true, false), (false, true), (true, true)] {
+            let dir = tempfile::tempdir().unwrap();
+            let started = dir.path().join("started");
+            let release = dir.path().join("release");
+            let provider = xai_grok_login::AuthProviderRef::new(
+                format!("delayed-helper-cas-{recover_401}-{same_locator}"),
+                xai_grok_login::AuthProviderConfig {
+                    command: format!(
+                        "touch '{}'; while [ ! -f '{}' ]; do sleep 0.01; done; printf provider-a-token",
+                        started.display(), release.display(),
+                    ),
+                    args: None,
+                    token_ttl_secs: Some(3600),
+                    timeout_secs: Some(5),
+                    cwd: None,
+                },
+            );
+            let (actor, _rx) = make_actor_with_auth_and_credentials(
+                None, xai_chat_state::AuthType::ApiKey, "".to_owned(),
+            ).await;
+            let mut config = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            config.model_ref = Some("provider-a".to_owned());
+            config.base_url = "https://provider-a.example/v1".to_owned();
+            actor.chat_state_handle.update_sampling_config(config.clone());
+            let mut credentials = actor.chat_state_handle.get_credentials().await;
+            credentials.api_key = None;
+            actor.chat_state_handle.update_credentials(credentials.clone());
+            seed_provider_memo(&actor, provider).await;
+
+            let refresh = async {
+                if recover_401 {
+                    let result = actor.handle_sampling_failure(
+                        auth_error(), 0, transient_state(0, true), false, TurnParkState::Fresh,
+                    ).await;
+                    assert!(!matches!(result, Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
+                        store: RecoveredStore::AuthProvider, ..
+                    })), "a stale helper result must not request an auth retry");
+                } else {
+                    actor.refresh_token_if_expired().await;
+                }
+            };
+            let switch = async {
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    while !started.exists() {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                }).await.expect("helper reached the deterministic barrier");
+                if !same_locator {
+                    config.model_ref = Some("provider-b".to_owned());
+                    config.base_url = "https://provider-b.example/v1".to_owned();
+                }
+                credentials.api_key = Some("provider-b-token".to_owned());
+                actor.chat_state_handle.replace_sampling_config_and_credentials(
+                    config, credentials,
+                ).await.unwrap();
+                std::fs::write(&release, "continue").unwrap();
+            };
+            tokio::join!(refresh, switch);
+            let (config, credentials) = actor.chat_state_handle.get_sampling_config_and_credentials().await.unwrap();
+            assert_eq!(
+                config.model_ref.as_deref(),
+                Some(if same_locator { "provider-a" } else { "provider-b" })
+            );
+            assert_eq!(credentials.api_key.as_deref(), Some("provider-b-token"));
+        }
+    }).await;
 }

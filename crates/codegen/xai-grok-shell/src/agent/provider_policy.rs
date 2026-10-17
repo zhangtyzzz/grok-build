@@ -53,6 +53,12 @@ impl ProviderAuth {
             ProviderAuth::Bearer | ProviderAuth::None => "authorization",
         }
     }
+
+    /// Explicit unauthenticated providers reject both standard credential headers.
+    pub fn protects_header(self, header: &str) -> bool {
+        header.eq_ignore_ascii_case(self.protected_header())
+            || (self == Self::None && header.eq_ignore_ascii_case("x-api-key"))
+    }
 }
 
 /// Fork-only provider fields, split out of `[model_providers.<id>]` tables.
@@ -254,16 +260,18 @@ pub(crate) fn split_provider_policies(
 /// `ConfigModelOverride::apply` and the fail-closed auth-provider guard.
 ///
 /// Model-level values already on the entry win; the policy only fills what
-/// the model left unset. An explicit `auth_scheme` marks the entry
-/// provider-bound: `auth = "none"` strips credentials (unauthenticated
+/// the model left unset. Preserve the explicit prompt-cache setting separately
+/// because the default-valued `stable_prefix + 5m` is still an override.
+/// An explicit `auth_scheme` marks the entry provider-bound: `auth = "none"` strips credentials (unauthenticated
 /// endpoint), anything else requires one and both refuse the ambient xAI
 /// credential at resolution time.
 pub(crate) fn apply_provider_policy(
     entry: &mut ModelEntry,
     provider_id: &str,
     policy: &ProviderPolicy,
+    model_prompt_cache: Option<PromptCachePolicy>,
 ) {
-    if entry.info.prompt_cache.is_default() {
+    if model_prompt_cache.is_none() && entry.info.prompt_cache.is_default() {
         entry.info.prompt_cache = policy.prompt_cache;
     }
     if entry.info.max_retries.is_none() {
@@ -401,26 +409,74 @@ mod tests {
     }
 
     #[test]
-    fn model_level_prompt_cache_wins_over_provider_policy() {
-        let cfg = config_from(
+    fn model_prompt_cache_presence_controls_provider_inheritance() {
+        for (model_policy, expected) in [
+            ("", PromptCachePolicy::STABLE_PREFIX_1H),
+            (
+                r#"prompt_cache = { mode = "stable_prefix", ttl = "5m" }"#,
+                PromptCachePolicy::STABLE_PREFIX_5M,
+            ),
+            (r#"prompt_cache = { mode = "off" }"#, PromptCachePolicy::OFF),
+        ] {
+            let cfg = config_from(&format!(
+                r#"
+                [model_providers.gateway]
+                base_url = "https://gateway.example/v1"
+                api_key = "k"
+                auth_scheme = "bearer"
+                prompt_cache = {{ mode = "stable_prefix", ttl = "1h" }}
+
+                [model.claude]
+                model_provider = "gateway"
+                model = "m"
+                {model_policy}
+                "#,
+            ));
+            let resolved = resolve_model_list(&cfg, None);
+            let entry = resolved.get("claude").expect("model");
+            assert_eq!(entry.info.prompt_cache, expected, "{model_policy}");
+        }
+    }
+
+    fn prompt_cache_with_prefetched_off(model_policy: &str) -> PromptCachePolicy {
+        let cfg = config_from(&format!(
             r#"
             [model_providers.gateway]
             base_url = "https://gateway.example/v1"
             api_key = "k"
             auth_scheme = "bearer"
-            prompt_cache = { mode = "stable_prefix", ttl = "1h" }
+            prompt_cache = {{ mode = "stable_prefix", ttl = "1h" }}
 
-            [model.off]
+            [model.claude]
             model_provider = "gateway"
             model = "m"
-            prompt_cache = { mode = "off" }
+            {model_policy}
             "#,
+        ));
+        let mut prefetched = ModelEntry::fallback("m", &cfg.endpoints);
+        prefetched.info.prompt_cache = PromptCachePolicy::OFF;
+        let resolved = resolve_model_list(
+            &cfg,
+            Some(indexmap::IndexMap::from([(
+                "claude".to_owned(),
+                prefetched,
+            )])),
         );
-        let resolved = resolve_model_list(&cfg, None);
-        let entry = resolved.get("off").expect("model");
+        resolved.get("claude").expect("model").info.prompt_cache
+    }
+
+    #[test]
+    fn prefetched_off_cache_survives_provider_default_without_model_override() {
+        assert_eq!(prompt_cache_with_prefetched_off(""), PromptCachePolicy::OFF);
+    }
+
+    #[test]
+    fn explicit_model_five_minutes_overrides_prefetched_off_and_provider_one_hour() {
         assert_eq!(
-            entry.info.prompt_cache,
-            xai_grok_sampling_types::PromptCachePolicy::OFF
+            prompt_cache_with_prefetched_off(
+                r#"prompt_cache = { mode = "stable_prefix", ttl = "5m" }"#
+            ),
+            PromptCachePolicy::STABLE_PREFIX_5M
         );
     }
 
@@ -591,6 +647,70 @@ mod tests {
             err.contains("must not override provider authentication header"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn strict_provider_env_headers_cannot_override_authentication() {
+        for (scheme, header) in [
+            ("bearer", "AUTHORIZATION"),
+            ("x_api_key", "X-API-KEY"),
+            ("none", "Authorization"),
+            ("none", "x-api-key"),
+        ] {
+            let credential = if scheme == "none" {
+                ""
+            } else {
+                r#"api_key = "k""#
+            };
+            for on_provider in [true, false] {
+                let injected =
+                    format!(r#"env_http_headers = {{ "{header}" = "UNRELATED_SECRET" }}"#);
+                let provider_header = if on_provider { injected.as_str() } else { "" };
+                let model_header = if on_provider { "" } else { injected.as_str() };
+                let cfg = config_from(&format!(
+                    r#"
+                    [model_providers.gateway]
+                    base_url = "https://gateway.example/v1"
+                    auth_scheme = "{scheme}"
+                    {credential}
+                    {provider_header}
+
+                    [model.claude]
+                    model_provider = "gateway"
+                    model = "m"
+                    {model_header}
+                    "#,
+                ));
+                assert!(
+                    cfg.validate_model_filters().is_err(),
+                    "{scheme} {header}, provider header: {on_provider}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scheme_less_provider_preserves_environment_auth_headers() {
+        let cfg = config_from(
+            r#"
+            [model_providers.gateway]
+            base_url = "https://gateway.example/v1"
+            env_http_headers = { Authorization = "GATEWAY_BEARER" }
+
+            [model.claude]
+            model_provider = "gateway"
+            model = "m"
+            "#,
+        );
+        cfg.validate_model_filters()
+            .expect("upstream header semantics");
+        let resolved = resolve_model_list(&cfg, None);
+        let entry = resolved.get("claude").expect("model");
+        assert_eq!(
+            entry.info.env_http_headers["Authorization"],
+            "GATEWAY_BEARER"
+        );
+        assert!(entry.provider.is_none());
     }
 
     #[test]

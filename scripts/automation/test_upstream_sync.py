@@ -1,0 +1,267 @@
+"""Security regression tests; use disposable repositories, no credentials/network."""
+import base64
+import importlib.util
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+SPEC = importlib.util.spec_from_file_location("upstream_sync", Path(__file__).with_name("upstream_sync.py"))
+sync = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(sync)
+
+
+class ValidationTests(unittest.TestCase):
+    def state(self):
+        return {"base": "a" * 40, "upstream": "b" * 40, "conflicts": {"src/main.rs": {}}}
+
+    def artifact(self):
+        return {"schema": 1, "base": "a" * 40, "upstream": "b" * 40,
+                "files": {"src/main.rs": base64.b64encode(b"resolved\n").decode()}}
+
+    def test_sha_is_not_shell_or_git_revision_expression(self):
+        for value in ("HEAD", "-x", "a" * 39, "A" * 40, "a" * 40 + "\n", "$(touch BAD)", "main^{tree}"):
+            with self.subTest(value=value), self.assertRaises(sync.SyncError):
+                sync.sha(value)
+
+    def test_path_traversal_control_and_git_metadata_rejected(self):
+        for path in ("/tmp/BAD", "../BAD", "a/../../BAD", "a//b", "a/./b", "a\\b",
+                     ".git/config", "a/.GiT/hooks/x", "a\nb", "a\0b"):
+            with self.subTest(path=path), self.assertRaises(sync.SyncError):
+                sync.path_safe(path)
+
+    def test_protected_paths(self):
+        for path in (".github/workflows/ci.yml", "scripts/automation/new.py", "scripts/dist.sh",
+                     "rust-toolchain.toml", "FORK_CHANGES.md", "a/AGENTS.md", ".env.production",
+                     "config/key.pem", "auth.json", ".gitmodules", ".gitattributes"):
+            with self.subTest(path=path):
+                self.assertTrue(sync.protected(path))
+        self.assertFalse(sync.protected("src/token_count.rs"))
+
+    def test_bad_schema_sha_file_set_content_and_markers_fail_closed(self):
+        mutations = [
+            lambda obj: obj.update(base="c" * 40),
+            lambda obj: obj.update(upstream="HEAD"),
+            lambda obj: obj.update(extra="injected"),
+            lambda obj: obj.update(files={"../../bad": "YQ=="}),
+            lambda obj: obj.update(files={}),
+            lambda obj: obj.update(files={"src/main.rs": "not base64"}),
+            lambda obj: obj.update(files={"src/main.rs": base64.b64encode(b"\0").decode()}),
+            lambda obj: obj.update(files={"src/main.rs": base64.b64encode(b"<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n").decode()}),
+        ]
+        for mutate in mutations:
+            obj = self.artifact()
+            mutate(obj)
+            with self.subTest(obj=obj), self.assertRaises((sync.SyncError, ValueError)):
+                sync.validate_resolution(obj, self.state())
+        self.assertEqual(sync.validate_resolution(self.artifact(), self.state()), {"src/main.rs": b"resolved\n"})
+
+    def test_markers_include_diff3_and_diff_style(self):
+        for content in (b"<<<<<<< HEAD\n", b"=======\n", b">>>>>>> upstream\n", b"||||||| base\n"):
+            self.assertIsNotNone(sync.MARKER.search(content))
+        self.assertIsNone(sync.MARKER.search(b'let s = "<<<<<<<";\n'))
+
+    def test_duplicate_json_keys_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "data.json"
+            path.write_text('{"schema":1,"schema":2}')
+            with self.assertRaises(sync.SyncError):
+                sync.json_read(str(path))
+
+    def test_artifact_cannot_express_shell_or_git_commands(self):
+        obj = self.artifact()
+        content = b'$(touch /tmp/MUST_NOT_EXIST)\n; git push origin main\n'
+        obj["files"]["src/main.rs"] = base64.b64encode(content).decode()
+        self.assertEqual(sync.validate_resolution(obj, self.state())["src/main.rs"], content)
+
+
+class RepositoryTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.cwd = Path.cwd()
+        self.root = Path(self.temp.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        os.chdir(self.repo)
+        sync.git("init", "-q")
+        sync.git("config", "user.name", "Test")
+        sync.git("config", "user.email", "test@example.invalid")
+        self.write("src/main.rs", "base\n")
+        self.write("untouched.txt", "keep\n")
+        self.initial = self.commit("base")
+        sync.git("checkout", "-q", "-b", "upstream-test")
+        self.write("src/main.rs", "upstream\n")
+        self.upstream = self.commit("upstream")
+        sync.git("checkout", "-q", "--detach", self.initial)
+        self.write("src/main.rs", "fork\n")
+        self.base = self.commit("fork")
+        self.state_path = self.root / "state.json"
+        self.artifact_path = self.root / "artifact.json"
+
+    def tearDown(self):
+        os.chdir(self.cwd)
+        self.temp.cleanup()
+
+    def write(self, path, content):
+        file = Path(path)
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(content)
+
+    def commit(self, message):
+        sync.git("add", "--all")
+        sync.git("commit", "-q", "-m", message)
+        return sync.git("rev-parse", "HEAD").decode().strip()
+
+    def start(self):
+        state = sync.begin(self.base, self.upstream)
+        sync.json_write(str(self.state_path), state)
+        return state
+
+    def export(self):
+        sync.export(SimpleNamespace(state=str(self.state_path), artifact=str(self.artifact_path)))
+
+    def test_real_merge_original_conflicts_and_worktree_markers(self):
+        state = self.start()
+        self.assertEqual(set(state["conflicts"]), {"src/main.rs"})
+        # HEAD has no markers: the worktree does, and must be rejected.
+        self.assertNotIn(b"<<<<<<<", sync.git("show", "HEAD:src/main.rs"))
+        with self.assertRaises(sync.SyncError):
+            self.export()
+        self.write("src/main.rs", "fork + upstream\n")
+        self.export()
+        obj = sync.json_read(str(self.artifact_path))
+        self.assertEqual(set(obj["files"]), {"src/main.rs"})
+
+    def test_ai_cannot_change_nonconflicting_file(self):
+        self.start()
+        self.write("src/main.rs", "resolved\n")
+        self.write("untouched.txt", "unexpected\n")
+        with self.assertRaises(sync.SyncError):
+            self.export()
+
+    def test_ai_cannot_stage_or_add_files(self):
+        self.start()
+        self.write("src/main.rs", "resolved\n")
+        sync.git("add", "src/main.rs")
+        with self.assertRaises(sync.SyncError):
+            self.export()
+
+    def test_ai_cannot_replace_conflict_with_symlink(self):
+        self.start()
+        Path("src/main.rs").unlink()
+        Path("src/main.rs").symlink_to(self.state_path)
+        with self.assertRaises(sync.SyncError):
+            self.export()
+
+    def test_upstream_clean_protected_change_is_manual(self):
+        sync.git("checkout", "-q", "--detach", self.upstream)
+        self.write(".github/workflows/new.yml", "untrusted workflow\n")
+        upstream = self.commit("workflow")
+        sync.git("checkout", "-q", "--detach", self.base)
+        with self.assertRaises(sync.SyncError):
+            sync.begin(self.base, upstream)
+
+    def test_reconstruction_uses_real_parents_and_only_resolution_contents(self):
+        self.start()
+        self.write("src/main.rs", "resolved\n")
+        self.export()
+        sync.git("merge", "--abort")
+        args = SimpleNamespace(base=self.base, upstream=self.upstream, artifact=str(self.artifact_path))
+        with patch.object(sync, "fetch", return_value=(self.base, self.upstream)), patch.object(sync, "output") as outputs:
+            sync.reconstruct(args)
+        call = outputs.call_args.kwargs
+        parents = sync.git("show", "-s", "--format=%P", call["head"]).decode().strip().split()
+        self.assertEqual(parents, [self.base, self.upstream])
+        self.assertEqual(sync.git("show", f'{call["head"]}:src/main.rs'), b"resolved\n")
+        self.assertEqual(sync.git("show", f'{call["head"]}:untouched.txt'), b"keep\n")
+
+    def test_malicious_artifact_cannot_inject_protected_files(self):
+        state = self.start()
+        obj = {"schema": 1, "base": self.base, "upstream": self.upstream,
+               "files": {"src/main.rs": "YQ==", ".github/workflows/pwn.yml": "YQ=="}}
+        sync.json_write(str(self.artifact_path), obj)
+        sync.git("merge", "--abort")
+        args = SimpleNamespace(base=self.base, upstream=self.upstream, artifact=str(self.artifact_path))
+        with patch.object(sync, "fetch", return_value=(self.base, self.upstream)), self.assertRaises(sync.SyncError):
+            sync.reconstruct(args)
+        self.assertFalse(Path(".github/workflows/pwn.yml").exists())
+
+
+class PublicationTests(unittest.TestCase):
+    def args(self):
+        return SimpleNamespace(repo="owner/fork", base="a" * 40, head="b" * 40,
+                               tree="c" * 40, pr="42")
+
+    def responses(self, endpoint, method="GET", payload=None, **kwargs):
+        args = self.args()
+        if endpoint.endswith("/pulls/42"):
+            return {"state": "open", "draft": False,
+                    "head": {"sha": args.head, "repo": {"full_name": args.repo}},
+                    "base": {"ref": "main", "sha": args.base, "repo": {"full_name": args.repo}}}
+        if endpoint.endswith("/commits/main"):
+            return {"sha": "d" * 40 if self.merged else args.base}
+        if endpoint.endswith("/pulls/42/merge"):
+            self.assertEqual(payload["sha"], args.head)
+            self.merged = True
+            return {"merged": True, "sha": "d" * 40}
+        if "/git/commits/" in endpoint:
+            return {"tree": {"sha": args.tree}}
+        if "/contents/" in endpoint:
+            self.assertTrue(endpoint.endswith("?ref=" + "d" * 40))
+            return {"encoding": "base64", "content": base64.b64encode(b'version = "1.2.3"\n').decode()}
+        if "/git/matching-refs/" in endpoint:
+            return self.tags
+        if endpoint.endswith("/dispatches"):
+            self.dispatched.append(payload)
+            return None
+        raise AssertionError(endpoint)
+
+    def setUp(self):
+        self.merged = False
+        self.tags = []
+        self.dispatched = []
+
+    def test_release_dispatch_binds_exact_tested_merged_tree(self):
+        with patch.object(sync, "release_guard"), patch.object(sync, "api", side_effect=self.responses):
+            sync.merge_release(self.args())
+        self.assertEqual(self.dispatched, [{"ref": "main", "inputs": {"expected_commit": "d" * 40}}])
+
+    def test_existing_version_does_not_dispatch_duplicate_release(self):
+        self.tags = [{"ref": "refs/tags/v1.2.3"}]
+        with patch.object(sync, "release_guard"), patch.object(sync, "api", side_effect=self.responses):
+            sync.merge_release(self.args())
+        self.assertTrue(self.merged)
+        self.assertEqual(self.dispatched, [])
+
+    def test_merge_tree_mismatch_never_dispatches(self):
+        def changed(endpoint, *args, **kwargs):
+            if endpoint.endswith("/git/commits/" + "d" * 40):
+                return {"tree": {"sha": "e" * 40}}
+            return self.responses(endpoint, *args, **kwargs)
+        with patch.object(sync, "release_guard"), patch.object(sync, "api", side_effect=changed), self.assertRaises(sync.SyncError):
+            sync.merge_release(self.args())
+        self.assertEqual(self.dispatched, [])
+
+    def test_changed_pr_head_prevents_merge(self):
+        def changed(endpoint, *args, **kwargs):
+            result = self.responses(endpoint, *args, **kwargs)
+            if endpoint.endswith("/pulls/42"):
+                result["head"]["sha"] = "f" * 40
+            return result
+        with patch.object(sync, "release_guard"), patch.object(sync, "api", side_effect=changed), self.assertRaises(sync.SyncError):
+            sync.merge_release(self.args())
+        self.assertFalse(self.merged)
+
+    def test_release_guard_checks_queued_runs_on_later_pages(self):
+        pages = [{"workflow_runs": [{"status": "completed"}]},
+                 {"workflow_runs": [{"status": "queued"}]}]
+        with patch.object(sync, "api", return_value=pages), self.assertRaises(sync.SyncError):
+            sync.release_guard("owner/fork")
+
+
+if __name__ == "__main__":
+    unittest.main()

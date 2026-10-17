@@ -5706,3 +5706,109 @@ async fn restore_snapshot_restores_all_fields() {
     let tokens = h.handle.get_total_tokens().await;
     assert_eq!(tokens, 500);
 }
+
+#[tokio::test]
+async fn stale_route_preflight_cannot_replace_a_new_model_selection() {
+    let h = TestHarness::new();
+    let mut old = test_config();
+    old.model_ref = Some("provider-a".to_owned());
+    old.route_ref = Some("route:main".to_owned());
+    let mut selected = test_config();
+    selected.model_ref = Some("provider-b".to_owned());
+    selected.base_url = "https://provider-b.example/v1".to_owned();
+    let credentials = Credentials {
+        api_key: Some("provider-b-secret".to_owned()),
+        auth_type: AuthType::ApiKey,
+        ..Default::default()
+    };
+    h.handle
+        .replace_sampling_config_and_credentials(selected.clone(), credentials.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        h.handle
+            .replace_sampling_config_and_credentials_if_matches(
+                old.clone(),
+                Credentials::default(),
+                old,
+                Credentials {
+                    api_key: Some("stale-provider-a-secret".to_owned()),
+                    ..Default::default()
+                },
+            )
+            .await,
+        Some(false)
+    );
+    let (actual, actual_credentials) = h
+        .handle
+        .get_sampling_config_and_credentials()
+        .await
+        .unwrap();
+    assert_eq!(actual.model_ref, selected.model_ref);
+    assert_eq!(actual_credentials.api_key, credentials.api_key);
+    // The same operation applies atomically when no model switch intervened.
+    assert_eq!(
+        h.handle
+            .replace_sampling_config_and_credentials_if_matches(
+                selected.clone(),
+                credentials.clone(),
+                selected,
+                credentials,
+            )
+            .await,
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn route_transport_cas_preserves_same_locator_settings_and_credential_updates() {
+    for change in ["context_window", "reasoning", "headers", "credentials"] {
+        let h = TestHarness::new();
+        let expected = test_config();
+        let expected_credentials = Credentials {
+            api_key: Some("old-secret".to_owned()),
+            ..Default::default()
+        };
+        let mut current = expected.clone();
+        let mut current_credentials = expected_credentials.clone();
+        match change {
+            "context_window" => current.context_window = std::num::NonZeroU64::new(32_000).unwrap(),
+            "reasoning" => {
+                current.reasoning_effort = Some(xai_grok_sampling_types::ReasoningEffort::High)
+            }
+            "headers" => {
+                current
+                    .extra_headers
+                    .insert("X-Provider-Mode".to_owned(), "new-mode".to_owned());
+            }
+            "credentials" => current_credentials.api_key = Some("new-secret".to_owned()),
+            _ => unreachable!(),
+        }
+        h.handle
+            .replace_sampling_config_and_credentials(current.clone(), current_credentials.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            h.handle
+                .replace_sampling_config_and_credentials_if_matches(
+                    expected.clone(),
+                    expected_credentials,
+                    expected,
+                    Credentials {
+                        api_key: Some("stale-minted-secret".to_owned()),
+                        ..Default::default()
+                    },
+                )
+                .await,
+            Some(false),
+            "{change}"
+        );
+        let (actual, actual_credentials) = h
+            .handle
+            .get_sampling_config_and_credentials()
+            .await
+            .unwrap();
+        assert_eq!(actual, current, "{change}");
+        assert_eq!(actual_credentials, current_credentials, "{change}");
+    }
+}

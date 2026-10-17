@@ -3166,6 +3166,7 @@ impl SessionActor {
                     .await;
                     sleep(delay).await;
                     turn_phases.record_sampling_retries(1);
+                    retry_same_route_candidate = true;
                     continue;
                 }
                 Ok(SamplerTurnOutcome::CompactAndResubmit) => {

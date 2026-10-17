@@ -1271,15 +1271,6 @@ impl SessionActor {
                     error_message: ext_error_message,
                 },
             ));
-            tracing::info_span!(
-                "tool.execution",
-                tool_name = %prepared.tool_name,
-                tool_use_id = %prepared.call_id,
-                tool_input_size_bytes = prepared.raw_arguments.len() as i64,
-                tool_result_size_bytes = tool_result_size_bytes,
-                success = matches!(tool_outcome, crate::session::events::ToolOutcome::Success),
-                outcome = <&'static str >::from(tool_outcome),
-            );
             if let Some(artifact) = compaction_artifact_read(prepared.authored_arguments()) {
                 xai_grok_telemetry::event_span!(
                     "compaction.segment_read",

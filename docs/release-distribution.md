@@ -233,6 +233,18 @@ workflow triggers for refs created with `GITHUB_TOKEN`. If main advances while
 the run is warming, it does not tag; dispatch publication again from the newer
 main commit. Versions whose tag already exists are successful no-ops.
 
+If the tag was created but dispatch or publication subsequently failed, rerunning
+the coordinator is a no-op. Inspect the failure, preserve that existing tag,
+and manually dispatch `Release` on the same tag with its version and
+`publish=true`; never move a tag or publish assets from a different commit.
+
+Callers that already validated a specific commit, including the owner-authorized
+upstream-sync workflow, pass the full SHA as the optional `expected_commit`
+dispatch input. The coordinator rejects a dispatch whose resolved main SHA is
+different, so a concurrent push cannot substitute an unvalidated commit between
+the caller's check and workflow startup. Omitting the input preserves the manual
+entry point; maintainers must still validate the selected main commit first.
+
 `Warm release build cache` remains manually dispatchable from `main` for
 recovery and diagnostics. The tag workflow restores the exact cache entry from
 the default branch and skips Rust compilation and bundled-tool preparation on
@@ -287,27 +299,87 @@ The native archive/checksum layout is also consistent with mature Rust CLI
 releases such as [uv](https://github.com/astral-sh/uv/releases) and
 [ripgrep](https://github.com/BurntSushi/ripgrep/releases).
 
+Windows currently requires Git to be installed on the system PATH. This fork's
+releases do not yet publish the optional grove helper executables or MinGit
+sidecars referenced by the upstream installer; missing optional payloads are
+best-effort skips. If a distribution provides these assets, installation and
+update requests use the locked version's tag rather than mutable `latest`.
+
 ## Daily upstream release automation
 
-`scripts/automation/daily-upstream-release.sh` is the local unattended runner
-for the fork maintainer. It first calls GitHub's compare API and exits without
-starting an agent when `upstream/main` has no commits missing from the fork.
-When upstream is ahead, it creates a fresh temporary clone and starts a
-non-interactive Codex session that follows the repository instructions through
-sync pull requests, CI, versioning, warmup, environment approval, publication,
-and final release verification. Cargo build artifacts are kept under the
-persistent state directory and reused across the runner's temporary clones;
-set `GROK_DAILY_CARGO_TARGET_DIR` to override that cache location.
+The owner-authorized `Sync upstream and release validated versions` workflow
+runs daily at 01:23 UTC (09:23 Singapore) or by manual dispatch from `main`.
+It pins the fork and official upstream commits, attempts a normal merge, opens
+a PR, invokes the full reusable CI on its exact candidate, and merges only
+after every job succeeds. If the four lockstepped versions have no existing
+tag, it dispatches the existing publication coordinator with `expected_commit`.
+Ordinary PR merges still do not publish, and stable environment approval still
+applies. An active publication blocks synchronization from advancing `main`.
 
-The runner uses the local macOS user's existing Codex and GitHub
-authentication. Install it as a per-user `launchd` agent rather than a GitHub
-Actions schedule: the stable environment reviewer is a human account, and
-automated upstream conflicts may require agent judgment. Use a
-`StartCalendarInterval` at 08:00 while the Mac is set to `Asia/Shanghai`.
-Calendar events missed while the Mac sleeps run once when it next wakes.
-Standard output and error should be directed to persistent files under
-`~/Library/Logs`; successful releases, blocked runs, and failures also produce
-a macOS notification. No-update runs are logged only.
+### Subscription configuration
+
+In repository **Settings → Secrets and variables → Actions**, add:
+
+- Secret `LLM_API_KEY`: a key created for your own BigModel GLM Coding Plan.
+  Enter it directly in GitHub; never commit it or copy desktop login tokens.
+- Optional variable `LLM_BASE_URL`: defaults to
+  `https://open.bigmodel.cn/api/anthropic` (domestic BigModel subscription).
+- Optional variable `LLM_MODEL`: defaults to `glm-5.3-flash`; select a model
+  available to your subscription.
+- Optional variable `CLAUDE_CODE_VERSION`: an exact compatible npm version
+  for the official `@anthropic-ai/claude-code` harness (default `2.1.296`).
+  Revalidate the restricted-mode CLI flags when changing this version.
+
+The official Claude Code CLI is an agent harness here; model requests go to
+the configured GLM subscription endpoint. No Claude subscription is required
+for this route. A clean merge does not invoke a model. Missing credentials or
+model/API failures stop conflicts without merging. Confirm the current Coding
+Plan terms for your personal automation; do not use the secret as a shared
+API service. See the official [Coding Plan integration guide](https://docs.bigmodel.cn/cn/coding-plan/best-practice/claude-code).
+ZCode's CLI can run headlessly, but official documentation does not establish
+that this use receives its desktop quota promotions. This workflow neither
+promises a 1.5× benefit nor emulates a desktop client's identity.
+
+GitHub must allow Actions to create pull requests. Keep default token
+permissions read-only; the workflow grants narrowly scoped writes only to its
+trusted PR and merge jobs. No personal GitHub token is needed.
+
+### Resolution and validation boundaries
+
+The resolver receives the subscription key but no GitHub token, shell tool,
+MCP servers or project hooks/settings. It may edit only the original regular
+UTF-8 text conflict files. Its output is data-only JSON, not executable code
+or a Git bundle. A separate job independently fetches and reconstructs the
+same merge from trusted control code, checks the exact conflict set and
+parents, and only then publishes a candidate. CI uses read-only compiler and
+Cargo source caches. The privileged merge step executes the helper from
+trusted main, checks base/head/tree, then verifies the actual merged tree
+before dispatching publication.
+
+Changes to workflows, release tooling, automation helpers, policy documents,
+toolchains or credential paths require manual synchronization even when Git
+can merge them cleanly. Binary, executable, delete/modify and symlink conflicts
+also stop. An existing synchronization branch is never force-pushed: review
+and close or finish its PR, then remove that obsolete branch before retrying.
+A changed base/upstream or active release requires a fresh run after review.
+
+Reusable CI validates the candidate bytes, but its GitHub check runs belong
+to the caller commit. The repository currently has no required branch checks;
+if such protection is enabled, automatic merging can be blocked until genuine
+candidate-owned checks or a merge queue are implemented. Never manufacture a
+successful status to bypass protection. GitHub's merge API has no atomic
+expected-base parameter: the workflow checks base immediately before merge
+and the resulting tree afterward. Concurrent writes can still cause a merge
+that requires manual review; a different tree never starts publication.
+
+### Retiring the older local runner
+
+`scripts/automation/daily-upstream-release.sh` is a historical macOS/Codex
+runner with separate authentication, scheduling and old fork-version bump
+assumptions. It is not used by the Actions workflow. Inspect any installed
+`launchd` jobs or external scheduler before enabling both; retire the old
+schedule to avoid duplicate upstream PRs and competing publishers. Preserve
+its history for diagnostics rather than silently repurposing it in CI.
 
 ## Tests and release gates
 
