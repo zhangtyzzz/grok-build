@@ -308,7 +308,7 @@ update requests use the locked version's tag rather than mutable `latest`.
 ## Daily upstream release automation
 
 The owner-authorized `Sync upstream and release validated versions` workflow
-runs daily at 01:23 UTC (09:23 Singapore) or by manual dispatch from `main`.
+runs daily at 15:23 UTC (23:23 Singapore) or by manual dispatch from `main`.
 It pins the fork and official upstream commits, attempts a normal merge, opens
 a PR, invokes the full reusable CI on its exact candidate, and merges only
 after every job succeeds. If the four lockstepped versions have no existing
