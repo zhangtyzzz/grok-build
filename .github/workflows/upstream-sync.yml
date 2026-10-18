@@ -2,7 +2,8 @@ name: Sync upstream and release validated versions
 
 on:
   schedule:
-    - cron: "23 1 * * *"
+    # 23:23 Asia/Singapore (UTC+08:00), after the preferred 23:00 window.
+    - cron: "23 15 * * *"
   workflow_dispatch:
 
 permissions: {}

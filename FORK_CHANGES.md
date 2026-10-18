@@ -243,7 +243,7 @@ PR 必须列出上游 SHA、保留/替代的 fork 行为、每项冲突决策及
 
 ### 6.1 自动同步的执行边界
 
-每日 UTC 01:23（新加坡 09:23）或手动 dispatch，只从 main 运行。可信 helper 固定双方 SHA，拒绝正在发布时推进 main；上游已包含则退出。干净合并无需模型，普通文本冲突才调用官方 Claude Code CLI，通过 BigModel Coding Plan API key 使用 GLM。模型进程没有 GitHub token、Bash、MCP 或项目 hooks/settings，只可编辑原始冲突文件。API key 放在 Actions secret `LLM_API_KEY`，不能提交到仓库或从本机应用登录态中提取。
+每日 UTC 15:23（新加坡 23:23）或手动 dispatch，只从 main 运行。可信 helper 固定双方 SHA，拒绝正在发布时推进 main；上游已包含则退出。干净合并无需模型，普通文本冲突才调用官方 Claude Code CLI，通过 BigModel Coding Plan API key 使用 GLM。模型进程没有 GitHub token、Bash、MCP 或项目 hooks/settings，只可编辑原始冲突文件。API key 放在 Actions secret `LLM_API_KEY`，不能提交到仓库或从本机应用登录态中提取。
 
 模型输出视为不可信数据。下一 job 从可信 main 载入 helper，独立 fetch、重建相同双 parent merge，仅接收原始冲突路径的 UTF-8 内容；拒绝额外文件、符号链接、冲突标记和 SHA 不符。之后创建 PR，显式调用 reusable CI 验证精确 head（不依赖 bot PR 事件触发 CI），候选任务不保存 Cargo 源缓存或编译缓存。全套检查成功后，可信步骤复核 base/head/tree，合并并验证实际结果 tree，再决定是否发布。
 
