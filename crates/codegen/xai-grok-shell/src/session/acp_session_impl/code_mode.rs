@@ -68,6 +68,7 @@ fn eligible(kind: Option<ToolKind>) -> bool {
                 | ToolKind::Edit
                 | ToolKind::Delete
                 | ToolKind::ListDir
+                | ToolKind::List
                 | ToolKind::Write
                 | ToolKind::Move
                 | ToolKind::Search
@@ -82,7 +83,7 @@ fn definition() -> ToolDefinition {
     ToolDefinition::function(
         "execute",
         Some(
-            "Compose tools with JavaScript in an isolated runtime. Input code is an async function body: use await and explicit return (otherwise null). Call catalog.search(query, offset) for exact available names, catalog.describe(name) for the input schema, then tools[name](args). Tool results are strings; do not assume structured JSON. Use Promise.allSettled for partial failures; at most 8 calls in flight and 64 calls total. All calls retain normal permissions/hooks/Plan Mode. Await all required work: unfinished calls are interrupted at return, without rolling back completed effects. No filesystem, network, imports, timers, process, or persistent JS state. console.log appends bounded logs. Return JSON data with all nested promises explicitly awaited. Limits: 64 KiB source, 64 MiB JS heap, 5 seconds active computation, 120 seconds overall INCLUDING tools and permission waits, 64 KiB result/log text. Do not retry an entire failed script with writes without inspecting its trace. Ordinary direct tools remain available.",
+            "Compose tools with JavaScript in an isolated runtime. Input code is an async function body: use await and explicit return (otherwise null). Call catalog.search(query, offset) for exact available names, catalog.describe(name) for the input schema, then tools[name](args). The catalog functions return JSON objects. Host tool calls resolve to strings; do not assume their output is structured JSON. Use Promise.allSettled for partial failures; at most 8 calls in flight and 64 calls total. All calls retain normal permissions/hooks/Plan Mode. Await all required work: unfinished calls are interrupted at return, without rolling back completed effects. No filesystem, network, imports, timers, process, or persistent JS state. console.log appends bounded logs. Return JSON data with all nested promises explicitly awaited. Limits: 64 KiB source, 64 MiB JS heap, 5 seconds active computation, 120 seconds overall INCLUDING tools and permission waits, 64 KiB result/log text. Do not retry an entire failed script with writes without inspecting its trace. Ordinary direct tools remain available.",
         ),
         json!({"type":"object","properties":{"code":{"type":"string"}},"required":["code"],"additionalProperties":false}),
     )

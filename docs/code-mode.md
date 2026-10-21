@@ -48,6 +48,8 @@ reject the Promise; tools' own successful structured/text contracts still apply
 `catalog.search(query, offset)` searches exact names and returns at most 20
 summaries; `catalog.describe(name)` returns the full input schema. Names are not
 rewritten into aliases: bracket notation works for non-identifiers.
+Both catalog functions return JSON objects directly; only host tool calls return
+model-facing text strings.
 
 Only builtin leaf tools classified as read, edit, delete, list-dir, write, move,
 search or execute enter this first inventory. They retain normal validation,

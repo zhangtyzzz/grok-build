@@ -190,7 +190,10 @@ pub fn stream_chat_completions<'a>(
                     let mut name_for_event: Option<String> = None;
                     let mut args_for_event: Option<String> = None;
 
-                    if let Some(id) = tc_delta.id {
+                    // Some compatible providers send an empty ID on argument-only
+                    // continuations. Keep the original identity for both events
+                    // and the final call instead of clearing its tool-result link.
+                    if let Some(id) = tc_delta.id.filter(|id| !id.is_empty()) {
                         entry.0 = id.clone();
                         id_for_event = Some(id);
                     }
@@ -593,90 +596,92 @@ mod tests {
 
     #[tokio::test]
     async fn tool_call_stream_emits_deltas_and_assembles_final_call() {
-        // First chunk has id, name, and part of arguments
-        let chunk1 = make_chunk(vec![ChatChunkDelta {
-            role: None,
-            content: None,
-            reasoning_content: None,
-            tool_calls: vec![ChunkToolCallDelta {
-                index: 0,
-                id: Some("call_abc".into()),
-                kind: Some("function".into()),
-                function: Some(ToolCallFunctionDelta {
-                    name: Some("do_thing".into()),
-                    arguments: Some("{\"x\":".into()),
-                }),
-            }],
-            tool_call_id: None,
-        }]);
-        // Second chunk has only an argument fragment
-        let chunk2 = make_chunk(vec![ChatChunkDelta {
-            role: None,
-            content: None,
-            reasoning_content: None,
-            tool_calls: vec![ChunkToolCallDelta {
-                index: 0,
-                id: None,
-                kind: None,
-                function: Some(ToolCallFunctionDelta {
-                    name: None,
-                    arguments: Some("1}".into()),
-                }),
-            }],
-            tool_call_id: None,
-        }]);
+        for continuation_id in [None, Some(String::new())] {
+            // First chunk has id, name, and part of arguments
+            let chunk1 = make_chunk(vec![ChatChunkDelta {
+                role: None,
+                content: None,
+                reasoning_content: None,
+                tool_calls: vec![ChunkToolCallDelta {
+                    index: 0,
+                    id: Some("call_abc".into()),
+                    kind: Some("function".into()),
+                    function: Some(ToolCallFunctionDelta {
+                        name: Some("do_thing".into()),
+                        arguments: Some("{\"x\":".into()),
+                    }),
+                }],
+                tool_call_id: None,
+            }]);
+            // Second chunk has only an argument fragment
+            let chunk2 = make_chunk(vec![ChatChunkDelta {
+                role: None,
+                content: None,
+                reasoning_content: None,
+                tool_calls: vec![ChunkToolCallDelta {
+                    index: 0,
+                    id: continuation_id,
+                    kind: None,
+                    function: Some(ToolCallFunctionDelta {
+                        name: None,
+                        arguments: Some("1}".into()),
+                    }),
+                }],
+                tool_call_id: None,
+            }]);
 
-        let raw = stream::iter::<Vec<Result<ChatCompletionChunk, SamplingError>>>(vec![
-            Ok(chunk1),
-            Ok(chunk2),
-        ])
-        .boxed();
-        let events = collect(stream_chat_completions(
-            raw,
-            None,
-            rid(),
-            Duration::from_secs(60),
-        ))
-        .await;
+            let raw = stream::iter::<Vec<Result<ChatCompletionChunk, SamplingError>>>(vec![
+                Ok(chunk1),
+                Ok(chunk2),
+            ])
+            .boxed();
+            let events = collect(stream_chat_completions(
+                raw,
+                None,
+                rid(),
+                Duration::from_secs(60),
+            ))
+            .await;
 
-        let deltas: Vec<_> = events
-            .iter()
-            .filter_map(|e| match e {
-                SamplingEvent::ToolCallDelta {
-                    tool_index,
-                    id,
-                    name,
-                    arguments_delta,
-                    ..
-                } => Some((
-                    *tool_index,
-                    id.clone(),
-                    name.clone(),
-                    arguments_delta.clone(),
-                )),
-                _ => None,
-            })
-            .collect();
+            let deltas: Vec<_> = events
+                .iter()
+                .filter_map(|e| match e {
+                    SamplingEvent::ToolCallDelta {
+                        tool_index,
+                        id,
+                        name,
+                        arguments_delta,
+                        ..
+                    } => Some((
+                        *tool_index,
+                        id.clone(),
+                        name.clone(),
+                        arguments_delta.clone(),
+                    )),
+                    _ => None,
+                })
+                .collect();
 
-        assert_eq!(deltas.len(), 2);
-        assert_eq!(nth(&deltas, 0).0, 0);
-        assert_eq!(nth(&deltas, 0).1.as_deref(), Some("call_abc"));
-        assert_eq!(nth(&deltas, 0).2.as_deref(), Some("do_thing"));
-        assert_eq!(nth(&deltas, 0).3.as_deref(), Some("{\"x\":"));
-        assert_eq!(nth(&deltas, 1).1, None);
-        assert_eq!(nth(&deltas, 1).2, None);
-        assert_eq!(nth(&deltas, 1).3.as_deref(), Some("1}"));
+            assert_eq!(deltas.len(), 2);
+            assert_eq!(nth(&deltas, 0).0, 0);
+            assert_eq!(nth(&deltas, 0).1.as_deref(), Some("call_abc"));
+            assert_eq!(nth(&deltas, 0).2.as_deref(), Some("do_thing"));
+            assert_eq!(nth(&deltas, 0).3.as_deref(), Some("{\"x\":"));
+            assert_eq!(nth(&deltas, 1).1, None);
+            assert_eq!(nth(&deltas, 1).2, None);
+            assert_eq!(nth(&deltas, 1).3.as_deref(), Some("1}"));
 
-        match events.last().unwrap() {
-            SamplingEvent::Completed { response, .. } => {
-                let calls = response.tool_calls();
-                assert_eq!(calls.len(), 1);
-                assert_eq!(nth(calls, 0).id.as_ref(), "call_abc");
-                assert_eq!(nth(calls, 0).name, "do_thing");
-                assert_eq!(nth(calls, 0).arguments.as_ref(), "{\"x\":1}");
-                assert_eq!(response.stop_reason, Some(StopReason::ToolCalls));
+            match events.last().unwrap() {
+                SamplingEvent::Completed { response, .. } => {
+                    let calls = response.tool_calls();
+                    assert_eq!(calls.len(), 1);
+                    assert_eq!(nth(calls, 0).id.as_ref(), "call_abc");
+                    assert_eq!(nth(calls, 0).name, "do_thing");
+                    assert_eq!(nth(calls, 0).arguments.as_ref(), "{\"x\":1}");
+                    assert_eq!(response.stop_reason, Some(StopReason::ToolCalls));
+                }
+                other => panic!("expected Completed, got {other:?}"),
             }
-            other => panic!("expected Completed, got {other:?}"),
         }
     }
 

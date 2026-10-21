@@ -1,6 +1,15 @@
 use super::*;
 use crate::session::acp_session::support::*;
 
+#[test]
+fn native_directory_tool_is_code_mode_eligible() {
+    use xai_grok_tools::implementations::grok_build::list_dir::ListDirTool;
+    use xai_grok_tools::types::tool_metadata::ToolMetadata;
+
+    let tool = ListDirTool;
+    assert!(eligible(Some(tool.kind())));
+}
+
 type Locks =
     Arc<parking_lot::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>;
 
