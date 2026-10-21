@@ -303,3 +303,21 @@ recommended targeted Cargo commands.
   reference for the shared runtime.
 - `crates/codegen/xai-grok-pager/docs/user-guide/` — user-visible behavior and
   configuration.
+
+## Optional Code Mode
+
+`GROK_CODE_MODE=1` adds a shell-owned `execute` orchestration tool. The composition
+root recognizes a private worker argument before normal startup. Each program
+runs in a fresh native QuickJS child from `xai-grok-tools::code_mode`, exchanging
+bounded JSON frames with the shell. No workspace, configuration, credentials,
+or telemetry clients enter that runtime.
+
+Nested builtin leaf calls use the existing shell prepare/permission/dispatch/
+finalize pipeline. A scoped nested result sink keeps provider history paired;
+parent IDs and owner-only local JSONL traces preserve provenance. Per-run locks
+span concurrent child batches. Cancellation closes admission, aborts owned tool
+futures and kills/reaps the worker, without claiming rollback of external effects.
+Workers enroll in both the existing global and session process scopes, with the
+existing parent-death helper on Linux.
+Direct calls keep their normal sink. See [Code Mode](code-mode.md) for the
+experimental contract, limits, limitations and validation commands.

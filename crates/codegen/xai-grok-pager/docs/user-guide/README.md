@@ -54,3 +54,7 @@ Automate, script, and integrate Grok Build with other systems.
 | 24 | [Monitoring Usage (External OpenTelemetry)](24-monitoring-usage.md) | Customer OTEL export |
 | 25 | [Status Line](25-status-line.md) | The bottom status row: built-in segments, command scripts, and the stdin JSON contract |
 | 26 | [Configuration Reference](26-config-reference.md) | Field list for `config.toml`, `managed_config.toml`, and `requirements.toml` |
+
+## Experimental Code Mode
+
+Opt-in JavaScript tool composition is documented in [Code Mode](../../../../../docs/code-mode.md).

@@ -264,3 +264,18 @@ PR 必须列出上游 SHA、保留/替代的 fork 行为、每项冲突决策及
 | 标准发行入口与精确产物复用 | `6ff1d78f`、`2e09f905`；`docs/release-distribution.md`。 |
 
 新上游若使这些文件或符号消失，先核实行为迁移或等价替代，再更新入口；不要仅为维持本文的旧路径把已删除代码恢复。
+
+## Optional JavaScript Code Mode
+
+The fork adds opt-in (`GROK_CODE_MODE=1`) tool composition through an additive
+`execute` tool. A fresh QuickJS child runs async JavaScript while the shell
+executes nested builtin leaf calls through its existing permission/hooks/Plan
+Mode/locking chain. Nested results go to local parent-linked traces rather than
+orphan provider tool results. Cancellation and limits are enforced by the host
+and worker; completed effects are not rolled back or automatically retried.
+
+This follows OpenCode's host-bridge design and Pi's QuickJS isolation approach;
+it does not replace ordinary tools or introduce Node/Bun requirements. MCP,
+workflow and session controls remain direct in the first version. See
+[design and validation](docs/code-mode.md). Dependency changes are per-crate;
+the generated root manifest and vendored sources are unchanged.

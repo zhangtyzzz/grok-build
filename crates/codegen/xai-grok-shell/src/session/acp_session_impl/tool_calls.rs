@@ -315,13 +315,18 @@ impl SessionActor {
         parsed: Option<&ToolInput>,
     ) -> Option<acp::Meta> {
         let toolset = self.agent.borrow().tool_bridge().toolset();
-        xai_grok_tools::normalization::merge_tool_meta(
+        let mut meta = xai_grok_tools::normalization::merge_tool_meta(
             &toolset,
             existing.map(serde_json::Value::Object),
             wire_name,
             parsed,
         )
-        .and_then(|v| v.as_object().cloned())
+        .and_then(|v| v.as_object().cloned());
+        if let Some(parent) = super::code_mode::parent_id() {
+            meta.get_or_insert_with(serde_json::Map::new)
+                .insert("parentToolCallId".to_owned(), json!(parent));
+        }
+        meta
     }
     #[tracing::instrument(
         name = "tools.execute",
@@ -332,7 +337,7 @@ impl SessionActor {
             session_id = %self.session_info.id.0
         )
     )]
-    pub(super) async fn execute_tool_calls(
+    pub(super) async fn execute_regular_tool_calls(
         &self,
         tool_calls: Vec<crate::sampling::types::ToolCallResponse>,
         requested_model: Option<String>,
@@ -411,7 +416,7 @@ impl SessionActor {
     }
     /// Every rejected tool_use id still gets a tool_result so the provider batch stays paired.
     /// Registers Pending `ToolCall` then Failed `ToolCallUpdate` (via `handle_tool_not_executed`) so clients do not orphan the update.
-    async fn reject_excess_media_gen_calls(
+    pub(super) async fn reject_excess_media_gen_calls(
         &self,
         tool_calls: Vec<crate::sampling::types::ToolCallResponse>,
     ) -> Result<Vec<crate::sampling::types::ToolCallResponse>, acp::Error> {
@@ -481,7 +486,7 @@ impl SessionActor {
     }
     /// Runs prepare, then dispatch, then post-flight.
     /// Caller owns the outer tail flush.
-    async fn execute_tool_calls_batch(
+    pub(super) async fn execute_tool_calls_batch(
         &self,
         tool_calls: Vec<crate::sampling::types::ToolCallResponse>,
         deferred_followups: &mut Vec<ConversationItem>,
@@ -526,8 +531,7 @@ impl SessionActor {
                         format!("Tool execution cancelled for tool `{}`", call.function.name)
                     }
                 };
-                self.chat_state_handle
-                    .push_tool_result(ConversationItem::tool_result(call.id.clone(), message));
+                self.deliver_tool_result(ConversationItem::tool_result(call.id.clone(), message));
                 continue;
             }
             self.emit_event(crate::session::events::Event::ToolStarted {
@@ -641,7 +645,9 @@ impl SessionActor {
             let mut map: std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>> =
                 std::collections::HashMap::new();
             for path in lock_paths.iter().flatten() {
-                if write_paths.contains(path) {
+                if let Some(lock) = super::code_mode::file_lock(path) {
+                    map.insert(path.clone(), lock);
+                } else if write_paths.contains(path) {
                     map.entry(path.clone())
                         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())));
                 }
@@ -1072,6 +1078,9 @@ impl SessionActor {
                 }
                 Err(_) => true,
             };
+            if tool_failed {
+                super::code_mode::mark_failed();
+            }
             let (ext_tool_output, ext_error_message) = if xai_grok_telemetry::external::is_active()
             {
                 external_tool_bodies(&result)
@@ -2048,7 +2057,7 @@ impl SessionActor {
                         self.send_update(acp::SessionUpdate::ToolCallUpdate(tool_update), None)
                             .await;
                         let tool_chat = ConversationItem::tool_result(call.id.clone(), message);
-                        self.chat_state_handle.push_tool_result(tool_chat);
+                        self.deliver_tool_result(tool_chat);
                         return Ok(Err(ToolLoop::Continue));
                     }
                     PlanApprovalOutcome::Cancelled => {
@@ -2070,7 +2079,7 @@ impl SessionActor {
                         self.send_update(acp::SessionUpdate::ToolCallUpdate(tool_update), None)
                             .await;
                         let tool_chat = ConversationItem::tool_result(call.id.clone(), message);
-                        self.chat_state_handle.push_tool_result(tool_chat);
+                        self.deliver_tool_result(tool_chat);
                         return Ok(Err(ToolLoop::Continue));
                     }
                     PlanApprovalOutcome::Approved => {
@@ -2156,6 +2165,7 @@ impl SessionActor {
             rewriting_hook,
             additional_context: hook_additional_context,
         };
+        super::code_mode::record_prepared(&prepared);
         Ok(Ok(prepared))
     }
     /// Issue the `x.ai/exit_plan_mode` reverse-request and await the user's decision.
@@ -2815,6 +2825,7 @@ impl SessionActor {
         raw_arguments: &str,
         model_id: &str,
     ) -> Result<(), acp::Error> {
+        super::code_mode::mark_failed();
         tracing::error!(
             session_id = %self.session_info.id.0,
             tool_name = function_name,
@@ -2841,7 +2852,7 @@ impl SessionActor {
         )
         .await;
         let tool_chat = ConversationItem::tool_result(call_id.to_string(), message);
-        self.chat_state_handle.push_tool_result(tool_chat);
+        self.deliver_tool_result(tool_chat);
         Ok(())
     }
     /// Queued auto-wake synthetic prompts for a task/subagent the model already learned about are dropped before they get flushed to chat history.
@@ -3102,7 +3113,7 @@ impl SessionActor {
                 inline_images,
             )
         };
-        self.chat_state_handle.push_tool_result(tool_chat);
+        self.deliver_tool_result(tool_chat);
         let mut deferred_followups = Vec::new();
         if !extracted_images.is_empty() {
             let count = extracted_images.len();
@@ -3252,6 +3263,7 @@ impl SessionActor {
         model_id: &str,
         coercion_note: Option<&str>,
     ) -> Vec<ConversationItem> {
+        super::code_mode::mark_failed();
         tracing::error!(
             session_id = %self.session_info.id.0,
             tool_name = requested_tool_name,
@@ -3292,7 +3304,7 @@ impl SessionActor {
         )
         .await;
         let tool_chat = ConversationItem::tool_result(call_id.to_string(), message);
-        self.chat_state_handle.push_tool_result(tool_chat);
+        self.deliver_tool_result(tool_chat);
         vec![]
     }
     /// Model-facing rejection for a non-plan-file edit while plan mode is active.
@@ -3319,6 +3331,7 @@ impl SessionActor {
         tool_call_id: &acp::ToolCallId,
         reason: String,
     ) -> Result<(), acp::Error> {
+        super::code_mode::mark_failed();
         let tool_update = acp::ToolCallUpdate::new(
             tool_call_id.clone(),
             acp::ToolCallUpdateFields::new()
@@ -3330,7 +3343,7 @@ impl SessionActor {
         self.send_update(acp::SessionUpdate::ToolCallUpdate(tool_update), None)
             .await;
         let tool_chat = ConversationItem::tool_result(model_call_id.to_owned(), reason);
-        self.chat_state_handle.push_tool_result(tool_chat);
+        self.deliver_tool_result(tool_chat);
         Ok(())
     }
 }

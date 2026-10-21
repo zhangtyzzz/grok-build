@@ -6,6 +6,8 @@ version = "0.1.220-alpha.4"
 description = "Grok tools library"
 
 [dependencies]
+# Isolated Code Mode worker. Keep the default allocator for enforced heap quotas.
+rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
 xai-dirs = { workspace = true }
