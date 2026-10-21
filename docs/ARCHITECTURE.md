@@ -101,6 +101,13 @@ shell's session actor, agent assembly, sampler, tools, workspace boundary, and
 persistence. This is an important design constraint: behavior that should be
 consistent across interactive, CI, and editor use belongs below the pager.
 
+When two-pass compaction is enabled, the shell may reuse a background summary
+only while its conversation prefix still matches. The prefix fingerprint covers
+the serialized conversation items, including tool calls, result associations,
+and images; matching plain text alone cannot establish that the summary is
+current. A fingerprint serialization failure discards the candidate and uses
+the existing single-pass fallback.
+
 ## Provider and external-agent extensions
 
 The multi-agent baseline is deliberately composed from native primitives

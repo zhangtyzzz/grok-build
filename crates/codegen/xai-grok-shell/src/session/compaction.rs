@@ -66,26 +66,26 @@ fn prefire_lead_percent() -> u64 {
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(DEFAULT_PREFIRE_LEAD_PERCENT)
 }
-/// Cheap fingerprint of a conversation prefix for prefire NOTE₁ validity.
+/// Fingerprint of the complete conversation prefix for prefire NOTE₁ validity.
 /// A mismatch means the prefix changed (edit / rewind / branch) since pass-1.
 /// The cached NOTE₁ then no longer summarizes the current prefix and must be dropped.
-fn fingerprint_prefix(items: &[ConversationItem]) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    items.len().hash(&mut h);
-    for it in items {
-        let tag: u8 = match it {
-            ConversationItem::System(_) => 0,
-            ConversationItem::User(_) => 1,
-            ConversationItem::Assistant(_) => 2,
-            ConversationItem::ToolResult(_) => 3,
-            ConversationItem::BackendToolCall(_) => 4,
-            ConversationItem::Reasoning(_) => 5,
-        };
-        tag.hash(&mut h);
-        it.text_content().hash(&mut h);
+fn fingerprint_prefix(items: &[ConversationItem]) -> Option<u64> {
+    use std::hash::Hasher;
+    // Stream into the hasher: prefixes can contain large tool outputs and images.
+    // The text projection omits tool arguments, call associations, and images.
+    struct FingerprintWriter(std::collections::hash_map::DefaultHasher);
+    impl std::io::Write for FingerprintWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.write(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
-    h.finish()
+    let mut writer = FingerprintWriter(std::collections::hash_map::DefaultHasher::new());
+    serde_json::to_writer(&mut writer, items).ok()?;
+    Some(writer.0.finish())
 }
 /// Outcome of a background prefire pass-1 run, recorded on the `session.prefire_pass1` span as `compaction_prefire_outcome`.
 /// [`PrefireOutcome::as_str`] values are stable telemetry keys (telemetry/dashboards key off them); don't rename the strings.
@@ -291,10 +291,13 @@ impl SessionActor {
         let Some(prefix) = conversation.get(..split.split_idx) else {
             return attempted(PrefireOutcome::SampleFailed, None);
         };
+        let Some(fingerprint) = fingerprint_prefix(prefix) else {
+            return attempted(PrefireOutcome::SampleFailed, None);
+        };
         let cache = AsyncCompactionCache {
             note1,
             prefix_len: split.split_idx,
-            fingerprint: fingerprint_prefix(prefix),
+            fingerprint,
             model_slug,
             pass1_latency_ms,
         };
@@ -352,7 +355,7 @@ impl SessionActor {
         };
         if cache.prefix_len == 0
             || cache.model_slug != model_slug
-            || fingerprint_prefix(prefix) != cache.fingerprint
+            || fingerprint_prefix(prefix) != Some(cache.fingerprint)
         {
             tracing::Span::current().record("compaction_prefire_stale", true);
             tracing::info!(

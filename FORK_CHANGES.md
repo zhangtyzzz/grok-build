@@ -143,6 +143,7 @@ helper 回归覆盖同 slug 不同 provider、缺失 ref 不降级、legacy alia
 
 | 当前增量 / 入口 | 背景与保留条件 | 上游替代时怎样处理 |
 | --- | --- | --- |
+| shell `session/compaction.rs` 的 prefire prefix 指纹 | 两阶段摘要复用必须覆盖完整会话项；仅正文相同不足以证明 tool calls、结果关联及图片未变化。序列化失败应丢弃候选。 | 可采用上游等价的完整内容/版本校验；保留等正文但参数、调用 ID、图片不同的回归用例，不另建压缩引擎。 |
 | `xai-grok-tools/src/computer/local/shell_state.rs` 的 allexport 处理（`f87dcb43`） | dump 前暂时关闭 allexport，最后恢复用户设置，避免大体积 dump 辅助变量被导出造成 `E2BIG`。 | 等价实现同时保留用户 shell 选项与后续 exec 能力即可；运行 shell-state 回归。 |
 | `xai-tty-utils/src/lib.rs` 的 `HANGUP_GRACE`（`cd71bf73`）及 PTY 生命周期测试 | 给繁忙主机上的 shell 转发 SIGHUP 的时间，避免提前杀 leader 留下独立进程组。 | 可以采用上游更可靠的进程回收方案；不能只缩短等待让测试更快。 |
 | pager 的 `scrollback/blocks/user.rs`、`app/modals.rs`、`views/picker.rs` | 分离确定性主题测试与进程全局终端能力；保留生产环境 terminal theme 的提示粗体（`a08549a1`）。 | 上游等价测试 seam 可替换；不是新增 UI 产品功能。 |
