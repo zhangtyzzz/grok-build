@@ -437,7 +437,9 @@ impl SessionActor {
         };
 
         let plan_active = self.plan_mode.lock().is_active();
-        filter_cursor_tools_by_plan_mode(defs, plan_active)
+        let mut definitions = filter_cursor_tools_by_plan_mode(defs, plan_active);
+        self.add_code_mode_definition(&mut definitions);
+        definitions
     }
     /// Messages-backed models never see `use_tool`'s file forms: the Anthropic Messages API rejects the schema's
     /// root-level union (`oneOf`) with HTTP 400, which fails every turn. Checked per request because a model switch

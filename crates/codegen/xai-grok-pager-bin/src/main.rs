@@ -2034,6 +2034,17 @@ fn dispatch_doctor_if_requested(args: &PagerArgs) -> bool {
     true
 }
 fn main() {
+    // Internal compute worker must not load configuration, credentials, or telemetry.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == xai_grok_tools::code_mode::WORKER_ARG)
+    {
+        std::process::exit(if xai_grok_tools::code_mode::run_worker().is_ok() {
+            0
+        } else {
+            1
+        });
+    }
     xai_grok_version::set_full_version(env!("VERSION_WITH_COMMIT"));
     xai_grok_telemetry::startup::mark_process_start();
     if let Some(code) = xai_grok_pager::app::mermaid_worker::maybe_run_render_subprocess() {

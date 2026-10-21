@@ -1003,7 +1003,18 @@ impl SessionActor {
             self.kill_foreground_commands_for_cancel().await;
         }
 
+        // A Code Mode nested call has no tool_use of its own in history; its
+        // still-unanswered parent `execute` call carries the notice instead.
+        let mut nested: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
         for bg in backgrounded {
+            if let Some(parent) = super::code_mode::nested_parent_id(&bg.tool_call_id) {
+                nested
+                    .entry(parent.to_owned())
+                    .or_default()
+                    .push(bg.tool_call_id);
+                continue;
+            }
             // No command text: the model already has it in the tool call this answers.
             let message = format!(
                 "Command was moved to the background because the user sent a new message. \
@@ -1013,6 +1024,34 @@ impl SessionActor {
             );
             self.chat_state_handle
                 .push_tool_result(ConversationItem::tool_result(bg.tool_call_id, message));
+        }
+        if nested.is_empty() {
+            return;
+        }
+        let answered: std::collections::HashSet<String> = self
+            .chat_state_handle
+            .get_conversation()
+            .await
+            .iter()
+            .filter_map(|item| match item {
+                ConversationItem::ToolResult(result) => Some(result.tool_call_id.clone()),
+                _ => None,
+            })
+            .collect();
+        for (parent, task_ids) in nested {
+            if answered.contains(&parent) {
+                continue;
+            }
+            let message = format!(
+                "Code Mode run interrupted because the user sent a new message. Nested \
+                 commands still running in the background, not cancelled: {}. Retrieve \
+                 their output later with {} (task_id: one of these IDs). Other nested \
+                 effects have unknown outcome; inspect the run trace before retrying.",
+                task_ids.join(", "),
+                self.tool_context.task_output_tool_name,
+            );
+            self.chat_state_handle
+                .push_tool_result(ConversationItem::tool_result(parent, message));
         }
     }
 

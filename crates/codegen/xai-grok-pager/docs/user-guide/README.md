@@ -54,3 +54,8 @@ Automate, script, and integrate Grok Build with other systems.
 | 24 | [Monitoring Usage (External OpenTelemetry)](24-monitoring-usage.md) | Customer OTEL export |
 | 25 | [Status Line](25-status-line.md) | The bottom status row: built-in segments, command scripts, and the stdin JSON contract |
 | 26 | [Configuration Reference](26-config-reference.md) | Field list for `config.toml`, `managed_config.toml`, and `requirements.toml` |
+
+## Code Mode
+
+JavaScript composition of every tool, including MCP tools, is on by default;
+set `GROK_CODE_MODE=0` to disable it. See [Code Mode](../../../../../docs/code-mode.md).

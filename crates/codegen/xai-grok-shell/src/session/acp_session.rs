@@ -116,6 +116,8 @@ pub(crate) use rate_limit_waits::{
 #[path = "acp_session_impl/active_agent_message_presentation.rs"]
 mod active_agent_message_presentation;
 use active_agent_message_presentation::*;
+#[path = "acp_session_impl/code_mode.rs"]
+mod code_mode;
 #[path = "acp_session_impl/post_tool_use_delivery.rs"]
 mod post_tool_use_delivery;
 #[path = "acp_session_impl/tool_calls.rs"]
