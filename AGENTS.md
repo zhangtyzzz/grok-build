@@ -104,5 +104,12 @@ See `docs/ARCHITECTURE.md` for the runtime flows and the broader crate map.
   cross-crate flow, or persistence contract changes.
 - Update the pager user guide for user-visible commands, configuration, keys,
   permissions, skills, plugins, hooks, or session behavior.
+- Every fork-specific feature or optimization must update `FORK_CHANGES.md`
+  in the same PR: add or revise its entry (background and goal, constraints to
+  keep, code entry points, how to merge when upstream changes, verification
+  commands) and its row in the evidence index. Upstream-sync and merge
+  automation use that file to decide what to preserve, so a PR that adds fork
+  behavior without it is not ready to merge. Pure upstream syncs only update
+  entries whose behavior or paths moved.
 - Keep `AGENTS.md` concise and actionable; put explanatory material in normal
   documentation and link to it.

@@ -271,7 +271,11 @@ fn execute(init: Init, mut reader: impl Read, writer: impl Write + 'static) -> s
                     error.to_string()
                 }
             });
-            (false, serde_json::Value::Null, Some(message))
+            (
+                false,
+                serde_json::Value::Null,
+                Some(truncate_error(message)),
+            )
         }
     };
     write_frame(
@@ -284,6 +288,19 @@ fn execute(init: Init, mut reader: impl Read, writer: impl Write + 'static) -> s
             warnings,
         },
     )
+}
+
+/// Thrown values are user-controlled: bound them like results so the final frame fits.
+fn truncate_error(mut message: String) -> String {
+    if message.len() > MAX_OUTPUT_BYTES {
+        let mut end = MAX_OUTPUT_BYTES;
+        while !message.is_char_boundary(end) {
+            end -= 1;
+        }
+        message.truncate(end);
+        message.push_str("… [error truncated]");
+    }
+    message
 }
 
 #[cfg(test)]

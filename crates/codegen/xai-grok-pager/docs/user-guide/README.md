@@ -55,6 +55,7 @@ Automate, script, and integrate Grok Build with other systems.
 | 25 | [Status Line](25-status-line.md) | The bottom status row: built-in segments, command scripts, and the stdin JSON contract |
 | 26 | [Configuration Reference](26-config-reference.md) | Field list for `config.toml`, `managed_config.toml`, and `requirements.toml` |
 
-## Experimental Code Mode
+## Code Mode
 
-Opt-in JavaScript tool composition is documented in [Code Mode](../../../../../docs/code-mode.md).
+JavaScript composition of every tool, including MCP tools, is on by default;
+set `GROK_CODE_MODE=0` to disable it. See [Code Mode](../../../../../docs/code-mode.md).

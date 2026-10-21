@@ -306,14 +306,16 @@ recommended targeted Cargo commands.
 
 ## Optional Code Mode
 
-`GROK_CODE_MODE=1` adds a shell-owned `execute` orchestration tool. The composition
+Code Mode (on by default; `GROK_CODE_MODE=0` disables it) adds a shell-owned
+`execute` orchestration tool. The composition
 root recognizes a private worker argument before normal startup. Each program
 runs in a fresh native QuickJS child from `xai-grok-tools::code_mode`, exchanging
 bounded JSON frames with the shell. No workspace, configuration, credentials,
 or telemetry clients enter that runtime.
 
-Nested builtin leaf calls use the existing shell prepare/permission/dispatch/
-finalize pipeline. A scoped nested result sink keeps provider history paired;
+Nested calls, to builtins and, through an inline `use_tool` call, to MCP and
+managed-gateway tools from the `search_tool` snapshot, use the existing shell
+prepare/permission/dispatch/finalize pipeline. A scoped nested result sink keeps provider history paired;
 parent IDs and owner-only local JSONL traces preserve provenance. Per-run locks
 span concurrent child batches. Cancellation closes admission, aborts owned tool
 futures and kills/reaps the worker, without claiming rollback of external effects.

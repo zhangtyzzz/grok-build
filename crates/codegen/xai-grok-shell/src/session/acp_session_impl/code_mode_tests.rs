@@ -7,17 +7,22 @@ fn native_directory_tool_is_code_mode_eligible() {
     use xai_grok_tools::types::tool_metadata::ToolMetadata;
 
     let tool = ListDirTool;
-    assert!(eligible(Some(tool.kind())));
+    assert!(composable("list_dir", Some(tool.kind())));
 }
 
 type Locks =
     Arc<parking_lot::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>;
 
 async fn fixture() -> (SessionActor, tempfile::TempDir) {
+    fixture_with(read_and_edit_toolset()).await
+}
+async fn fixture_with(
+    tools: Vec<xai_grok_tools::registry::types::ToolConfig>,
+) -> (SessionActor, tempfile::TempDir) {
     let (gateway, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
     let (persistence, _persist_rx) = tokio::sync::mpsc::unbounded_channel();
     let actor = create_test_actor(0, 256_000, 85, gateway, persistence).await;
-    *actor.agent.borrow_mut() = test_agent_with_tools(read_and_edit_toolset()).await;
+    *actor.agent.borrow_mut() = test_agent_with_tools(tools).await;
     actor
         .workspace_ops
         .bind_local_session(
@@ -198,22 +203,28 @@ async fn per_run_file_locks_are_shared_across_nested_scopes() {
     assert!(file_lock("file").is_none());
 }
 #[test]
-fn only_explicit_leaf_kinds_are_composable() {
+fn every_tool_composes_except_recursion_meta_dispatch_and_turn_control() {
     for kind in [
-        ToolKind::Task,
-        ToolKind::Workflow,
         ToolKind::UseTool,
         ToolKind::SearchTool,
         ToolKind::EnterPlan,
         ToolKind::ExitPlan,
         ToolKind::AskUser,
-        ToolKind::Other,
     ] {
-        assert!(!eligible(Some(kind)), "{kind:?}");
+        assert!(!composable("tool", Some(kind)), "{kind:?}");
     }
-    assert!(!eligible(None));
-    for kind in [ToolKind::Read, ToolKind::Edit, ToolKind::Execute] {
-        assert!(eligible(Some(kind)));
+    assert!(!composable("execute", None));
+    for kind in [
+        Some(ToolKind::Read),
+        Some(ToolKind::Execute),
+        Some(ToolKind::Task),
+        Some(ToolKind::Workflow),
+        Some(ToolKind::WebFetch),
+        Some(ToolKind::ImageGen),
+        Some(ToolKind::Other),
+        None,
+    ] {
+        assert!(composable("tool", kind), "{kind:?}");
     }
 }
 #[tokio::test(flavor = "current_thread")]
@@ -301,7 +312,7 @@ async fn real_worker_and_session_round_trip_export_only_outer_result() {
         actor.chat_state_handle.push_assistant_response(ConversationItem::assistant_tool_calls(vec![xai_grok_sampling_types::ToolCall {
             id: request.id.clone().into(), name: request.function.name.clone(), arguments: request.function.arguments.clone().into(),
         }]));
-        actor.execute_code_mode(request,None,Some(Path::new(&worker))).await.unwrap();
+        actor.execute_code_mode(request,None,Some(Path::new(&worker)),&mut Vec::new()).await.unwrap();
         let result:serde_json::Value=serde_json::from_str(&tool_result_text(&actor,"outer-worker").await).unwrap();
         assert_eq!(result["ok"],true,"{result}");
         assert_eq!(result["value"],2);
@@ -345,7 +356,12 @@ async fn real_worker_cancellation_reaps_process_and_releases_slot() {
             assert!(
                 tokio::time::timeout(
                     std::time::Duration::from_millis(100),
-                    actor.execute_code_mode(request, None, Some(Path::new(&worker)))
+                    actor.execute_code_mode(
+                        request,
+                        None,
+                        Some(Path::new(&worker)),
+                        &mut Vec::new()
+                    )
                 )
                 .await
                 .is_err()
@@ -426,7 +442,7 @@ async fn real_worker_failure_preserves_completed_write_and_trace() {
         let path_json=serde_json::to_string(&path).unwrap();
         let code=format!("await tools.search_replace({{file_path:{path_json},old_string:'nested-needle',new_string:'committed'}}); throw new Error('after-write');");
         let request=crate::sampling::types::ToolCallResponse{id:"outer-write".into(),kind:"function".into(),function:crate::sampling::types::ToolCallFunction::new("execute",json!({"code":code}).to_string())};
-        actor.execute_code_mode(request,None,Some(Path::new(&worker))).await.unwrap();
+        actor.execute_code_mode(request,None,Some(Path::new(&worker)),&mut Vec::new()).await.unwrap();
         let result:serde_json::Value=serde_json::from_str(&tool_result_text(&actor,"outer-write").await).unwrap();
         assert_eq!(result["ok"],false,"{result}");
         assert!(result["error"].as_str().unwrap().contains("after-write"),"{result}");
@@ -460,8 +476,14 @@ async fn real_worker_session_scope_can_reclaim_busy_worker() {
                 ),
             };
             tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                let mut followups = Vec::new();
                 let (outcome, ()) = tokio::join!(
-                    actor.execute_code_mode(request, None, Some(Path::new(&worker))),
+                    actor.execute_code_mode(
+                        request,
+                        None,
+                        Some(Path::new(&worker)),
+                        &mut followups
+                    ),
                     async {
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         scope.kill_all();
@@ -478,4 +500,259 @@ async fn real_worker_session_scope_can_reclaim_busy_worker() {
             std::fs::remove_dir_all(dir).unwrap();
         })
         .await;
+}
+
+#[test]
+fn nested_parent_id_only_matches_code_mode_children() {
+    assert_eq!(nested_parent_id("call_1/code/3"), Some("call_1"));
+    assert_eq!(nested_parent_id("a/code/b/code/12"), Some("a/code/b"));
+    for id in ["call_1", "call_1/code/", "/code/1", "call_1/code/x"] {
+        assert_eq!(nested_parent_id(id), None, "{id}");
+    }
+}
+
+/// Providers reject user items between an assistant's tool calls and their results,
+/// so splitting a response around `execute` must not run the round tail per group.
+#[tokio::test(flavor = "current_thread")]
+async fn mixed_batch_keeps_tool_results_contiguous_before_interjections() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            ENABLED_FOR_TEST.with(|enabled| enabled.set(true));
+            let (actor, directory) = fixture().await;
+            let args = json!({"target_file":directory.path().join("note.txt")}).to_string();
+            let call = |id: &str, name: &str, arguments: String| {
+                crate::sampling::types::ToolCallResponse {
+                    id: id.into(),
+                    kind: "function".into(),
+                    function: crate::sampling::types::ToolCallFunction::new(name, arguments),
+                }
+            };
+            let calls = vec![
+                call("a", "read_file", args.clone()),
+                call("x", "execute", json!({"code":"return 1;"}).to_string()),
+                call("b", "read_file", args),
+            ];
+            actor.chat_state_handle.push_assistant_response(
+                ConversationItem::assistant_tool_calls(
+                    calls
+                        .iter()
+                        .map(|c| xai_grok_sampling_types::ToolCall {
+                            id: c.id.clone().into(),
+                            name: c.function.name.clone(),
+                            arguments: c.function.arguments.clone().into(),
+                        })
+                        .collect(),
+                ),
+            );
+            actor.pending_interjections.push(PendingInterjection {
+                text: "typed while tools ran".to_owned(),
+                attachments: vec![],
+            });
+            actor.execute_tool_calls(calls, None).await.unwrap();
+            ENABLED_FOR_TEST.with(|enabled| enabled.set(false));
+            let conversation = actor.chat_state_handle.get_conversation().await;
+            let assistant = conversation
+                .iter()
+                .position(|m| matches!(m, ConversationItem::Assistant(_)))
+                .unwrap();
+            let ids: Vec<_> = conversation
+                .get(assistant + 1..)
+                .unwrap()
+                .iter()
+                .map_while(|m| match m {
+                    ConversationItem::ToolResult(result) => Some(result.tool_call_id.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(ids, ["a", "x", "b"], "{conversation:#?}");
+            assert!(
+                conversation
+                    .iter()
+                    .skip(assistant + 4)
+                    .any(|m| matches!(m, ConversationItem::User(_))),
+                "the interjection still lands after the round"
+            );
+        })
+        .await;
+}
+
+#[ignore = "requires the standalone code_mode_worker example; see docs/code-mode.md"]
+#[tokio::test(flavor = "current_thread")]
+async fn real_worker_saturated_in_flight_calls_share_the_session_pipeline() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let worker = std::env::var_os("GROK_TEST_CODE_MODE_WORKER")
+                .expect("set absolute worker example path");
+            let (mut actor, directory) = fixture().await;
+            actor.session_info.id =
+                acp::SessionId::new(format!("code-mode-test-{}", uuid::Uuid::new_v4()));
+            actor
+                .workspace_ops
+                .bind_local_session(
+                    &actor.session_id_string(),
+                    actor.tool_context.cwd.as_path().to_path_buf(),
+                    actor.tool_context.hunk_tracker_handle.clone(),
+                    actor.tool_bridge_handle().toolset(),
+                    None,
+                )
+                .unwrap();
+            let paths: Vec<_> = (0..runtime::MAX_IN_FLIGHT)
+                .map(|n| {
+                    let path = directory.path().join(format!("note-{n}.txt"));
+                    std::fs::write(&path, format!("needle-{n}\n")).unwrap();
+                    path
+                })
+                .collect();
+            let code = format!(
+                "const r=await Promise.all({}.map(p=>tools.read_file({{target_file:p}}))); return r.map((s,i)=>s.includes('needle-'+i));",
+                serde_json::to_string(&paths).unwrap()
+            );
+            let request = crate::sampling::types::ToolCallResponse {
+                id: "outer-saturated".into(),
+                kind: "function".into(),
+                function: crate::sampling::types::ToolCallFunction::new(
+                    "execute",
+                    json!({"code":code}).to_string(),
+                ),
+            };
+            let outcome = tokio::time::timeout(
+                std::time::Duration::from_secs(60),
+                actor.execute_code_mode(request, None, Some(Path::new(&worker)), &mut Vec::new()),
+            )
+            .await
+            .expect("concurrent nested batches must not deadlock")
+            .unwrap();
+            assert!(matches!(outcome, ToolLoop::Continue));
+            let result: serde_json::Value =
+                serde_json::from_str(&tool_result_text(&actor, "outer-saturated").await).unwrap();
+            assert_eq!(result["ok"], true, "{result}");
+            assert_eq!(result["value"], json!(vec![true; runtime::MAX_IN_FLIGHT]));
+            assert_eq!(
+                result["calls"].as_array().unwrap().len(),
+                runtime::MAX_IN_FLIGHT
+            );
+            std::fs::remove_dir_all(crate::session::persistence::session_dir(&actor.session_info))
+                .unwrap();
+        })
+        .await;
+}
+
+struct GatewayReceiver(parking_lot::Mutex<Vec<serde_json::Value>>);
+#[async_trait::async_trait]
+impl xai_grok_tools::types::resources::ManagedGatewayToolCaller for GatewayReceiver {
+    async fn call_tool(
+        &self,
+        call_id: &str,
+        arguments: serde_json::Value,
+        _: &str,
+    ) -> Result<
+        xai_grok_tools::types::resources::ManagedGatewayToolCallResponse,
+        xai_tool_runtime::ToolError,
+    > {
+        assert_eq!("fixture.update", call_id);
+        self.0.lock().push(arguments);
+        Ok(
+            xai_grok_tools::types::resources::ManagedGatewayToolCallResponse {
+                result: json!({"content":[{"type":"text","text":"MCP-RECEIPT"}]}),
+                connectors_needing_reauth: vec![],
+            },
+        )
+    }
+}
+
+/// MCP tools join the catalog under their `search_tool` names and run through
+/// the ordinary `use_tool` path; nothing nested reaches the model transcript.
+#[tokio::test(flavor = "current_thread")]
+async fn mcp_tools_enter_the_catalog_and_dispatch_through_use_tool() {
+    use xai_grok_tools::types::resources::{
+        ManagedGatewayToolCatalog, ManagedGatewayToolClient, ManagedGatewayToolSource,
+    };
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut tools = read_and_edit_toolset();
+            tools.push(xai_grok_tools::registry::types::ToolConfig::for_tool::<
+                xai_grok_tools::implementations::use_tool::UseTool,
+            >());
+            let (actor, _directory) = fixture_with(tools).await;
+            let receiver = Arc::new(GatewayReceiver(parking_lot::Mutex::new(vec![])));
+            let resources = actor.tool_bridge_handle().shared_resources().await;
+            {
+                let mut resources = resources.lock().await;
+                resources.insert(ManagedGatewayToolCatalog(std::collections::HashMap::from(
+                    [(
+                        "fixture__update".to_owned(),
+                        ManagedGatewayToolSource {
+                            connector_id: "fixture".to_owned(),
+                            connector_name: "fixture".to_owned(),
+                            tool_id: "update".to_owned(),
+                            tool_name: "update".to_owned(),
+                            call_id: "fixture.update".to_owned(),
+                        },
+                    )],
+                )));
+                resources.insert(ManagedGatewayToolClient(receiver.clone()));
+            }
+            let schema = json!({"type":"object","properties":{"body":{"type":"string"}}});
+            actor.tool_metadata_snapshot.lock().unwrap().tools =
+                vec![crate::session::tool_index::ToolMetadata {
+                    qualified_name: "fixture__update".to_owned(),
+                    server_name: "fixture".to_owned(),
+                    tool_name: "update".to_owned(),
+                    description: "Update the fixture record".to_owned(),
+                    parameters: vec!["body".to_owned()],
+                    input_schema: schema.clone(),
+                }];
+            let inventory = actor.code_mode_inventory().await;
+            let mcp = inventory
+                .get("fixture__update")
+                .expect("MCP tool in catalog");
+            assert_eq!(mcp.function.parameters, schema);
+            assert!(inventory.contains_key("read_file"));
+            for hidden in ["use_tool", "search_tool", "execute"] {
+                assert!(!inventory.contains_key(hidden), "{hidden}");
+            }
+            let (text, failed, _, _, prepared) = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                actor.execute_nested_code_call(
+                    "outer",
+                    "outer/code/1",
+                    "fixture__update",
+                    json!({"body":"hello"}),
+                    Some(mcp.clone()),
+                    None,
+                    Locks::default(),
+                ),
+            )
+            .await
+            .expect("must not deadlock")
+            .unwrap();
+            assert!(!failed, "{text}");
+            assert!(text.contains("MCP-RECEIPT"), "{text}");
+            assert_eq!(receiver.0.lock().as_slice(), [json!({"body":"hello"})]);
+            assert!(
+                prepared.is_some(),
+                "routed through the ordinary prepare step"
+            );
+            assert!(
+                actor
+                    .chat_state_handle
+                    .get_conversation()
+                    .await
+                    .iter()
+                    .all(|m| !matches!(m, ConversationItem::ToolResult(_)))
+            );
+        })
+        .await;
+}
+
+#[test]
+fn wall_timeout_defaults_to_ten_minutes_and_is_clamped() {
+    // SAFETY: test-only env mutation of a variable only this module reads.
+    unsafe { std::env::remove_var(ENV_TIMEOUT_SECS) };
+    assert_eq!(wall_timeout(), DEFAULT_WALL_TIMEOUT);
+    for (value, secs) in [("1", 10), ("900", 900), ("999999", 3600)] {
+        unsafe { std::env::set_var(ENV_TIMEOUT_SECS, value) };
+        assert_eq!(wall_timeout().as_secs(), secs, "{value}");
+    }
+    unsafe { std::env::remove_var(ENV_TIMEOUT_SECS) };
 }

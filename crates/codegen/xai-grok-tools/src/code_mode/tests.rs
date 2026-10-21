@@ -231,3 +231,22 @@ fn final_serialization_cannot_admit_tool_calls_from_getters() {
     );
     assert_eq!(finished(&messages).1, &serde_json::json!({"value":7}));
 }
+
+#[test]
+fn oversized_thrown_values_are_truncated_into_the_final_frame() {
+    let messages = run("throw 'x'.repeat(3 * 1024 * 1024);", vec![]);
+    let (ok, _, error, _) = finished(&messages);
+    assert!(!ok);
+    let error = error.as_ref().unwrap();
+    assert!(error.len() < MAX_OUTPUT_BYTES + 64, "{}", error.len());
+    assert!(error.ends_with("[error truncated]"));
+}
+
+#[test]
+fn patched_builtins_cannot_redirect_host_replies() {
+    let messages = run(
+        "Map.prototype.get=()=>undefined; Map.prototype.set=()=>{}; Object.prototype.resolve=()=>{}; return await tools.test({});",
+        vec![reply(1, true, "5")],
+    );
+    assert_eq!(finished(&messages).1, &serde_json::json!(5));
+}

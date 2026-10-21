@@ -13,7 +13,8 @@ Fork：`zhangtyzzz/grok-build`。上游：`xai-org/grok-build`。两者的主分
 1. 发布编译期隐私硬化的二进制，使已列明的数据收集和上报通道不能被环境变量、本地配置或远端设置重新开启。
 2. 使用自定义模型服务，尤其是 Anthropic Messages 协议及其 5 分钟 / 1 小时提示缓存；不同服务的端点、认证和模型身份必须隔离。
 3. 通过自己的 GitHub Releases 分发、校验和更新 macOS、Linux、Windows 的 ARM64 / x86-64 包，不让安装器或应用内更新跳回上游发行源。
-4. 缩小长期维护的差异。上游已有等价能力时优先采用上游；只保留有明确目标、测试或平台兼容依据的增量。
+4. JavaScript Code Mode：模型可用一段异步脚本组合会话里的所有工具（含 MCP 与托管网关工具），减少往返轮次并把中间结果留在上下文之外，但不绕过既有权限链。
+5. 缩小长期维护的差异。上游已有等价能力时优先采用上游；只保留有明确目标、测试或平台兼容依据的增量。
 
 用户所说的“小 tips”泛指零散优化，没有另外确认一套 UI 功能清单。不要据此发明需求。Plan Mode 已在 2026-09-18 决定跟随上游；不再维护 fork 专属的 planner 模型、审批状态机或持久化 barrier。
 
@@ -125,6 +126,26 @@ helper 回归覆盖同 slug 不同 provider、缺失 ref 不降级、legacy alia
 
 **验证。** distribution E2E、安装器测试、update/version 测试、六平台 package smoke、隐私 inspect、attestation/checksum 与资产集验证。不能仅凭某一平台编译成功就发布“稳定包”。
 
+### 3.6 JavaScript Code Mode（默认开启）
+
+**背景与目标。** 维护者要的是"所有工具都能组合"：模型提交一段 async JavaScript，在隔离运行时中用 `tools[name](args)` 组合调用，尤其是 shell 够不到的 MCP / 托管网关工具。只覆盖内置叶子工具的首版（PR #104 初稿）被评测证明价值有限，因为 shell 都能替代，所以那不是目标形态。OpenCode v2 与 Pi 都把 MCP 默认交给 code mode；本 fork 默认开启，但保留直接调用路径，让模型按任务自行选择（2026-10-21 维护者确认）。
+
+**必须保留的约束。**
+
+- 开关：默认开启，`GROK_CODE_MODE=0/false/off/no` 关闭；总时长 `GROK_CODE_MODE_TIMEOUT_SECS`（默认 600，范围 10–3600，包含工具、subagent 与审批等待），JS 主动计算 5 秒上限独立存在。
+- 并存而非替换：MCP 工具仍通过 `search_tool`/`use_tool` 渐进披露，不逐个声明给模型；`execute` 只多一条定义。不要改成 Pi 式 codemode-only，除非维护者另行决定。
+- Inventory：所有已声明的内置工具 +（提供 `use_tool` 时）`search_tool` 所用快照中的全部 MCP/托管网关工具，名字一致（`server__tool`），禁用工具不出现。只排除 `execute` 自身、`search_tool`/`use_tool`、`enter_plan`/`exit_plan`/`ask_user`。每次运行冻结 inventory，定义变化即拒绝。
+- 调用路径：嵌套 MCP 调用转换为普通 inline `use_tool` 调用；所有嵌套调用复用 prepare/dispatch/finalize（权限、hooks、Plan Mode、信任/沙箱、同文件锁、MCP 认证重试与参数转换）。媒体生成上限按单次运行累计。
+- 隔离：每次运行一个新的 QuickJS 子进程（`--internal-code-mode-worker`，在 pager-bin 读取配置/凭据/遥测前进入），`env_clear`，无文件系统、网络、导入、定时器或跨运行状态；源码、堆、栈、调用数/并发、输出、错误信息、帧大小都有上限。
+- 历史配对：嵌套结果只进本地 trace（`code-mode-<uuid>.jsonl`，0600），模型历史只收到外层 `execute` 结果。混用 `execute` 与直接工具的响应按一轮处理，followups/插话/skill reminder 只在全部结果之后 flush 一次；用户中途发消息导致嵌套命令转入后台时，通知写给未应答的父 `execute`。
+- 副作用诚实：已完成的效果不回滚也不自动重试，未确认调用记为 `outcome_unknown`。
+
+**代码入口。** `crates/codegen/xai-grok-tools/src/code_mode/{mod.rs,bootstrap.js,tests.rs}`、`examples/code_mode_worker.rs`；shell 的 `session/acp_session_impl/{code_mode,code_mode_tests,tool_calls,cancel,sampler_turn}.rs`（inventory 来自 `tool_metadata_snapshot`）；`xai-grok-pager-bin/src/main.rs` 的 worker 入口；`docs/code-mode.md`、`docs/code-mode-live-evaluation.md`。`rquickjs` 只在 `xai-grok-tools/Cargo.toml` 声明，保持默认分配器以使堆配额生效。
+
+**合并方法。** 上游若提供等价的脚本化编排，可评估迁移，但必须保留默认开启、并存、全工具 inventory、`use_tool` 路由、隔离、历史配对和副作用约束及其测试。上游重构 `execute_tool_calls`、批次执行、取消路径、MCP 快照或 `use_tool` 时，fork 改动移植到新接口：直接写历史的地方统一走 `deliver_tool_result`；一轮收尾（`finish_tool_round`）只调用一次；MCP inventory 与 `search_tool` 共用同一数据源。
+
+**验证。** `cargo test -p xai-grok-tools --lib code_mode`；`cargo build -p xai-grok-tools --example code_mode_worker` 后设 `GROK_TEST_CODE_MODE_WORKER=<绝对路径>` 运行 `cargo test -p xai-grok-shell --lib code_mode -- --include-ignored`（含 MCP 进入 catalog 并经 `use_tool` 到达网关、真实 worker 往返/取消回收/8 路并发、混合批次插话、超时配置）；`cargo check -p xai-grok-pager-bin`。
+
 ## 4. 跟随上游或允许等价替代的区域
 
 ### 4.1 Plan Mode、结构化输出和工具观测的来源
@@ -197,6 +218,7 @@ git log --all --diff-filter=A -- path/to/affected/file
 | `sampler_turn.rs` / `turn.rs` | 请求前 route 重选、请求中同候选重试、选定 sampler 后 schema 判定。 |
 | privacy/telemetry/config 和各 crate `Cargo.toml` | 新上报路径、feature 迁移、`release-dist` 的完整接线。 |
 | sampling-types / sampler | 断点 placement 与 policy 后处理的边界、TTL/off、空块、认证头和 wire 兼容。 |
+| shell `tool_calls.rs` / `cancel.rs` / `code_mode.rs` | 直接写 tool_result 的路径是否经过 `deliver_tool_result`；Code Mode 混合批次是否只做一次收尾；后台通知是否写给父 `execute`；MCP inventory 是否仍取自 `search_tool` 快照并经 `use_tool` 调用。 |
 | installers/update/dist/workflows | fork 发行源、版本匹配、固定工具输入、包验证与权限边界。 |
 
 新增上游 API 要跟随其真实签名；新字段沿构造、切换、持久化、fixture 全链路接通。不能通过删除测试、扩大 allowlist、关闭隐私门控或全局格式化来“解决”合并。
@@ -262,20 +284,6 @@ PR 必须列出上游 SHA、保留/替代的 fork 行为、每项冲突决策及
 | Plan Mode 撤销 fork 扩展 | `1a6d8517`（PR #97）；RFC §5；差异审计 2026-09-18 更新。 |
 | 版本线跟随上游 | `217891d1`；`AGENTS.md` Releases；发布文档。 |
 | 标准发行入口与精确产物复用 | `6ff1d78f`、`2e09f905`；`docs/release-distribution.md`。 |
+| JavaScript Code Mode（默认开启，全工具含 MCP） | PR #104；`docs/code-mode.md`；本文 §3.6。 |
 
 新上游若使这些文件或符号消失，先核实行为迁移或等价替代，再更新入口；不要仅为维持本文的旧路径把已删除代码恢复。
-
-## Optional JavaScript Code Mode
-
-The fork adds opt-in (`GROK_CODE_MODE=1`) tool composition through an additive
-`execute` tool. A fresh QuickJS child runs async JavaScript while the shell
-executes nested builtin leaf calls through its existing permission/hooks/Plan
-Mode/locking chain. Nested results go to local parent-linked traces rather than
-orphan provider tool results. Cancellation and limits are enforced by the host
-and worker; completed effects are not rolled back or automatically retried.
-
-This follows OpenCode's host-bridge design and Pi's QuickJS isolation approach;
-it does not replace ordinary tools or introduce Node/Bun requirements. MCP,
-workflow and session controls remain direct in the first version. See
-[design and validation](docs/code-mode.md). Dependency changes are per-crate;
-the generated root manifest and vendored sources are unchanged.

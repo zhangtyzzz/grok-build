@@ -1,18 +1,21 @@
 # Code Mode
 
 Code Mode lets the model submit one JavaScript program that calls tools, examines
-results, and continues without a model request between each dependent step.
-It is experimental and disabled by default:
+results, and continues without a model request between each dependent step. It
+composes every tool the session can call, including MCP and managed-gateway
+tools that a shell command cannot reach. It is enabled by default:
 
 ```sh
-GROK_CODE_MODE=1 grok
-# Also supported by the shipped grok headless and ACP entry points.
+GROK_CODE_MODE=0 grok   # disable (also false/off/no)
+GROK_CODE_MODE_TIMEOUT_SECS=900 grok   # overall run limit, 10..=3600, default 600
+# Both apply to the shipped grok TUI, headless and ACP entry points.
 ```
 
-Unset `GROK_CODE_MODE` to disable it. The model gains an additive `execute` tool;
-existing direct tools remain available. If a tool already owns the name `execute`,
-Code Mode is not advertised or intercepted. The opt-in authorizes computation;
-all external effects still require the existing individual tool admission checks.
+The model gains an additive `execute` tool; every direct tool, including the
+`search_tool`/`use_tool` path to MCP tools, stays available, and the model picks
+per task. If a tool already owns the name `execute`, Code Mode is not advertised
+or intercepted. Enabling it authorizes computation only; all external effects
+still pass the existing individual tool admission checks.
 
 ## Script contract
 
@@ -45,17 +48,25 @@ that tool's documented output is JSON. Runtime/permission/policy/tool errors
 reject the Promise; tools' own successful structured/text contracts still apply
 (for example a reported command exit status need not be a dispatch exception).
 
-`catalog.search(query, offset)` searches exact names and returns at most 20
-summaries; `catalog.describe(name)` returns the full input schema. Names are not
-rewritten into aliases: bracket notation works for non-identifiers.
+`catalog.search(query, offset)` matches names and descriptions case-insensitively
+and returns at most 20 summaries per page; `catalog.describe(name)` returns the
+full input schema. Names are not rewritten into aliases: bracket notation works
+for non-identifiers, e.g. `tools["linear__save_issue"]({...})`.
 Both catalog functions return JSON objects directly; only host tool calls return
 model-facing text strings.
 
-Only builtin leaf tools classified as read, edit, delete, list-dir, write, move,
-search or execute enter this first inventory. They retain normal validation,
-hooks, permissions, trust/sandbox checks, same-file locking, and cancellation.
-MCP/meta-dispatch, workflow, subagents, media tools and session/Plan controls stay
-direct. New tools discovered during a program require a new execute invocation.
+The inventory is every declared builtin tool plus, whenever `use_tool` is offered,
+every MCP and managed-gateway tool from the snapshot `search_tool` searches (the
+same `server__tool` names; disabled tools are absent). Excluded are only
+`execute` itself, the `search_tool`/`use_tool` pair (their targets are listed
+directly), and the turn-control tools `enter_plan`, `exit_plan` and `ask_user`,
+which wait on the user or switch the turn's mode. A nested MCP call runs as an
+ordinary inline `use_tool` call, so MCP auth retry, argument coercion,
+permissions, hooks and telemetry are unchanged. Every nested call keeps normal
+validation, hooks, permissions, trust/sandbox checks, same-file locking and
+cancellation. Media-generation caps count all calls admitted in one run. The
+inventory is frozen per run: a tool whose definition changes mid-run is
+rejected, and tools connected later need a new execute invocation.
 
 Each program gets a fresh QuickJS process. No imports, filesystem, network,
 process, timers or credentials are injected. All external access is through host
@@ -76,6 +87,11 @@ are **not rolled back**, and cancellation does not prove that an external
 command or service stopped. Unconfirmed calls are marked `outcome_unknown`.
 Do not retry an entire failed program with writes without inspecting its trace.
 
+When the user sends a new message mid-run, running nested commands move to the
+background as they do for direct calls. Their notice answers the parent
+`execute` call (nested IDs never enter history), listing each background task ID
+for later output retrieval.
+
 The model conversation receives only the outer execute result, selected value,
 bounded logs/warnings, call summaries and images. Local session files named
 `code-mode-<uuid>.jsonl` retain the parent ID, program, admissions, actual prepared
@@ -95,7 +111,7 @@ Limits are initial conservative bounds, not performance claims:
 | Host tool calls / in flight per program | 64 / 8 |
 | Workers per host process | 2, slot held until actual worker exit |
 | Active JS computation | 5 seconds cooperative budget (excludes blocked tool-reply reads); overall deadline kills stalled workers |
-| Overall execution | 120 seconds, **including tool and permission waits** |
+| Overall execution | 600 seconds by default (`GROK_CODE_MODE_TIMEOUT_SECS`, 10–3600), **including tool, subagent and permission waits** |
 | Final serialized value plus raw log text | 64 KiB; at most 256 log entries |
 | Aggregate host results/images/followups per program | 16 MiB |
 | IPC frame | 2 MiB, checked before body allocation |
@@ -112,6 +128,10 @@ The shell reuses its existing batch prepare/dispatch/finalize path. A private
 async task-local sink redirects nested results, including all rejection/error
 paths, away from the provider transcript. It is scoped around each nested call;
 dispatch tasks do not write transcripts. Per-run file locks span nested batches.
+A model response that mixes `execute` with direct calls runs as one tool round:
+groups share the interruption state, and deferred followups, interjections and
+skill reminders are flushed once after every call has its result, so tool
+results stay contiguous after the assistant message as providers require.
 The composition root enters the hidden worker before normal application startup.
 Workers enroll in global and session process scopes and use the existing Linux
 parent-death helper, so session reclamation also reaches a busy runtime.
@@ -142,6 +162,9 @@ independent calls. It reports payload bytes and process overhead, not model
 tokens, live model latency, or task success rates. It excludes program/catalog
 and result-envelope costs and must not be presented as a total token saving.
 
-A [24-session live-model check](code-mode-live-evaluation.md) records limited
-read/filter gains and a terminal-enabled control with no script adoption; it
-does not establish a general coding improvement. Code Mode remains opt-in.
+A [24-session live-model check](code-mode-live-evaluation.md) of the first,
+builtin-only inventory records read/filter gains and a terminal-enabled control
+with no script adoption. That inventory offered nothing a shell could not do.
+Default-on follows OpenCode and Pi, which route MCP tools through their code
+modes by default; here direct MCP calls stay available, so the only fixed cost
+is the `execute` definition.

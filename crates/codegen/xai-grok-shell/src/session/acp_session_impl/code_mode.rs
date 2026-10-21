@@ -39,6 +39,12 @@ pub(super) fn parent_id() -> Option<String> {
     NESTED.try_with(|sink| sink.parent.clone()).ok()
 }
 
+/// Parent `execute` call ID of a nested call ID (`{parent}/code/{n}`).
+pub(super) fn nested_parent_id(id: &str) -> Option<&str> {
+    let (parent, sequence) = id.rsplit_once("/code/")?;
+    (!parent.is_empty() && !sequence.is_empty() && sequence.bytes().all(|b| b.is_ascii_digit()))
+        .then_some(parent)
+}
 pub(super) fn file_lock(path: &str) -> Option<Arc<tokio::sync::Mutex<()>>> {
     NESTED
         .try_with(|sink| {
@@ -58,33 +64,62 @@ pub(super) fn record_prepared(prepared: &PreparedToolCall) {
         }))
     });
 }
-fn eligible(kind: Option<ToolKind>) -> bool {
-    // Explicit leaf capability policy. No control-flow, meta-dispatch, workflow,
-    // dynamic MCP, media generation, agent, or recursive execute entry points.
-    matches!(
-        kind,
-        Some(
-            ToolKind::Read
-                | ToolKind::Edit
-                | ToolKind::Delete
-                | ToolKind::ListDir
-                | ToolKind::List
-                | ToolKind::Write
-                | ToolKind::Move
-                | ToolKind::Search
-                | ToolKind::Execute
+/// Every tool the session can call composes, except recursion, the MCP
+/// meta-dispatch pair (MCP tools enter the catalog by name instead), and
+/// turn-control tools that wait on the user or switch the turn's mode.
+fn composable(name: &str, kind: Option<ToolKind>) -> bool {
+    name != "execute"
+        && !matches!(
+            kind,
+            Some(
+                ToolKind::SearchTool
+                    | ToolKind::UseTool
+                    | ToolKind::EnterPlan
+                    | ToolKind::ExitPlan
+                    | ToolKind::AskUser
+            )
         )
-    )
 }
+#[cfg(test)]
+thread_local! {
+    /// Per-thread override so tests never mutate the process environment.
+    static ENABLED_FOR_TEST: Cell<bool> = const { Cell::new(false) };
+}
+/// On by default; `GROK_CODE_MODE=0` (or false/off/no) disables it.
+#[cfg(not(test))]
 fn enabled() -> bool {
-    std::env::var(runtime::ENV_ENABLED).is_ok_and(|v| v == "1")
+    !std::env::var(runtime::ENV_ENABLED).is_ok_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        )
+    })
+}
+/// Unit tests ignore the environment and opt in per thread.
+#[cfg(test)]
+fn enabled() -> bool {
+    ENABLED_FOR_TEST.with(Cell::get)
+}
+const ENV_TIMEOUT_SECS: &str = "GROK_CODE_MODE_TIMEOUT_SECS";
+const DEFAULT_WALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+/// Overall run limit including tool and permission waits; subagents and workflows
+/// routinely outlive a couple of minutes. Clamped to 10 s ..= 1 h.
+fn wall_timeout() -> std::time::Duration {
+    std::env::var(ENV_TIMEOUT_SECS)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(|secs| std::time::Duration::from_secs(secs.clamp(10, 3600)))
+        .unwrap_or(DEFAULT_WALL_TIMEOUT)
 }
 fn definition() -> ToolDefinition {
     ToolDefinition::function(
         "execute",
-        Some(
-            "Compose tools with JavaScript in an isolated runtime. Input code is an async function body: use await and explicit return (otherwise null). Call catalog.search(query, offset) for exact available names, catalog.describe(name) for the input schema, then tools[name](args). The catalog functions return JSON objects. Host tool calls resolve to strings; do not assume their output is structured JSON. Use Promise.allSettled for partial failures; at most 8 calls in flight and 64 calls total. All calls retain normal permissions/hooks/Plan Mode. Await all required work: unfinished calls are interrupted at return, without rolling back completed effects. No filesystem, network, imports, timers, process, or persistent JS state. console.log appends bounded logs. Return JSON data with all nested promises explicitly awaited. Limits: 64 KiB source, 64 MiB JS heap, 5 seconds active computation, 120 seconds overall INCLUDING tools and permission waits, 64 KiB result/log text. Do not retry an entire failed script with writes without inspecting its trace. Ordinary direct tools remain available.",
-        ),
+        Some(format!(
+            "Compose any of your tools, including MCP server tools, with JavaScript in an isolated runtime. Prefer it over separate tool calls when work needs several calls, dependent lookups, parallel calls, or filtering large results before you see them; for one simple call, call the tool directly. Input code is an async function body: use await and explicit return (otherwise null). catalog.search(query, offset) matches names and descriptions (20 per page); catalog.describe(name) returns the input schema; then call tools[name](args), e.g. tools[\"server__tool\"]({{...}}). MCP tools found with search_tool are callable here by that same name. The catalog functions return JSON objects. Tool calls resolve to their text output; do not assume it is structured JSON. Use Promise.allSettled for partial failures; at most {in_flight} calls in flight and {calls} calls total. All calls keep normal permissions, hooks and Plan Mode. Await all required work: unfinished calls are interrupted at return, without rolling back completed effects. No filesystem, network, imports, timers, process, or persistent JS state; reach everything through tools. console.log appends bounded logs. Return JSON data with all nested promises awaited. Limits: 64 KiB source, 64 MiB JS heap, 5 seconds active computation, {wall} seconds overall INCLUDING tools and permission waits, 64 KiB result/log text. Do not retry an entire failed script with writes without inspecting its trace.",
+            in_flight = runtime::MAX_IN_FLIGHT,
+            calls = runtime::MAX_CALLS,
+            wall = wall_timeout().as_secs(),
+        )),
         json!({"type":"object","properties":{"code":{"type":"string"}},"required":["code"],"additionalProperties":false}),
     )
 }
@@ -245,43 +280,56 @@ impl SessionActor {
         // Preserve limits scoped to the entire model response before splitting
         // ordinary groups around execute (notably media generation caps).
         let calls = self.reject_excess_media_gen_calls(calls).await?;
+        // One round for the whole response: groups share the interruption state,
+        // and followups/interjections wait until every call has its result.
+        let mut deferred_followups = Vec::new();
+        let mut final_result: Option<ToolLoop> = None;
         let mut pending = Vec::new();
-        let mut outcome = ToolLoop::Continue;
         for call in calls {
-            if !matches!(outcome, ToolLoop::Continue) {
+            if call.function.name != "execute" {
+                pending.push(call);
+                continue;
+            }
+            if !pending.is_empty() {
+                self.execute_regular_tool_call_group(
+                    std::mem::take(&mut pending),
+                    requested_model.as_deref(),
+                    &mut deferred_followups,
+                    &mut final_result,
+                )
+                .await?;
+            }
+            if final_result.is_some() {
                 self.deliver_tool_result(ConversationItem::tool_result(
                     call.id,
                     "Not executed after an earlier tool interrupted this batch",
                 ));
-            } else if call.function.name == "execute" {
-                if !pending.is_empty() {
-                    outcome = self
-                        .execute_regular_tool_calls(
-                            std::mem::take(&mut pending),
-                            requested_model.clone(),
-                        )
-                        .await?;
-                }
-                if matches!(outcome, ToolLoop::Continue) {
-                    outcome = self
-                        .execute_code_mode(call, requested_model.as_deref(), None)
-                        .await?;
-                } else {
-                    self.deliver_tool_result(ConversationItem::tool_result(
-                        call.id,
-                        "Not executed after an earlier tool interrupted this batch",
-                    ));
-                }
-            } else {
-                pending.push(call);
+                continue;
+            }
+            let outcome = self
+                .execute_code_mode(
+                    call,
+                    requested_model.as_deref(),
+                    None,
+                    &mut deferred_followups,
+                )
+                .await?;
+            if !matches!(outcome, ToolLoop::Continue) {
+                final_result = Some(outcome);
             }
         }
         if !pending.is_empty() {
-            outcome = self
-                .execute_regular_tool_calls(pending, requested_model)
-                .await?;
+            self.execute_regular_tool_call_group(
+                pending,
+                requested_model.as_deref(),
+                &mut deferred_followups,
+                &mut final_result,
+            )
+            .await?;
         }
-        Ok(outcome)
+        Ok(self
+            .finish_tool_round(deferred_followups, final_result)
+            .await)
     }
 
     async fn execute_code_mode(
@@ -289,6 +337,7 @@ impl SessionActor {
         call: crate::sampling::types::ToolCallResponse,
         model: Option<&str>,
         worker_path: Option<&Path>,
+        deferred_followups: &mut Vec<ConversationItem>,
     ) -> Result<ToolLoop, acp::Error> {
         let id = acp::ToolCallId::new(Arc::from(call.id.clone()));
         self.send_update(
@@ -306,7 +355,7 @@ impl SessionActor {
         let mut final_loop = ToolLoop::Continue;
         let mut delivery = CodeRunDelivery::default();
         let run = self.run_code_mode(&call, model, &mut final_loop, &mut delivery, worker_path);
-        let mut result = match tokio::time::timeout(runtime::WALL_TIMEOUT, run).await {
+        let mut result = match tokio::time::timeout(wall_timeout(), run).await {
             Ok(Ok(value)) => value,
             Ok(Err(error)) => {
                 json!({"ok":false,"error":error.to_string(),"warning":"Inspect nested trace before retrying; completed effects are not rolled back"})
@@ -345,11 +394,7 @@ impl SessionActor {
             text,
             delivery.images,
         ));
-        for message in delivery.followups {
-            self.chat_state_handle.push_user_message(message);
-        }
-        self.drain_interjections_at_safe_point().await;
-        self.flush_pending_skill_reminders().await;
+        deferred_followups.extend(delivery.followups);
         Ok(final_loop)
     }
 
@@ -371,19 +416,7 @@ impl SessionActor {
             input.code.len() <= runtime::MAX_CODE_BYTES,
             "Code Mode source exceeds limit"
         );
-        let definitions = self.prepare_tool_definitions_inner().await;
-        let inventory: BTreeMap<_, _> = definitions
-            .into_iter()
-            .filter(|d| {
-                eligible(
-                    self.agent
-                        .borrow()
-                        .tool_bridge()
-                        .tool_kind(&d.function.name),
-                )
-            })
-            .map(|d| (d.function.name.clone(), d))
-            .collect();
+        let inventory = self.code_mode_inventory().await;
         let catalog = inventory.values().map(|d| json!({"name":d.function.name,"description":d.function.description,"parameters":d.function.parameters})).collect();
         let dir = crate::session::persistence::ensure_owner_only_session_dir(&self.session_info)?;
         let trace_name = format!("code-mode-{}.jsonl", uuid::Uuid::new_v4());
@@ -481,6 +514,7 @@ impl SessionActor {
         let locks = Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
         let mut result_budget = ResultBudget(HOST_RESULT_BUDGET);
         let mut seen = HashSet::new();
+        let mut admitted_kinds: Vec<(String, Option<ToolKind>)> = Vec::new();
         let finished = loop {
             tokio::select! {
                 incoming = rx.recv() => {
@@ -491,10 +525,26 @@ impl SessionActor {
                             let child_id = format!("{}/code/{}", call.id, seen.len());
                             trace.start(&child_id, &name, &arguments)?;
                             let frozen = inventory.get(&name).cloned();
+                            // Media caps apply per run: nested calls never pass the outer
+                            // response's batch check.
+                            let kind = self.agent.borrow().tool_bridge().tool_kind(&name);
+                            admitted_kinds.push((name.clone(), kind));
+                            let capped = !xai_grok_tools::media_gen_limits::over_cap_by_name(
+                                admitted_kinds.iter().map(|(n, k)| (n.as_str(), *k)),
+                                &self.rebuild_spec.media_gen_batch_limits,
+                            )
+                            .is_empty();
+                            if capped {
+                                admitted_kinds.pop();
+                            }
                             let parent = call.id.clone();
                             let locks = locks.clone();
                             running.push(async move {
-                                let result = self.execute_nested_code_call(&parent, &child_id, &name, arguments, frozen, model, locks).await;
+                                let result = if capped {
+                                    Err(anyhow::anyhow!("Media generation limit for `{name}` reached in this execute run"))
+                                } else {
+                                    self.execute_nested_code_call(&parent, &child_id, &name, arguments, frozen, model, locks).await
+                                };
                                 (id, child_id, result)
                             }.boxed_local());
                         }
@@ -572,6 +622,77 @@ impl SessionActor {
         Ok(result)
     }
 
+    /// Everything the session can call now, keyed by client name: the declared
+    /// builtins plus, while `use_tool` is offered, every MCP and managed-gateway tool
+    /// from the same snapshot `search_tool` reads (same `server__tool` names).
+    async fn code_mode_inventory(&self) -> BTreeMap<String, ToolDefinition> {
+        let bridge = self.agent.borrow().tool_bridge().clone();
+        let kind_of = |name: &str| bridge.tool_kind(name);
+        let declared = self.prepare_tool_definitions_inner().await;
+        let mcp_reachable = declared
+            .iter()
+            .any(|d| kind_of(&d.function.name) == Some(ToolKind::UseTool));
+        let mut inventory: BTreeMap<_, _> = declared
+            .into_iter()
+            .filter(|d| composable(&d.function.name, kind_of(&d.function.name)))
+            .map(|d| (d.function.name.clone(), d))
+            .collect();
+        if mcp_reachable {
+            for tool in self.mcp_tools() {
+                inventory
+                    .entry(tool.qualified_name.clone())
+                    .or_insert_with(|| {
+                        ToolDefinition::function(
+                            tool.qualified_name,
+                            Some(tool.description),
+                            tool.input_schema,
+                        )
+                    });
+            }
+        }
+        inventory
+    }
+    fn mcp_tools(&self) -> Vec<crate::session::tool_index::ToolMetadata> {
+        self.tool_metadata_snapshot
+            .lock()
+            .map(|snapshot| snapshot.tools.clone())
+            .unwrap_or_default()
+    }
+    /// MCP tools run as an inline `use_tool` call so MCP auth retry, argument
+    /// coercion, permissions, hooks and telemetry stay on their one existing path.
+    fn nested_call_function(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> anyhow::Result<crate::sampling::types::ToolCallFunction> {
+        if !self
+            .mcp_tools()
+            .iter()
+            .any(|tool| tool.qualified_name == name)
+        {
+            return Ok(crate::sampling::types::ToolCallFunction::new(
+                name,
+                serde_json::to_string(&arguments)?,
+            ));
+        }
+        let toolset = self.agent.borrow().tool_bridge().toolset();
+        let wrapper = toolset
+            .tool_name_for_kind(ToolKind::UseTool)
+            .ok_or_else(|| anyhow::anyhow!("MCP tools are unavailable in this session"))?;
+        let input = xai_grok_tools::implementations::UseToolInput::Inline(
+            xai_grok_tools::implementations::use_tool::InlineMcpInvocation {
+                tool_name: name.to_owned(),
+                tool_input: arguments,
+            },
+        );
+        let wire = toolset
+            .model_mcp_arguments(&wrapper, &input)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(crate::sampling::types::ToolCallFunction::new(
+            wrapper,
+            serde_json::to_string(&wire)?,
+        ))
+    }
     #[allow(clippy::too_many_arguments)]
     async fn execute_nested_code_call(
         &self,
@@ -593,20 +714,17 @@ impl SessionActor {
                 let frozen = frozen.ok_or_else(|| {
                     anyhow::anyhow!("Unknown or ineligible tool; use catalog.search()")
                 })?;
-                let current = self.prepare_tool_definitions_inner().await;
+                let current = self.code_mode_inventory().await;
                 anyhow::ensure!(
-                    eligible(self.agent.borrow().tool_bridge().tool_kind(name))
-                        && current.iter().any(|d| d.function.name == name
-                            && serde_json::to_value(d).ok() == serde_json::to_value(&frozen).ok()),
+                    current.get(name).is_some_and(|d| {
+                        serde_json::to_value(d).ok() == serde_json::to_value(&frozen).ok()
+                    }),
                     "Tool inventory changed; start a new execute"
                 );
                 let call = crate::sampling::types::ToolCallResponse {
                     id: id.to_owned(),
                     kind: "function".to_owned(),
-                    function: crate::sampling::types::ToolCallFunction::new(
-                        name,
-                        serde_json::to_string(&arguments)?,
-                    ),
+                    function: self.nested_call_function(name, arguments)?,
                 };
                 let mut followups = Vec::new();
                 let mut outcome = None;
