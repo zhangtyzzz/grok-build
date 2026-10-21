@@ -254,6 +254,8 @@ PR 必须列出上游 SHA、保留/替代的 fork 行为、每项冲突决策及
 
 四个 lockstep 包 `xai-grok-version`、`xai-grok-shell`、`xai-grok-pager`、`xai-grok-pager-bin` 跟随上游版本线，依据 `217891d1`。不要每次同步额外创建 fork bump PR；只有需要在下一次同步前发布的 fork-only hotfix 才使用上游之上的下一个 patch。
 
+当前 fork-only 发布：`1.0.46`（2026-10-22，上游仍为 `1.0.45`；为让维护者立即用上 PR #104 的 Code Mode，维护者授权）。上游每次同步都会提升版本号，所以下一次同步直接取上游版本，恢复完全跟随上游版本线，不再额外 bump；若上游恰好也是 `1.0.46`，tag 已存在，同步合并但不重复发布。
+
 普通 PR 合并不是发布成功。发布须在目标 main 的 CI 通过后，按 [`docs/release-distribution.md`](docs/release-distribution.md) 从 main 调用 `Publish release (warm, tag, Release)`：
 
 1. 确定四包版本和目标 commit，若该版本 tag 已存在则不重写 tag/资产。
