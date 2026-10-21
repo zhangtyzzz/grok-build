@@ -1,0 +1,727 @@
+{
+  "source_commit": "ea9ae0e62ef22c6d25c920fbbde105f4d8760a26",
+  "binary_sha256": "ffdfaa753b6d34d7cdee56507883d1c3122e6d040b66dcef296df4957084f3ea",
+  "reported_binary_version": "grok 1.0.45 (29f6fdef7ae6)",
+  "version_limitation": "A shared-target build-script stamp was stale; source build log, binary hash, advertised execute definitions and actual nested traces are the provenance. Both modes used this identical binary.",
+  "model": "qwen3.8-flash",
+  "order": "per task direct/code in repeat 1, code/direct in repeat 2",
+  "limits": {
+    "max_turns": 12,
+    "timeout_seconds": 240
+  },
+  "credentials_or_endpoints_included": false,
+  "results": [
+    {
+      "suite": "readonly",
+      "label": "dependent-r1-direct",
+      "task": "dependent",
+      "repeat": 1,
+      "code_mode": false,
+      "success": true,
+      "expected": {
+        "sum": 2821,
+        "count": 4
+      },
+      "actual": {
+        "sum": 2821,
+        "count": 4
+      },
+      "usage": {
+        "input_tokens": 17250,
+        "cache_read_input_tokens": 86784,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 3660,
+        "reasoning_tokens": 2738,
+        "total_tokens": 107694
+      },
+      "num_turns": 10,
+      "execute_traces": 0,
+      "seconds": 82.635730875,
+      "tools": "read_file,list_dir,grep",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "readonly",
+      "label": "dependent-r1-code",
+      "task": "dependent",
+      "repeat": 1,
+      "code_mode": true,
+      "success": true,
+      "expected": {
+        "sum": 2821,
+        "count": 4
+      },
+      "actual": {
+        "sum": 2821,
+        "count": 4
+      },
+      "usage": {
+        "input_tokens": 19626,
+        "cache_read_input_tokens": 52224,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 2062,
+        "reasoning_tokens": 1296,
+        "total_tokens": 73912
+      },
+      "num_turns": 6,
+      "execute_traces": 0,
+      "seconds": 55.21673300000002,
+      "tools": "read_file,list_dir,grep",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "readonly",
+      "label": "parallel-r1-direct",
+      "task": "parallel",
+      "repeat": 1,
+      "code_mode": false,
+      "success": true,
+      "expected": {
+        "svc-0": 13,
+        "svc-1": 12,
+        "svc-2": 13,
+        "svc-3": 13
+      },
+      "actual": {
+        "svc-0": 13,
+        "svc-1": 12,
+        "svc-2": 13,
+        "svc-3": 13
+      },
+      "usage": {
+        "input_tokens": 21973,
+        "cache_read_input_tokens": 104704,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 4876,
+        "reasoning_tokens": 2428,
+        "total_tokens": 131553
+      },
+      "num_turns": 10,
+      "execute_traces": 0,
+      "seconds": 97.79673737499999,
+      "tools": "read_file,list_dir,grep",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "readonly",
+      "label": "parallel-r1-code",
+      "task": "parallel",
+      "repeat": 1,
+      "code_mode": true,
+      "success": true,
+      "expected": {
+        "svc-0": 13,
+        "svc-1": 12,
+        "svc-2": 13,
+        "svc-3": 13
+      },
+      "actual": {
+        "svc-0": 13,
+        "svc-1": 12,
+        "svc-2": 13,
+        "svc-3": 13
+      },
+      "usage": {
+        "input_tokens": 8144,
+        "cache_read_input_tokens": 33792,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 1153,
+        "reasoning_tokens": 472,
+        "total_tokens": 43089
+      },
+      "num_turns": 5,
+      "execute_traces": 3,
+      "seconds": 49.006952667000036,
+      "tools": "read_file,list_dir,grep",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "readonly",
+      "label": "tiny-r1-direct",
+      "task": "tiny",
+      "repeat": 1,
+      "code_mode": false,
+      "success": true,
+      "expected": {
+        "port": 8317
+      },
+      "actual": {
+        "port": 8317
+      },
+      "usage": {
+        "input_tokens": 3585,
+        "cache_read_input_tokens": 15360,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 180,
+        "reasoning_tokens": 111,
+        "total_tokens": 19125
+      },
+      "num_turns": 3,
+      "execute_traces": 0,
+      "seconds": 20.013456292,
+      "tools": "read_file,list_dir,grep",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "readonly",
+      "label": "tiny-r1-code",
+      "task": "tiny",
+      "repeat": 1,
+      "code_mode": true,
+      "success": true,
+      "expected": {
+        "port": 8317
+      },
+      "actual": {
+        "port": 8317
+      },
+      "usage": {
+        "input_tokens": 3647,
+        "cache_read_input_tokens": 16384,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 451,
+        "reasoning_tokens": 305,
+        "total_tokens": 20482
+      },
+      "num_turns": 3,
+      "execute_traces": 0,
+      "seconds": 24.17557716699997,
+      "tools": "read_file,list_dir,grep",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "readonly",
+      "label": "dependent-r2-code",
+      "task": "dependent",
+      "repeat": 2,
+      "code_mode": true,
+      "success": true,
+      "expected": {
+        "sum": 2821,
+        "count": 4
+      },
+      "actual": {
+        "sum": 2821,
+        "count": 4
+      },
+      "usage": {
+        "input_tokens": 15236,
+        "cache_read_input_tokens": 86272,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 2245,
+        "reasoning_tokens": 1285,
+        "total_tokens": 103753
+      },
+      "num_turns": 10,
+      "execute_traces": 1,
+      "seconds": 61.78149208299999,
+      "tools": "read_file,list_dir,grep",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "readonly",
+      "label": "dependent-r2-direct",
+      "task": "dependent",
+      "repeat": 2,
+      "code_mode": false,
+      "success": true,
+      "expected": {
+        "sum": 2821,
+        "count": 4
+      },
+      "actual": {
+        "sum": 2821,
+        "count": 4
+      },
+      "usage": {
+        "input_tokens": 13630,
+        "cache_read_input_tokens": 75264,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 1983,
+        "reasoning_tokens": 1065,
+        "total_tokens": 90877
+      },
+      "num_turns": 9,
+      "execute_traces": 0,
+      "seconds": 50.38387399999999,
+      "tools": "read_file,list_dir,grep",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "readonly",
+      "label": "parallel-r2-code",
+      "task": "parallel",
+      "repeat": 2,
+      "code_mode": true,
+      "success": true,
+      "expected": {
+        "svc-0": 13,
+        "svc-1": 12,
+        "svc-2": 13,
+        "svc-3": 13
+      },
+      "actual": {
+        "svc-0": 13,
+        "svc-1": 12,
+        "svc-2": 13,
+        "svc-3": 13
+      },
+      "usage": {
+        "input_tokens": 7334,
+        "cache_read_input_tokens": 24576,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 1207,
+        "reasoning_tokens": 669,
+        "total_tokens": 33117
+      },
+      "num_turns": 4,
+      "execute_traces": 2,
+      "seconds": 45.485610250000036,
+      "tools": "read_file,list_dir,grep",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "readonly",
+      "label": "parallel-r2-direct",
+      "task": "parallel",
+      "repeat": 2,
+      "code_mode": false,
+      "success": true,
+      "expected": {
+        "svc-0": 13,
+        "svc-1": 12,
+        "svc-2": 13,
+        "svc-3": 13
+      },
+      "actual": {
+        "svc-0": 13,
+        "svc-1": 12,
+        "svc-2": 13,
+        "svc-3": 13
+      },
+      "usage": {
+        "input_tokens": 21563,
+        "cache_read_input_tokens": 35840,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 3616,
+        "reasoning_tokens": 2841,
+        "total_tokens": 61019
+      },
+      "num_turns": 5,
+      "execute_traces": 0,
+      "seconds": 71.55958549999997,
+      "tools": "read_file,list_dir,grep",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "readonly",
+      "label": "tiny-r2-code",
+      "task": "tiny",
+      "repeat": 2,
+      "code_mode": true,
+      "success": true,
+      "expected": {
+        "port": 8317
+      },
+      "actual": {
+        "port": 8317
+      },
+      "usage": {
+        "input_tokens": 2999,
+        "cache_read_input_tokens": 10240,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 86,
+        "reasoning_tokens": 20,
+        "total_tokens": 13325
+      },
+      "num_turns": 2,
+      "execute_traces": 0,
+      "seconds": 17.04539675000001,
+      "tools": "read_file,list_dir,grep",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "readonly",
+      "label": "tiny-r2-direct",
+      "task": "tiny",
+      "repeat": 2,
+      "code_mode": false,
+      "success": true,
+      "expected": {
+        "port": 8317
+      },
+      "actual": {
+        "port": 8317
+      },
+      "usage": {
+        "input_tokens": 3552,
+        "cache_read_input_tokens": 15360,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 108,
+        "reasoning_tokens": 39,
+        "total_tokens": 19020
+      },
+      "num_turns": 3,
+      "execute_traces": 0,
+      "seconds": 18.168315957999994,
+      "tools": "read_file,list_dir,grep",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "shell",
+      "label": "dependent-r1-direct",
+      "task": "dependent",
+      "repeat": 1,
+      "code_mode": false,
+      "success": true,
+      "expected": {
+        "sum": 2821,
+        "count": 4
+      },
+      "actual": {
+        "sum": 2821,
+        "count": 4
+      },
+      "usage": {
+        "input_tokens": 30731,
+        "cache_read_input_tokens": 80896,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 1018,
+        "reasoning_tokens": 544,
+        "total_tokens": 112645
+      },
+      "num_turns": 6,
+      "execute_traces": 0,
+      "seconds": 64.695743459,
+      "tools": "read_file,list_dir,grep,run_terminal_command",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "shell",
+      "label": "dependent-r1-code",
+      "task": "dependent",
+      "repeat": 1,
+      "code_mode": true,
+      "success": true,
+      "expected": {
+        "sum": 2821,
+        "count": 4
+      },
+      "actual": {
+        "sum": 2821,
+        "count": 4
+      },
+      "usage": {
+        "input_tokens": 14964,
+        "cache_read_input_tokens": 87040,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 958,
+        "reasoning_tokens": 349,
+        "total_tokens": 102962
+      },
+      "num_turns": 7,
+      "execute_traces": 0,
+      "seconds": 64.242427,
+      "tools": "read_file,list_dir,grep,run_terminal_command",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "shell",
+      "label": "parallel-r1-direct",
+      "task": "parallel",
+      "repeat": 1,
+      "code_mode": false,
+      "success": true,
+      "expected": {
+        "svc-0": 13,
+        "svc-1": 12,
+        "svc-2": 13,
+        "svc-3": 13
+      },
+      "actual": {
+        "svc-0": 13,
+        "svc-1": 12,
+        "svc-2": 13,
+        "svc-3": 13
+      },
+      "usage": {
+        "input_tokens": 10821,
+        "cache_read_input_tokens": 46080,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 771,
+        "reasoning_tokens": 209,
+        "total_tokens": 57672
+      },
+      "num_turns": 4,
+      "execute_traces": 0,
+      "seconds": 45.10594025,
+      "tools": "read_file,list_dir,grep,run_terminal_command",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "shell",
+      "label": "parallel-r1-code",
+      "task": "parallel",
+      "repeat": 1,
+      "code_mode": true,
+      "success": true,
+      "expected": {
+        "svc-0": 13,
+        "svc-1": 12,
+        "svc-2": 13,
+        "svc-3": 13
+      },
+      "actual": {
+        "svc-0": 13,
+        "svc-1": 12,
+        "svc-2": 13,
+        "svc-3": 13
+      },
+      "usage": {
+        "input_tokens": 14455,
+        "cache_read_input_tokens": 78848,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 1648,
+        "reasoning_tokens": 586,
+        "total_tokens": 94951
+      },
+      "num_turns": 6,
+      "execute_traces": 0,
+      "seconds": 74.829815,
+      "tools": "read_file,list_dir,grep,run_terminal_command",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "shell",
+      "label": "tiny-r1-direct",
+      "task": "tiny",
+      "repeat": 1,
+      "code_mode": false,
+      "success": true,
+      "expected": {
+        "port": 8317
+      },
+      "actual": {
+        "port": 8317
+      },
+      "usage": {
+        "input_tokens": 9687,
+        "cache_read_input_tokens": 45056,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 360,
+        "reasoning_tokens": 195,
+        "total_tokens": 55103
+      },
+      "num_turns": 4,
+      "execute_traces": 0,
+      "seconds": 40.011760084,
+      "tools": "read_file,list_dir,grep,run_terminal_command",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "shell",
+      "label": "tiny-r1-code",
+      "task": "tiny",
+      "repeat": 1,
+      "code_mode": true,
+      "success": true,
+      "expected": {
+        "port": 8317
+      },
+      "actual": {
+        "port": 8317
+      },
+      "usage": {
+        "input_tokens": 9839,
+        "cache_read_input_tokens": 31744,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 280,
+        "reasoning_tokens": 162,
+        "total_tokens": 41863
+      },
+      "num_turns": 3,
+      "execute_traces": 0,
+      "seconds": 31.576105832999986,
+      "tools": "read_file,list_dir,grep,run_terminal_command",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "shell",
+      "label": "dependent-r2-code",
+      "task": "dependent",
+      "repeat": 2,
+      "code_mode": true,
+      "success": true,
+      "expected": {
+        "sum": 2821,
+        "count": 4
+      },
+      "actual": {
+        "sum": 2821,
+        "count": 4
+      },
+      "usage": {
+        "input_tokens": 13278,
+        "cache_read_input_tokens": 59392,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 928,
+        "reasoning_tokens": 260,
+        "total_tokens": 73598
+      },
+      "num_turns": 5,
+      "execute_traces": 0,
+      "seconds": 61.29778512499996,
+      "tools": "read_file,list_dir,grep,run_terminal_command",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "shell",
+      "label": "dependent-r2-direct",
+      "task": "dependent",
+      "repeat": 2,
+      "code_mode": false,
+      "success": true,
+      "expected": {
+        "sum": 2821,
+        "count": 4
+      },
+      "actual": {
+        "sum": 2821,
+        "count": 4
+      },
+      "usage": {
+        "input_tokens": 14483,
+        "cache_read_input_tokens": 114688,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 1342,
+        "reasoning_tokens": 485,
+        "total_tokens": 130513
+      },
+      "num_turns": 9,
+      "execute_traces": 0,
+      "seconds": 87.405488333,
+      "tools": "read_file,list_dir,grep,run_terminal_command",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "shell",
+      "label": "parallel-r2-code",
+      "task": "parallel",
+      "repeat": 2,
+      "code_mode": true,
+      "success": true,
+      "expected": {
+        "svc-0": 13,
+        "svc-1": 12,
+        "svc-2": 13,
+        "svc-3": 13
+      },
+      "actual": {
+        "svc-0": 13,
+        "svc-1": 12,
+        "svc-2": 13,
+        "svc-3": 13
+      },
+      "usage": {
+        "input_tokens": 12121,
+        "cache_read_input_tokens": 47104,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 1117,
+        "reasoning_tokens": 330,
+        "total_tokens": 60342
+      },
+      "num_turns": 4,
+      "execute_traces": 0,
+      "seconds": 61.50028058400005,
+      "tools": "read_file,list_dir,grep,run_terminal_command",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "shell",
+      "label": "parallel-r2-direct",
+      "task": "parallel",
+      "repeat": 2,
+      "code_mode": false,
+      "success": true,
+      "expected": {
+        "svc-0": 13,
+        "svc-1": 12,
+        "svc-2": 13,
+        "svc-3": 13
+      },
+      "actual": {
+        "svc-0": 13,
+        "svc-1": 12,
+        "svc-2": 13,
+        "svc-3": 13
+      },
+      "usage": {
+        "input_tokens": 12029,
+        "cache_read_input_tokens": 61440,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 1147,
+        "reasoning_tokens": 376,
+        "total_tokens": 74616
+      },
+      "num_turns": 5,
+      "execute_traces": 0,
+      "seconds": 60.652135084000065,
+      "tools": "read_file,list_dir,grep,run_terminal_command",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "shell",
+      "label": "tiny-r2-code",
+      "task": "tiny",
+      "repeat": 2,
+      "code_mode": true,
+      "success": true,
+      "expected": {
+        "port": 8317
+      },
+      "actual": {
+        "port": 8317
+      },
+      "usage": {
+        "input_tokens": 9798,
+        "cache_read_input_tokens": 31744,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 156,
+        "reasoning_tokens": 45,
+        "total_tokens": 41698
+      },
+      "num_turns": 3,
+      "execute_traces": 0,
+      "seconds": 27.89197975000002,
+      "tools": "read_file,list_dir,grep,run_terminal_command",
+      "stopReason": "end_turn"
+    },
+    {
+      "suite": "shell",
+      "label": "tiny-r2-direct",
+      "task": "tiny",
+      "repeat": 2,
+      "code_mode": false,
+      "success": true,
+      "expected": {
+        "port": 8317
+      },
+      "actual": {
+        "port": 8317
+      },
+      "usage": {
+        "input_tokens": 9045,
+        "cache_read_input_tokens": 31744,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 228,
+        "reasoning_tokens": 117,
+        "total_tokens": 41017
+      },
+      "num_turns": 3,
+      "execute_traces": 0,
+      "seconds": 28.789491417000022,
+      "tools": "read_file,list_dir,grep,run_terminal_command",
+      "stopReason": "end_turn"
+    }
+  ]
+}

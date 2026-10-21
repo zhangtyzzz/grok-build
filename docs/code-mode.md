@@ -141,3 +141,7 @@ three **dependent** tool submissions; an ordinary model can already batch
 independent calls. It reports payload bytes and process overhead, not model
 tokens, live model latency, or task success rates. It excludes program/catalog
 and result-envelope costs and must not be presented as a total token saving.
+
+A [24-session live-model check](code-mode-live-evaluation.md) records limited
+read/filter gains and a terminal-enabled control with no script adoption; it
+does not establish a general coding improvement. Code Mode remains opt-in.
