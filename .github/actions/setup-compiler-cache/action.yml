@@ -1,31 +1,13 @@
-name: Set up bounded compiler cache
-description: Restore and configure a bounded runner-local sccache directory
+name: Set up shared compiler cache
+description: Cache individual compiler results in the existing GitHub Actions allowance
 
 inputs:
-  namespace:
-    description: Stable workload name used to isolate incompatible cache populations
-    required: true
-  toolchain:
-    description: Rust toolchain identity
-    required: true
-  lock-hash:
-    description: Cargo.lock hash
-    required: true
-  revision:
-    description: Source revision used for the immutable primary cache key
-    required: true
-  cache-size:
-    description: Maximum size of the runner-local sccache directory
+  read-only:
+    description: Read shared cache objects without writing new ones
     required: false
-    default: 512M
+    default: "false"
 
 outputs:
-  cache-hit:
-    description: Whether the exact immutable compiler cache was restored
-    value: ${{ steps.restore.outputs.cache-hit }}
-  cache-primary-key:
-    description: Primary key callers can save after successful validation
-    value: ${{ steps.restore.outputs.cache-primary-key }}
   enabled:
     description: Whether sccache and its fallback wrapper were configured
     value: ${{ steps.enable.outputs.enabled }}
@@ -33,17 +15,6 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Restore bounded compiler cache
-      id: restore
-      continue-on-error: true
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ${{ runner.temp }}/grok-sccache
-        key: sccache-disk-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.namespace }}-${{ inputs.toolchain }}-${{ inputs.lock-hash }}-${{ inputs.revision }}
-        restore-keys: |
-          sccache-disk-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.namespace }}-${{ inputs.toolchain }}-${{ inputs.lock-hash }}-
-          sccache-disk-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.namespace }}-${{ inputs.toolchain }}-
-
     - name: Install pinned sccache
       id: sccache
       continue-on-error: true
@@ -52,23 +23,28 @@ runs:
         version: v0.16.0
         disable_annotations: true
 
-    - name: Enable bounded compiler cache
+    - name: Enable shared compiler cache
       id: enable
       if: steps.sccache.outcome == 'success'
       shell: bash
       env:
-        CACHE_SIZE: ${{ inputs.cache-size }}
+        CACHE_RW_MODE: ${{ inputs.read-only == 'true' && 'READ_ONLY' || 'READ_WRITE' }}
       run: |
         set -euo pipefail
-        cache_dir="$RUNNER_TEMP/grok-sccache"
+        # The pinned setup action exports the short-lived cache service runtime
+        # credentials. Never persist them in an artifact or cache archive.
+        if [[ -z "${ACTIONS_RESULTS_URL:-}" || -z "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
+          echo "Cache service credentials unavailable; compiling without sccache"
+          exit 0
+        fi
         wrapper="$RUNNER_TEMP/grok-sccache-fallback${{ runner.os == 'Windows' && '.exe' || '' }}"
-        mkdir -p "$cache_dir"
         rustc scripts/ci/sccache-fallback.rs -o "$wrapper"
         {
           echo "GROK_SCCACHE_BIN=$SCCACHE_PATH"
           echo "RUSTC_WRAPPER=$wrapper"
-          echo "SCCACHE_CACHE_SIZE=$CACHE_SIZE"
-          echo "SCCACHE_DIR=$cache_dir"
+          echo "SCCACHE_GHA_ENABLED=on"
+          echo "SCCACHE_GHA_VERSION=grok-build-v1"
+          echo "SCCACHE_GHA_RW_MODE=$CACHE_RW_MODE"
           echo "SCCACHE_ERROR_LOG=$RUNNER_TEMP/grok-sccache-error.log"
           echo "SCCACHE_IDLE_TIMEOUT=0"
         } >>"$GITHUB_ENV"

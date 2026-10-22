@@ -191,33 +191,32 @@ compiler archive; protoc is a build-host tool and is not shipped in the
 product archive.
 
 CI and release jobs restore Cargo registry and Git source caches keyed by the
-runner OS and architecture, Rust toolchain, and `Cargo.lock`. A lockfile miss
-may restore the most recent compatible source cache prefix. CI compilation uses
-bounded runner-local sccache directories restored and saved as one cache archive
-per workload. Rust, terminal, and Windows protobuf validation are isolated so
-one workload cannot evict another's most useful objects. The cross-platform
-wrapper retries an individual rustc invocation directly if the background
-sccache server cannot start, disconnects, or returns a failure. Incremental
-compilation stays disabled so rustc invocations are cacheable.
+runner OS, architecture, Rust toolchain, and `Cargo.lock`. Compilation uses
+sccache's native GitHub Actions backend: each compiler result is stored by its
+content hash instead of copying a multi-gigabyte cache archive for every commit.
+Compatible results can be reused across CI jobs and from main to alpha under
+GitHub's default-branch cache visibility rules. A cache key incorporates the
+compiler, target, flags, features and source inputs; different inputs are never
+substituted merely because the branches are related. Pull requests and tag
+fallback builds read the compiler cache without writing it.
 
-Release builds now also use the bounded compiler cache, separated by native
-target and alpha/stable compilation settings. A new commit restores compatible
-objects from an earlier commit; sccache validates the actual compiler inputs.
-This is crate/object reuse, not Cargo's incremental mode: `CARGO_INCREMENTAL=0`
-remains required by sccache. Source archives can be shared from main to alpha;
-objects compiled with different optimization settings cannot be mixed. The
-3 GiB per-target limit is a ceiling, not a reservation. Repository-wide cache
-quota and eviction still affect hit rates; measure the saved working sets before
-raising storage limits. A missing cache always falls back to a real build.
+This remains crate/object reuse, not Cargo's incremental mode:
+`CARGO_INCREMENTAL=0` is required by sccache. Final executable linking and some
+build scripts still run. The fallback wrapper invokes rustc directly when the
+cache service fails. GitHub's free repository cache allowance and automatic
+eviction still apply; no paid storage, external cache service, or paid runner is
+configured. Individual entries let eviction discard old results without losing
+an entire platform's compiler archive.
 
-Alpha versions (`-alpha.N`) additionally load `.cargo/release-alpha.toml` through
-`scripts/dist.sh`: LTO is off and codegen-units is 16. The profile is still named
-`release-dist`, and the `release-dist` feature, privacy hardening, panic strategy,
-debug information, portable target flags and package checks remain enabled.
-Stable versions never load that override and retain upstream's ThinLTO and
-single codegen unit. Runtime performance of the alpha optimization settings has
-not been claimed equivalent to stable. The root generated `Cargo.toml` is unchanged.
-`cargo --timings` reports are uploaded for diagnosing the remaining critical path.
+Both stable and alpha load `.cargo/release-distribution.toml` through
+`scripts/dist.sh`: standard release optimization (`opt-level=3`), LTO off, and
+16 codegen units. This shared mode was owner-authorized after the two-mode cache
+working set exceeded the free allowance. The `release-dist` feature, privacy
+hardening, panic strategy, debug information, portable target flags and all
+package checks remain enabled. Removing ThinLTO can affect CPU-bound runtime
+performance; startup measurements are not proof of equivalence for every
+workload. The generated root `Cargo.toml` is unchanged. `cargo --timings` reports
+are uploaded separately from release payloads.
 
 The fork numbers its own releases; the four lockstepped package versions do
 not track upstream. `scripts/automation/upstream_sync.py` rewrites them during
@@ -240,8 +239,8 @@ version, it calls `Warm release build cache` with the exact requested main
 commit. The six native jobs build that commit and save each final
 executable, its build attestation, and the exact checksum-pinned bundled-tool
 inputs under a key containing the target, Rust version, `Cargo.lock` hash, and
-full commit SHA. Quality validation runs alongside the warm builds. It first looks for a
-successful CI run on the exact source SHA, restricted to push/manual runs of
+full commit SHA. Quality validation runs alongside the warm builds. It first
+looks for a successful CI run on the exact source SHA, restricted to push/manual runs of
 `ci.yml` on main or alpha with a successful current-attempt `CI required` job.
 If no such evidence exists, it runs all quality gates. Only after both quality
 and every native build succeed does the coordinator recheck the branch head,
@@ -264,10 +263,10 @@ compiler cache. Quality gates may reuse verified same-SHA CI or execute in full.
 To verify performance without publishing, dispatch `Release` on the candidate
 branch with its current version and `publish=false`. Compare a cold run and a
 second run after the compiler cache has been saved; report both separately.
-The target is under 30 minutes for alpha's six-platform build/package path,
-excluding earlier source CI, queue delays and human environment approval. It is
-an acceptance target, not a guarantee until all six runners are measured. Stable
-cold-build time is deliberately secondary to retaining its optimization level.
+The target is under 30 minutes for the six-platform build/package path with a
+reusable compiler cache, excluding earlier source CI, queue delays and human
+environment approval. Cold and warm timings must be reported separately; this
+is an acceptance target, not a guarantee until all six runners are measured.
 
 If the tag was created but dispatch or publication subsequently failed, rerunning
 the coordinator is a no-op. Inspect the failure, preserve that existing tag,
@@ -281,9 +280,20 @@ different, so a concurrent push cannot substitute an unvalidated commit between
 the caller's check and workflow startup. Omitting the input preserves the manual
 entry point; maintainers must still validate the selected main commit first.
 
-`Warm release build cache` remains manually dispatchable from `main` or `alpha` for
-recovery and diagnostics. A standalone tag workflow may restore an exact cache entry from the
-default branch. Coordinated releases use the validated artifact handoff instead. It revalidates the cached tools' formats and versions, then packaging
+`Prune superseded build caches` runs after successful release-branch workflows.
+It removes retired `sccache-disk-v1` archives and keeps only the newest Cargo
+source and exact-build snapshot for each platform, toolchain, and branch. It
+never deletes the new content-addressed `sccache/` objects. This prevents old
+source revisions and lockfiles from occupying the free allowance indefinitely. It does not increase the
+repository's storage limit; eviction can still make a build cold. The cleanup
+job executes only default-branch code and ignores pull-request runs, feature
+branches, unknown cache keys, and cache formats it does not own.
+
+`Warm release build cache` remains manually dispatchable from its supported
+release branches for recovery and diagnostics. A standalone tag workflow may
+restore an exact cache entry from the default branch. Coordinated releases use
+the validated artifact handoff instead. Both paths revalidate the cached tools'
+formats and versions, then packaging
 verifies their hashes against the build attestation together with the binary
 hash, source commit, and target before smoke tests and provenance generation. A
 miss or cache-service failure falls back to the normal native build. Neither
@@ -291,22 +301,11 @@ workflow archives the workspace's potentially very large general-purpose
 `target/` directory; only the staged release executable, attestation, and its
 exact tool inputs are saved for release reuse.
 
-Pull requests may restore default-branch Cargo and compiler caches but never
-save compiler entries that trusted runs consume. Trusted main and manual CI
-runs save a new immutable bounded compiler cache after successful validation.
-The release warmup runs only from `main` or `alpha`; tag builds consume only an
-exact commit-keyed release build. Tag runs cannot read caches saved on `alpha`,
-so alpha releases fall back to a native build after their warmup. The same
-scoping makes the release quality gates compile the workspace cold for an alpha
-tag (over 90 minutes), so `release.yml` passes `job_timeout_minutes: 240` to the
-reusable CI; ordinary push and pull-request CI keeps its 90-minute limit. Cache misses, quota limits, and cache service
-failures affect performance only, never the release gates or artifact contents.
-
-The ARM64 macOS release build and cache warmup have a four-hour timeout because
-a cold native build can exceed three hours; the other targets keep their
-two-hour limit. All six targets still run in parallel, so this larger safety
-margin affects elapsed time only when that cold build is actually the critical
-path.
+Cache misses, quota limits, and cache service failures affect performance only,
+never the release gates or artifact contents. Native job timeouts retain a
+safety margin for cold builds and runner variability; they are not performance
+targets. Coordinated alpha tags consume verified build artifacts and do not
+repeat their warmup compilation or already successful quality gates.
 
 Each matrix job packages, verifies, extracts, and smoke-tests its real binary,
 then creates GitHub artifact provenance. A fan-in job requires the exact six

@@ -1,0 +1,6 @@
+# One optimized distribution mode for stable and alpha, allowing compatible
+# dependencies to share compiler-cache objects. Keep debug information and the
+# separate release-dist feature/security boundary; do not edit generated Cargo.toml.
+[profile.release-dist]
+lto = "off"
+codegen-units = 16
