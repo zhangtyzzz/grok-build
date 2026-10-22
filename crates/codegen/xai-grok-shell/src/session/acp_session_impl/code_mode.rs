@@ -116,7 +116,33 @@ fn definition() -> ToolDefinition {
     ToolDefinition::function(
         "execute",
         Some(format!(
-            "Compose any of your tools, including MCP server tools, with JavaScript in an isolated runtime. Choose by what the task needs: prefer it when you need a derived answer (filtered, counted, deduplicated or joined data) rather than the raw results, or when a fixed multi-step flow feeds one result into the next; call tools directly (independent calls already run in parallel) when you need to read full results or decide each next step from them. If a direct result turns out too long, use it for later similar calls. Input code is an async function body: use await and explicit return (otherwise null). catalog.search(query, offset) takes a string and matches every word against names and descriptions (20 per page); catalog.describe(name) returns the input schema; then call tools[name](args), e.g. tools[\"server__tool\"]({{...}}). MCP tools found with search_tool are callable here by that same name. The catalog functions return JSON objects. Tool calls resolve to their text output; do not assume it is structured JSON. Use Promise.allSettled for partial failures; at most {in_flight} calls in flight and {calls} calls total. All calls keep normal permissions, hooks and Plan Mode. Await all required work: unfinished calls are interrupted at return, without rolling back completed effects. No filesystem, network, imports, timers, process, or persistent JS state; reach everything through tools. console.log appends bounded logs. Return compact JSON data (only the fields you need, not raw results) with all nested promises awaited. Each execute starts fresh, so fetch and analyze in the same program: returning a preview and fetching again in a later execute repeats the calls. Limits: 64 KiB source, 64 MiB JS heap, 5 seconds active computation, {wall} seconds overall INCLUDING tools and permission waits, 64 KiB result/log text. Do not retry an entire failed script with writes without inspecting its trace.",
+            r#"Run an async JavaScript program that composes your tools, including MCP server tools, in an isolated runtime. Only the program's return value reaches you; nested results stay out of your context.
+
+When to use:
+- You need a derived answer (filtered, counted, deduplicated or joined data) rather than raw results.
+- A fixed multi-step flow feeds one result into the next.
+- A direct result turned out too long: script later similar calls.
+
+When not to use:
+- One call, or a few independent calls: call the tools directly; they already run in parallel.
+- You need to read full content, or decide each next step from what you read.
+
+Writing the program:
+- `code` is an async function body: use await and an explicit return (otherwise null).
+- Find tools with catalog.search(query, offset) (a string; every word must match a name or description; 20 per page) and catalog.describe(name) (input schema), then call tools[name](args), e.g. tools["server__tool"]({{...}}). MCP tools found with search_tool use the same names. Catalog functions return objects.
+- Tool calls resolve to their text output. When that text is JSON, JSON.parse it first and work on parsed fields; never reuse character offsets from the raw text.
+- Decide what the question needs before calling, and extract it by field, heading or keyword, not by opening characters or guessed offsets.
+- Use Promise.allSettled when partial failure is acceptable. Await all required work: unfinished calls are interrupted at return, and completed effects are not rolled back.
+
+Returning results:
+- Return JSON sufficient for the question: the requested facts with their supporting context, irrelevant content removed. Never return only a preview.
+- Each execute starts fresh. Process a result fully in the program that fetched it. If the next step depends on what you find, return the confirmed facts and what is still missing, then work from them instead of fetching the same data again.
+
+Rules and limits:
+- Every call keeps normal permissions, hooks and Plan Mode.
+- No filesystem, network, imports, timers, process access or persistent state; reach everything through tools. console.log appends bounded logs.
+- At most {in_flight} calls in flight and {calls} in total; 64 KiB source; 64 MiB heap; 5 seconds active computation; {wall} seconds overall including tool and permission waits; 64 KiB result and log text.
+- Before rerunning a failed program that performs writes, inspect its trace."#,
             in_flight = runtime::MAX_IN_FLIGHT,
             calls = runtime::MAX_CALLS,
             wall = wall_timeout().as_secs(),

@@ -69,11 +69,15 @@ silently matching nothing. Names are not rewritten into aliases: bracket
 notation works for non-identifiers, e.g. `tools["linear__save_issue"]({...})`;
 an unknown name throws an error that points to `catalog.search()`.
 
-Each `execute` starts a fresh runtime with no state from earlier runs, so fetch
-and analyze in one program and return only what the answer needs. A script
-that returns a preview and fetches the same data again in a later `execute`
-repeats every call; that pattern caused most of the duplicated requests in
-live testing.
+Each `execute` starts a fresh runtime with no state from earlier runs. The tool
+description therefore asks for results that are sufficient for the question,
+not merely compact: parse JSON text before searching it, extract by field,
+heading or keyword instead of the opening characters or guessed offsets, and
+return the requested facts with their context. In live testing (2026-10-22) one
+page was fetched five times because the first script returned only its first
+1200 characters plus keyword offsets, and a later script applied offsets found
+in the serialized JSON to the parsed body. The runtime had delivered the full
+data each time; the repeats came from discarding it early.
 Both catalog functions return JSON objects directly; only host tool calls return
 model-facing text strings.
 
