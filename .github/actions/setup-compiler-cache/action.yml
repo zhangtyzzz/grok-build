@@ -25,6 +25,14 @@ outputs:
 runs:
   using: composite
   steps:
+    # Rust proc-macro DLLs are linked on every fresh runner. MSVC's default PE
+    # timestamps change their hashes and invalidate otherwise unchanged crates.
+    # LINK also reaches host proc macros when Cargo builds with --target.
+    - name: Make Windows linked outputs reproducible
+      if: runner.os == 'Windows'
+      shell: bash
+      run: printf 'LINK=%s\n' "${LINK:+$LINK }/Brepro" >> "$GITHUB_ENV"
+
     - name: Install pinned sccache
       id: sccache
       continue-on-error: true
