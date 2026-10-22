@@ -193,8 +193,10 @@ product archive.
 CI and release jobs restore Cargo registry and Git source caches keyed by the
 runner OS, architecture, Rust toolchain, and `Cargo.lock`. Compiler results use
 bounded local sccache directories (3 GiB for Rust CI, 4 GiB for terminal CI,
-512 MiB for Windows protobuf CI, and 2 GiB per release target). Successful
-branch jobs upload these already-compressed objects as Actions artifacts.
+512 MiB for Windows protobuf CI, and 2 GiB per release target). Trusted branch
+jobs upload completed compiler objects as Actions artifacts even if a later test
+or packaging step fails. Cancelled jobs do not upload. These objects never replace
+CI verdicts, and changed source inputs still require compilation.
 Public standard-runner Actions usage is free; snapshot uploads are explicitly
 disabled for private repositories. These snapshots do not compete with source
 and final-binary caches for the 10 GiB dependency-cache pool or the service's
@@ -275,7 +277,9 @@ and every target build succeed does the coordinator recheck the branch head,
 create the annotated tag and dispatch `Release`, passing its own run ID.
 
 The coordinator uploads each executable, receipt and exact tool inputs as a
-compressed artifact (with executable permissions preserved inside tar). Release
+compressed artifact (with executable permissions preserved inside tar). The shared
+archive helper normalizes native Windows paths before invoking tar; CI checks an
+archive/extract round trip on Unix and Windows. Release
 checks that the source run is the expected same-repository coordinator on main
 or alpha at the exact tag SHA and that all six builds and the quality gate passed
 in its current attempt. Delayed job/artifact visibility is retried for up to
