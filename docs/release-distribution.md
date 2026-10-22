@@ -193,17 +193,19 @@ product archive.
 CI and release jobs restore Cargo registry and Git source caches keyed by the
 runner OS, architecture, Rust toolchain, and `Cargo.lock`. Compiler results use
 bounded local sccache directories (3 GiB for Rust CI, 4 GiB for terminal CI,
-512 MiB for Windows protobuf CI, and 2 GiB per release target). Successful
-branch jobs upload these already-compressed objects as Actions artifacts.
+512 MiB for Windows protobuf CI, and 2 GiB per release target). Trusted branch
+jobs upload completed compiler objects as Actions artifacts even if a later test
+or packaging step fails. Cancelled jobs do not upload. These objects never replace
+CI verdicts, and changed source inputs still require compilation.
 Public standard-runner Actions usage is free; snapshot uploads are explicitly
 disabled for private repositories. These snapshots do not compete with source
 and final-binary caches for the 10 GiB dependency-cache pool or the service's
 200-small-cache-entry uploads/minute limit.
 
 The snapshot name separates workload, host OS/architecture, Rust and sccache
-versions. Restore looks for the newest compatible artifact from the current
-branch or main; PRs use their base branch, and main never consumes alpha or
-feature-branch snapshots. The helper verifies the same repository and head
+versions. Restore prefers the newest compatible artifact from the current
+branch, then falls back to main; PRs prefer their base branch. Main never consumes
+alpha or feature-branch snapshots. The helper verifies the same repository and head
 repository, artifact/run source identity, a push/manual event and an allowed
 CI/release workflow. PR artifacts, expired snapshots and other workloads are
 rejected. A missing snapshot or service failure starts an empty local cache.
@@ -212,7 +214,7 @@ an older snapshot cannot substitute a different crate's output. Restoring a
 compiler snapshot never skips source validation or release verification.
 
 PRs, coordinator quality checks and tag fallback builds do not publish compiler
-snapshots. Retention is seven days; maintenance keeps the newest two snapshots
+snapshots. Retention is 30 days; maintenance keeps the newest two snapshots
 per workload and release branch. This preserves main-to-alpha reuse without
 paid cache capacity, an external storage service or a paid runner.
 
@@ -275,7 +277,9 @@ and every target build succeed does the coordinator recheck the branch head,
 create the annotated tag and dispatch `Release`, passing its own run ID.
 
 The coordinator uploads each executable, receipt and exact tool inputs as a
-compressed artifact (with executable permissions preserved inside tar). Release
+compressed artifact (with executable permissions preserved inside tar). The shared
+archive helper normalizes native Windows paths before invoking tar; CI checks an
+archive/extract round trip on Unix and Windows. Release
 checks that the source run is the expected same-repository coordinator on main
 or alpha at the exact tag SHA and that all six builds and the quality gate passed
 in its current attempt. Delayed job/artifact visibility is retried for up to
