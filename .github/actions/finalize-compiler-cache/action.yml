@@ -9,7 +9,7 @@ inputs:
     description: Artifact name emitted by setup-compiler-cache
     required: true
   save:
-    description: Whether this successful branch job may publish a compiler snapshot
+    description: Whether this trusted branch job may retain completed compiler results
     required: false
     default: "false"
 
@@ -17,7 +17,7 @@ runs:
   using: composite
   steps:
     - name: Report and stop compiler cache
-      if: inputs.enabled == 'true'
+      if: always() && inputs.enabled == 'true'
       continue-on-error: true
       shell: bash
       run: |
@@ -28,7 +28,7 @@ runs:
     # Public Actions artifacts do not consume the 10 GiB dependency-cache pool.
     # Never opt a private fork into storage charges through this helper.
     - name: Save compiler snapshot
-      if: inputs.enabled == 'true' && inputs.save == 'true' && toJSON(github.event.repository.private) == 'false'
+      if: ${{ !cancelled() && inputs.enabled == 'true' && inputs.save == 'true' && toJSON(github.event.repository.private) == 'false' }}
       continue-on-error: true
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
