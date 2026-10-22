@@ -134,6 +134,11 @@ impl McpDumpKind {
     }
 }
 
+/// Call ids whose MCP output feeds a Code Mode script rather than the model.
+/// The script needs complete data to parse; only the final `execute` result is bounded.
+#[derive(Debug, Default)]
+pub struct UntruncatedMcpCalls(pub std::collections::HashSet<String>);
+
 /// Resolved settings for truncating one MCP payload (inline limit, dump dir,
 /// shell tool name, call id). Build with [`McpTruncateContext::from_tool_ctx`].
 pub struct McpTruncateContext {
@@ -150,10 +155,17 @@ impl McpTruncateContext {
         match crate::types::tool_metadata::shared_resources(ctx) {
             Ok(res) => {
                 let guard = res.lock().await;
-                let max_output_bytes = guard
-                    .get::<crate::types::resources::TruncationCfg>()
-                    .map(|cfg| cfg.0.mcp_max_output_bytes_for(tool_key, resolved_default))
-                    .unwrap_or(resolved_default);
+                let untruncated = guard
+                    .get::<UntruncatedMcpCalls>()
+                    .is_some_and(|calls| calls.0.contains(&call_id));
+                let max_output_bytes = if untruncated {
+                    usize::MAX
+                } else {
+                    guard
+                        .get::<crate::types::resources::TruncationCfg>()
+                        .map(|cfg| cfg.0.mcp_max_output_bytes_for(tool_key, resolved_default))
+                        .unwrap_or(resolved_default)
+                };
                 let session_folder = guard
                     .get::<crate::types::resources::SessionFolder>()
                     .map(|f| f.0.clone());

@@ -74,7 +74,16 @@ same `server__tool` names; disabled tools are absent). Excluded are only
 directly), and the turn-control tools `enter_plan`, `exit_plan` and `ask_user`,
 which wait on the user or switch the turn's mode. A nested MCP call runs as an
 ordinary inline `use_tool` call, so MCP auth retry, argument coercion,
-permissions, hooks and telemetry are unchanged. Every nested call keeps normal
+permissions, hooks and telemetry are unchanged. Only the model-facing inline
+limit is skipped: `use_tool` truncates MCP text for calls the model reads
+directly (`MAX_MCP_OUTPUT_BYTES`, 20 KB by default), but a nested call registers
+its id in `UntruncatedMcpCalls`, so the script receives complete data it can
+parse. A single nested result over the 2 MiB frame limit fails that call with a
+catchable error instead of aborting the run; the final `execute` result keeps
+its own bound. System reminders appended to a nested result (background-task
+completions, diagnostics, coercion notes) are split off before the script sees
+the text and appended after the `execute` result, so they neither corrupt JSON
+nor get lost. Every nested call keeps normal
 validation, hooks, permissions, trust/sandbox checks, same-file locking and
 cancellation. Media-generation caps count all calls admitted in one run. The
 inventory is frozen per run: a tool whose definition changes mid-run is

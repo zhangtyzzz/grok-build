@@ -137,6 +137,7 @@ helper 回归覆盖同 slug 不同 provider、缺失 ref 不降级、legacy alia
 - MCP 使用提示与 Code Mode 一致：上游注入的 MCP reminder（实时注入与压缩后重注入）原文写死“必须先调 `search_tool` 再调 `use_tool`”，会让模型不敢在 `execute` 里用 `catalog.describe` + `tools[name]`。`execute` 可用时改用 `compaction_context::mcp_usage_hint` 的共享措辞：两条路径都合法；按任务需要而非猜测结果大小选择（要加工后的答案或固定的多步流程用 `execute`，要读完整内容或逐步判断用直接调用），仍禁止猜参数；不可用时保持上游原文。上游改这段提示时，合并后两处仍须只调用这一个函数。
 - Inventory：所有已声明的内置工具 +（提供 `use_tool` 时）`search_tool` 所用快照中的全部 MCP/托管网关工具，名字一致（`server__tool`），禁用工具不出现。只排除 `execute` 自身、`search_tool`/`use_tool`、`enter_plan`/`exit_plan`/`ask_user`。每次运行冻结 inventory，定义变化即拒绝。
 - 调用路径：嵌套 MCP 调用转换为普通 inline `use_tool` 调用；所有嵌套调用复用 prepare/dispatch/finalize（权限、hooks、Plan Mode、信任/沙箱、同文件锁、MCP 认证重试与参数转换）。媒体生成上限按单次运行累计。
+- 嵌套结果给脚本的是完整数据：`use_tool` 对模型直接读取的 MCP 文本按 20 KB 截断（`util/mcp_truncate.rs`），嵌套调用前把 call id 登记到 `UntruncatedMcpCalls`、结束后移除，脚本拿到可解析的完整输出；单次结果超过 2 MiB 帧上限时只让该次调用返回可捕获错误（`bounded_reply`），不终止整个 run；嵌套结果末尾追加的 `<system-reminder>` 块（后台任务完成、诊断、参数转换提示）在交给脚本前剥离，并追加到外层 `execute` 结果之后（`split_trailing_reminders`），避免污染 JSON 或丢失只投递一次的通知。上游改 MCP 截断或 reminder 追加方式时，须保持这三点。
 - 隔离：每次运行一个新的 QuickJS 子进程（`--internal-code-mode-worker`，在 pager-bin 读取配置/凭据/遥测前进入），`env_clear`，无文件系统、网络、导入、定时器或跨运行状态；源码、堆、栈、调用数/并发、输出、错误信息、帧大小都有上限。
 - 历史配对：嵌套结果只进本地 trace（`code-mode-<uuid>.jsonl`，0600），模型历史只收到外层 `execute` 结果。混用 `execute` 与直接工具的响应按一轮处理，followups/插话/skill reminder 只在全部结果之后 flush 一次；用户中途发消息导致嵌套命令转入后台时，通知写给未应答的父 `execute`。
 - 副作用诚实：已完成的效果不回滚也不自动重试，未确认调用记为 `outcome_unknown`。
@@ -298,6 +299,6 @@ PR 必须列出上游 SHA、保留/替代的 fork 行为、每项冲突决策及
 | Plan Mode 撤销 fork 扩展 | `1a6d8517`（PR #97）；RFC §5；差异审计 2026-09-18 更新。 |
 | fork 独立版本号与 alpha 通道（取代 `217891d1` 的跟随上游版本线） | 本文 §6；`AGENTS.md` Releases；发布文档；`ForkVersionTests`。 |
 | 标准发行入口与精确产物复用 | `6ff1d78f`、`2e09f905`；`docs/release-distribution.md`。 |
-| JavaScript Code Mode（默认开启，全工具含 MCP） | PR #104、#106（MCP 提示双路径）；`docs/code-mode.md`；本文 §3.6。 |
+| JavaScript Code Mode（默认开启，全工具含 MCP） | PR #104、#106（MCP 提示双路径）、嵌套结果完整性修复；`docs/code-mode.md`；本文 §3.6。 |
 
 新上游若使这些文件或符号消失，先核实行为迁移或等价替代，再更新入口；不要仅为维持本文的旧路径把已删除代码恢复。

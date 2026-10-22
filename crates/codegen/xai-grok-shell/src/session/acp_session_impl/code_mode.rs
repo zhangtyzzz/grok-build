@@ -18,6 +18,7 @@ type NestedResult = (
     Vec<ConversationItem>,
     Option<ToolLoop>,
     Option<serde_json::Value>,
+    Vec<String>,
 );
 
 tokio::task_local! {
@@ -201,6 +202,43 @@ struct CodeRunDelivery {
     followups: Vec<ConversationItem>,
     images: Vec<xai_grok_sampling_types::ContentPart>,
     trace_path: Option<String>,
+    /// Reminders split off nested results; the model reads them after the `execute` result.
+    reminders: Vec<String>,
+}
+
+/// A result over the frame limit fails only its own call, so the script can catch it
+/// and request less data instead of the whole run aborting.
+fn bounded_reply(reply: runtime::Reply) -> serde_json::Result<runtime::Reply> {
+    let size = serde_json::to_vec(&reply)?.len();
+    if size <= runtime::MAX_FRAME_BYTES {
+        return Ok(reply);
+    }
+    Ok(runtime::Reply {
+        id: reply.id,
+        ok: false,
+        payload: format!(
+            "Tool result is {size} bytes, over the {} byte Code Mode per-call limit; request less data (filter, paginate or narrow the query)",
+            runtime::MAX_FRAME_BYTES
+        ),
+    })
+}
+
+/// Split trailing `<system-reminder>` blocks off a nested tool result. Reminders are model
+/// guidance appended after the tool output, so a script must not parse them as data, and the
+/// model must still receive them (a background-task completion is consumed once).
+fn split_trailing_reminders(text: &str) -> (&str, Vec<String>) {
+    let tag = xai_grok_tools::reminders::DEFAULT_REMINDER_TAG;
+    let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
+    let mut data = text.trim_end();
+    let mut reminders = Vec::new();
+    while data.ends_with(&close)
+        && let Some(start) = data.rfind(&open)
+    {
+        reminders.push(data[start..].to_owned());
+        data = data[..start].trim_end();
+    }
+    reminders.reverse();
+    (data, reminders)
 }
 
 // A cancelled run keeps its slot until its worker has actually exited.
@@ -250,6 +288,23 @@ impl SessionActor {
         {
             self.chat_state_handle
                 .push_tool_result(item.expect("direct delivery"));
+        }
+    }
+    /// Nested MCP calls return complete output to the script; `use_tool` truncates only
+    /// calls the model reads directly.
+    async fn set_untruncated_mcp_call(&self, id: &str, untruncated: bool) {
+        use xai_grok_tools::util::mcp_truncate::UntruncatedMcpCalls;
+        let resources = self.tool_bridge_handle().shared_resources().await;
+        let mut resources = resources.lock().await;
+        if resources.get::<UntruncatedMcpCalls>().is_none() {
+            resources.insert(UntruncatedMcpCalls::default());
+        }
+        if let Some(calls) = resources.get_mut::<UntruncatedMcpCalls>() {
+            if untruncated {
+                calls.0.insert(id.to_owned());
+            } else {
+                calls.0.remove(id);
+            }
         }
     }
     pub(crate) fn code_mode_available(&self) -> bool {
@@ -371,8 +426,12 @@ impl SessionActor {
             }
         }
         let success = result.get("ok").and_then(serde_json::Value::as_bool) == Some(true);
-        let text = serde_json::to_string(&result)
+        let mut text = serde_json::to_string(&result)
             .unwrap_or_else(|_| "Code Mode result serialization failed".to_owned());
+        for reminder in &delivery.reminders {
+            text.push_str("\n\n");
+            text.push_str(reminder);
+        }
         self.send_update(
             acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
                 id,
@@ -552,9 +611,9 @@ impl SessionActor {
                     }
                 }
                 Some((id, child_id, result)) = running.next(), if !running.is_empty() => {
-                    let (payload, failed, messages, tool_loop, prepared) = match result {
+                    let (payload, failed, messages, tool_loop, prepared, reminders) = match result {
                         Ok(result) => result,
-                        Err(error) => (error.to_string(), true, Vec::new(), None, None),
+                        Err(error) => (error.to_string(), true, Vec::new(), None, None, Vec::new()),
                     };
                     let row = trace.rows.get_mut(&child_id).ok_or_else(|| anyhow::anyhow!("Unknown nested call"))?;
                     row["status"] = json!(if failed { "failed" } else { "completed" });
@@ -571,7 +630,10 @@ impl SessionActor {
                         *final_loop = tool_loop;
                         anyhow::bail!("Code Mode interrupted by tool permission decision");
                     }
-                    let reply = runtime::Reply { id, ok: !failed, payload: if failed { payload } else { serde_json::to_string(&payload)? } };
+                    for reminder in reminders {
+                        if !delivery.reminders.contains(&reminder) { delivery.reminders.push(reminder); }
+                    }
+                    let reply = bounded_reply(runtime::Reply { id, ok: !failed, payload: if failed { payload } else { serde_json::to_string(&payload)? } })?;
                     let mut frame = Vec::new();
                     runtime::write_frame(&mut frame, &reply)?;
                     stdin.write_all(&frame).await?;
@@ -728,13 +790,22 @@ impl SessionActor {
                 };
                 let mut followups = Vec::new();
                 let mut outcome = None;
-                self.execute_tool_calls_batch(vec![call], &mut followups, &mut outcome, model)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                self.set_untruncated_mcp_call(id, true).await;
+                let batch = self
+                    .execute_tool_calls_batch(vec![call], &mut followups, &mut outcome, model)
+                    .await;
+                self.set_untruncated_mcp_call(id, false).await;
+                batch.map_err(|e| anyhow::anyhow!("{e}"))?;
                 let mut results = sink.results.take();
+                let mut reminders = Vec::new();
                 let text = results
                     .iter()
-                    .map(ConversationItem::text_content)
+                    .map(|item| {
+                        let content = item.text_content();
+                        let (data, split) = split_trailing_reminders(&content);
+                        reminders.extend(split);
+                        data.to_owned()
+                    })
                     .collect::<Vec<_>>()
                     .join("\n");
                 let failed = sink.failed.get()
@@ -742,7 +813,14 @@ impl SessionActor {
                         .as_ref()
                         .is_some_and(|v| !matches!(v, ToolLoop::Continue));
                 results.extend(followups);
-                Ok((text, failed, results, outcome, sink.prepared.take()))
+                Ok((
+                    text,
+                    failed,
+                    results,
+                    outcome,
+                    sink.prepared.take(),
+                    reminders,
+                ))
             })
             .await
     }
