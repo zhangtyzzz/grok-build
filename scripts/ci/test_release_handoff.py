@@ -1,6 +1,7 @@
 import copy
 import importlib.util
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location("handoff", Path(__file__).with_name("release-handoff.py"))
@@ -24,6 +25,30 @@ class HandoffTests(unittest.TestCase):
 
     def validate(self):
         handoff.validate(self.run, self.jobs, self.artifacts, "owner/repo", self.commit, self.targets)
+
+    def test_visibility_lag_is_retried_without_relaxing_validation(self):
+        pending = copy.deepcopy(self.jobs)
+        pending[0].update(status="in_progress", conclusion=None)
+        responses = [self.run, [{"jobs": pending}], [{"artifacts": self.artifacts}],
+                     self.run, [{"jobs": self.jobs}], [{"artifacts": self.artifacts}]]
+        with patch.object(handoff, "api", side_effect=responses), patch.object(handoff.time, "sleep") as sleep:
+            handoff.wait_for_handoff("endpoint", "owner/repo", self.commit, self.targets, attempts=2)
+        sleep.assert_called_once_with(30)
+
+    def test_visibility_retry_is_bounded(self):
+        responses = [self.run, [{"jobs": []}], [{"artifacts": self.artifacts}]] * 2
+        with patch.object(handoff, "api", side_effect=responses), patch.object(handoff.time, "sleep") as sleep:
+            with self.assertRaises(handoff.HandoffPending):
+                handoff.wait_for_handoff("endpoint", "owner/repo", self.commit, self.targets, attempts=2)
+        sleep.assert_called_once_with(30)
+
+    def test_failed_gate_is_not_retried(self):
+        self.jobs[0]["conclusion"] = "failure"
+        responses = [self.run, [{"jobs": self.jobs}], [{"artifacts": self.artifacts}]]
+        with patch.object(handoff, "api", side_effect=responses), patch.object(handoff.time, "sleep") as sleep:
+            with self.assertRaises(ValueError):
+                handoff.wait_for_handoff("endpoint", "owner/repo", self.commit, self.targets, attempts=2)
+        sleep.assert_not_called()
 
     def test_dispatch_can_still_be_finishing(self):
         self.validate()
