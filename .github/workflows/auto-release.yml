@@ -123,15 +123,30 @@ jobs:
     if: needs.metadata.outputs.should_release == 'true'
     permissions:
       contents: read
+      actions: read
     uses: ./.github/workflows/release-cache.yml
     with:
       commit: ${{ needs.metadata.outputs.commit }}
+
+  quality:
+    name: Validate exact release source
+    needs: metadata
+    if: needs.metadata.outputs.should_release == 'true'
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      reuse_successful_ci: true
+      compiler_cache_read_only: true
+      checkout_ref: ${{ needs.metadata.outputs.commit }}
 
   tag:
     name: Create release tag and start publication
     needs:
       - metadata
       - warm
+      - quality
     if: needs.metadata.outputs.should_release == 'true'
     runs-on: ubuntu-22.04
     permissions:
@@ -183,5 +198,6 @@ jobs:
             --repo "$GH_REPO" \
             --ref "$RELEASE_TAG" \
             --field version="${RELEASE_TAG#v}" \
-            --field publish=true
+            --field publish=true \
+            --field build_run_id="${{ github.run_id }}"
           echo "dispatched Release for $RELEASE_TAG"

@@ -1,16 +1,17 @@
-name: Finalize bounded compiler cache
-description: Report, stop, and optionally save a runner-local sccache directory
+name: Finalize shared compiler cache
+description: Stop the compiler cache and persist a bounded public workflow snapshot
 
 inputs:
   enabled:
     description: Whether compiler caching was enabled by the setup action
     required: true
+  cache-name:
+    description: Artifact name emitted by setup-compiler-cache
+    required: true
   save:
-    description: Whether this trusted successful job should save a new immutable cache
-    required: true
-  cache-primary-key:
-    description: Exact primary key emitted by the setup action
-    required: true
+    description: Whether this successful branch job may publish a compiler snapshot
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -21,17 +22,19 @@ runs:
       shell: bash
       run: |
         set -uo pipefail
-        if [[ -s "${SCCACHE_ERROR_LOG:-}" ]]; then
-          echo "sccache diagnostics:"
-          sed -n '1,240p' "$SCCACHE_ERROR_LOG"
-        fi
         "$GROK_SCCACHE_BIN" --show-stats
         "$GROK_SCCACHE_BIN" --stop-server
 
-    - name: Save bounded compiler cache
-      if: inputs.enabled == 'true' && inputs.save == 'true'
+    # Public Actions artifacts do not consume the 10 GiB dependency-cache pool.
+    # Never opt a private fork into storage charges through this helper.
+    - name: Save compiler snapshot
+      if: inputs.enabled == 'true' && inputs.save == 'true' && toJSON(github.event.repository.private) == 'false'
       continue-on-error: true
-      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
+        name: ${{ inputs.cache-name }}
         path: ${{ runner.temp }}/grok-sccache
-        key: ${{ inputs.cache-primary-key }}
+        overwrite: true
+        compression-level: 0
+        retention-days: 7
+        if-no-files-found: warn
