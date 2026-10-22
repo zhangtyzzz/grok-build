@@ -65,6 +65,9 @@ jobs:
     name: Rust checks and tests
     runs-on: ubuntu-22.04
     timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -101,6 +104,8 @@ jobs:
         id: compiler-cache
         uses: ./.github/actions/setup-compiler-cache
         with:
+          namespace: ci-rust
+          cache-size: 3G
           read-only: ${{ github.event_name == 'pull_request' || inputs.compiler_cache_read_only }}
 
       # Shell telemetry tests execute real grep calls. Debug builds otherwise
@@ -164,6 +169,8 @@ jobs:
         uses: ./.github/actions/finalize-compiler-cache
         with:
           enabled: ${{ steps.compiler-cache.outputs.enabled }}
+          cache-name: ${{ steps.compiler-cache.outputs.cache-name }}
+          save: ${{ job.status == 'success' && github.ref_type == 'branch' && github.event_name != 'pull_request' && !inputs.compiler_cache_read_only }}
 
   integration:
     needs: previous
@@ -203,6 +210,9 @@ jobs:
     name: Terminal, tools, and CLI
     runs-on: ubuntu-22.04
     timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -239,6 +249,8 @@ jobs:
         id: compiler-cache
         uses: ./.github/actions/setup-compiler-cache
         with:
+          namespace: ci-terminal
+          cache-size: 4G
           read-only: ${{ github.event_name == 'pull_request' || inputs.compiler_cache_read_only }}
 
       - name: Prepare pinned protobuf and search tools
@@ -284,6 +296,8 @@ jobs:
         uses: ./.github/actions/finalize-compiler-cache
         with:
           enabled: ${{ steps.compiler-cache.outputs.enabled }}
+          cache-name: ${{ steps.compiler-cache.outputs.cache-name }}
+          save: ${{ job.status == 'success' && github.ref_type == 'branch' && github.event_name != 'pull_request' && !inputs.compiler_cache_read_only }}
 
   windows-protobuf:
     needs: previous
@@ -296,6 +310,9 @@ jobs:
     defaults:
       run:
         shell: bash
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -332,6 +349,8 @@ jobs:
         id: compiler-cache
         uses: ./.github/actions/setup-compiler-cache
         with:
+          namespace: ci-windows-protobuf
+          cache-size: 512M
           read-only: ${{ github.event_name == 'pull_request' || inputs.compiler_cache_read_only }}
 
       - name: Prepare pinned Windows protobuf compiler
@@ -380,6 +399,8 @@ jobs:
         uses: ./.github/actions/finalize-compiler-cache
         with:
           enabled: ${{ steps.compiler-cache.outputs.enabled }}
+          cache-name: ${{ steps.compiler-cache.outputs.cache-name }}
+          save: ${{ job.status == 'success' && github.ref_type == 'branch' && github.event_name != 'pull_request' && !inputs.compiler_cache_read_only }}
 
   required:
     name: CI required

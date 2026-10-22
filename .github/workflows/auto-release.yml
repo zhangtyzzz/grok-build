@@ -110,6 +110,7 @@ jobs:
     if: needs.metadata.outputs.should_release == 'true'
     permissions:
       contents: read
+      actions: read
     uses: ./.github/workflows/release-cache.yml
     with:
       commit: ${{ needs.metadata.outputs.commit }}

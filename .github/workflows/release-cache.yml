@@ -93,6 +93,7 @@ jobs:
     timeout-minutes: ${{ matrix.timeout_minutes }}
     permissions:
       contents: read
+      actions: read
     defaults:
       run:
         shell: bash
@@ -144,6 +145,8 @@ jobs:
         if: steps.release-build-cache.outputs.cache-hit != 'true'
         id: compiler-cache
         uses: ./.github/actions/setup-compiler-cache
+        with:
+          namespace: release-${{ matrix.target }}
 
       - name: Restore pinned bundled tools
         if: steps.release-build-cache.outputs.cache-hit != 'true'
@@ -243,3 +246,5 @@ jobs:
         uses: ./.github/actions/finalize-compiler-cache
         with:
           enabled: ${{ steps.compiler-cache.outputs.enabled }}
+          cache-name: ${{ steps.compiler-cache.outputs.cache-name }}
+          save: ${{ job.status == 'success' && github.ref_type == 'branch' }}

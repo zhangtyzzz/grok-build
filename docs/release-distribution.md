@@ -191,19 +191,30 @@ compiler archive; protoc is a build-host tool and is not shipped in the
 product archive.
 
 CI and release jobs restore Cargo registry and Git source caches keyed by the
-runner OS, architecture, Rust toolchain, and `Cargo.lock`. Compilation uses
-sccache's native GitHub Actions backend: each compiler result is stored by its
-content hash instead of copying a multi-gigabyte cache archive for every commit.
-Compatible results can be reused across CI jobs and from main to alpha under
-GitHub's default-branch cache visibility rules. A cache key incorporates the
-compiler, target, flags, features and source inputs; different inputs are never
-substituted merely because the branches are related. Pull requests, coordinator quality checks and tag
-fallback builds read the compiler cache without writing it. sccache 0.18 skips
-its remote capability probe and uses the explicitly configured read/write mode:
-a transient limit on that probe must not silently make the whole job read-only.
-The service's 200 cache-entry uploads/minute limit can still reject individual
-cold-build writes. Warm hit rates, rather than configuration alone, are the
-performance evidence.
+runner OS, architecture, Rust toolchain, and `Cargo.lock`. Compiler results use
+bounded local sccache directories (3 GiB for Rust CI, 4 GiB for terminal CI,
+512 MiB for Windows protobuf CI, and 2 GiB per release target). Successful
+branch jobs upload these already-compressed objects as Actions artifacts.
+Public standard-runner Actions usage is free; snapshot uploads are explicitly
+disabled for private repositories. These snapshots do not compete with source
+and final-binary caches for the 10 GiB dependency-cache pool or the service's
+200-small-cache-entry uploads/minute limit.
+
+The snapshot name separates workload, host OS/architecture, Rust and sccache
+versions. Restore looks for the newest compatible artifact from the current
+branch or main; PRs use their base branch, and main never consumes alpha or
+feature-branch snapshots. The helper verifies the same repository and head
+repository, artifact/run source identity, a push/manual event and an allowed
+CI/release workflow. PR artifacts, expired snapshots and other workloads are
+rejected. A missing snapshot or service failure starts an empty local cache.
+Compiler keys still cover source, flags, features and target inputs, so restoring
+an older snapshot cannot substitute a different crate's output. Restoring a
+compiler snapshot never skips source validation or release verification.
+
+PRs, coordinator quality checks and tag fallback builds do not publish compiler
+snapshots. Retention is seven days; maintenance keeps the newest two snapshots
+per workload and release branch. This preserves main-to-alpha reuse without
+paid cache capacity, an external storage service or a paid runner.
 
 The Intel macOS warm build cross-compiles on the free Apple Silicon runner.
 Its pinned bfs/ugrep builds explicitly target x86_64 and retain the existing
@@ -221,10 +232,9 @@ application build. Only branch builds save tool entries.
 This remains crate/object reuse, not Cargo's incremental mode:
 `CARGO_INCREMENTAL=0` is required by sccache. Final executable linking and some
 build scripts still run. The fallback wrapper invokes rustc directly when the
-cache service fails. GitHub's free repository cache allowance and automatic
-eviction still apply; no paid storage, external cache service, or paid runner is
-configured. Individual entries let eviction discard old results without losing
-an entire platform's compiler archive.
+local cache server fails. Source/final-binary caches remain subject to GitHub's
+free dependency-cache allowance; compiler snapshots are kept separately as
+public workflow artifacts.
 
 Both stable and alpha load `.cargo/release-distribution.toml` through
 `scripts/dist.sh`: standard release optimization (`opt-level=3`), LTO off, and
@@ -299,9 +309,9 @@ entry point; maintainers must still validate the selected main commit first.
 `Prune superseded build caches` runs after successful release-branch workflows.
 It removes retired `sccache-disk-v1` archives and keeps only the newest Cargo
 source and exact-build snapshot for each platform, toolchain, and branch. It
-never deletes the new content-addressed `sccache/` objects. This prevents old
-source revisions and lockfiles from occupying the free allowance indefinitely. It does not increase the
-repository's storage limit; eviction can still make a build cold. The cleanup
+also keeps the newest two compiler artifacts per workload and release branch.
+Legacy `sccache/` objects are no longer written and expire through normal Actions
+eviction. Cleanup does not increase the repository's storage limit. The cleanup
 job executes only default-branch code and ignores pull-request runs, feature
 branches, unknown cache keys, and cache formats it does not own.
 
