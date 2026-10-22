@@ -209,6 +209,14 @@ alpha or feature-branch snapshots. The helper verifies the same repository and h
 repository, artifact/run source identity, a push/manual event and an allowed
 CI/release workflow. PR artifacts, expired snapshots and other workloads are
 rejected. A missing snapshot or service failure starts an empty local cache.
+
+On Windows, compiler-cache setup adds `/Brepro` to the MSVC `LINK` environment.
+This makes freshly linked proc-macro DLLs deterministic, including host macros
+built alongside an explicit Cargo `--target`. Otherwise PE timestamps change
+DLL hashes and invalidate dependent Rust crates even for an unchanged commit.
+It does not lower optimization or remove debug information. Native Windows CI
+checks that two clean links are identical and that the resulting macro runs.
+
 Compiler keys still cover source, flags, features and target inputs, so restoring
 an older snapshot cannot substitute a different crate's output. Restoring a
 compiler snapshot never skips source validation or release verification.
