@@ -30,13 +30,24 @@ rules.
 ## Releases
 
 - Do not create or push a release tag directly. When publication is explicitly
-  requested and `main` is ready, manually dispatch
-  `Publish release (warm, tag, Release)` from `main`; it warms the exact release
-  inputs before creating the version tag and starting `Release`.
-- The four lockstepped package versions track upstream's version line verbatim;
-  do not fork-bump them in separate PRs. A release is dispatched after a sync
-  carries a new upstream version. A fork-only hotfix takes the next patch
-  number above upstream's.
+  requested and the branch is ready, manually dispatch
+  `Publish release (warm, tag, Release)` from `main` (stable `X.Y.Z` only) or
+  from `alpha` (`X.Y.Z-alpha.N` only); it warms the exact release inputs before
+  creating the version tag and starting `Release`.
+- Branches: feature and fix PRs, including `codex/*` and agent branches,
+  target `alpha` by default. `main` receives upstream syncs, owner-approved
+  promotions from `alpha`, and release or automation changes the owner directs
+  there. The alpha update channel (`[cli] channel = "alpha"`) installs alpha
+  builds; stable users only see `main` releases.
+- The fork numbers its own releases; the four lockstepped package versions no
+  longer track upstream. Each upstream sync sets `main` to its next patch (the
+  sync script does this deterministically; never resolve versions toward
+  upstream). `alpha` carries the next stable patch above `main` with
+  `-alpha.N`, incremented for each alpha publication.
+- Promote by an owner-approved PR from `alpha` to `main` that sets the next
+  stable patch, then dispatch the stable release from `main`. After every
+  stable release, merge `main` back into `alpha` by PR and reset `alpha` to the
+  following patch's `-alpha.1`, so alpha builds always sort above stable.
 - Ordinary pushes and pull-request merges must not publish a release. See
   `docs/release-distribution.md` for recovery and verification details.
 - The owner-authorized upstream-sync workflow may merge its own exact tested

@@ -16,12 +16,20 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
+import tempfile
 
 UPSTREAM = "https://github.com/xai-org/grok-build.git"
 MAX_ARTIFACT = 20 * 1024 * 1024
 MAX_FILE = 2 * 1024 * 1024
 SHA = re.compile(r"^[0-9a-f]{40}$")
 MARKER = re.compile(rb"^(?:<{7,}|={7,}|>{7,}|\|{7,})(?:[ \t\r]|$)", re.MULTILINE)
+# The fork numbers its own releases: every sync takes the next patch above main's
+# version, never upstream's value, so tags cannot collide with upstream's line.
+VERSION_PACKAGES = ("xai-grok-pager-bin", "xai-grok-pager", "xai-grok-shell", "xai-grok-version")
+VERSION_MANIFESTS = tuple(f"crates/codegen/{p}/Cargo.toml" for p in VERSION_PACKAGES)
+VERSION_FILES = (*VERSION_MANIFESTS, "Cargo.lock")
+MANIFEST_VERSION = re.compile(rb'^version = "[^"\n]+"$', re.MULTILINE)
+STABLE_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 
 
 class SyncError(RuntimeError):
@@ -189,6 +197,72 @@ def snapshot() -> dict[str, str]:
     return result
 
 
+def fork_version(base: str) -> str:
+    versions = set()
+    for path in VERSION_MANIFESTS:
+        match = MANIFEST_VERSION.search(git("show", f"{base}:{path}"))
+        if not match:
+            raise SyncError(f"missing release package version: {path}")
+        versions.add(match[0].decode().split('"')[1])
+    if len(versions) != 1 or not STABLE_VERSION.fullmatch(next(iter(versions))):
+        raise SyncError("main release versions are not one lockstepped stable SemVer")
+    return versions.pop()
+
+
+def next_patch(version: str) -> str:
+    major, minor, patch = version.split(".")
+    return f"{major}.{minor}.{int(patch) + 1}"
+
+
+def set_version(path: str, content: bytes, version: str) -> bytes:
+    if path == "Cargo.lock":
+        for package in VERSION_PACKAGES:
+            content = re.sub(
+                rb'(\[\[package\]\]\nname = "' + re.escape(package.encode()) + rb'"\nversion = )"[^"\n]+"',
+                lambda m: m[1] + b'"' + version.encode() + b'"', content)
+        return content
+    return MANIFEST_VERSION.sub(f'version = "{version}"'.encode(), content, count=1)
+
+
+def apply_fork_version(base: str) -> bool:
+    """Pin version files to main's next patch; resolve conflicts caused only by versions.
+
+    Every side of a conflicted version file is rewritten to the same version before
+    a three-way merge, so a version-only conflict disappears and any other conflict
+    stays for the normal resolution path. Returns whether a conflict was resolved.
+    """
+    version = next_patch(fork_version(base))
+    stages = {}
+    for entry in git("ls-files", "--unmerged", "-z").split(b"\0"):
+        if entry:
+            metadata, name = entry.split(b"\t", 1)
+            mode, object_id, stage = metadata.decode().split()
+            stages.setdefault(name.decode("utf-8"), {})[stage] = (mode, object_id)
+    resolved = False
+    for path in VERSION_FILES:
+        file = safe_file(path)
+        if path not in stages:
+            if file.is_file() and not file.is_symlink():
+                file.write_bytes(set_version(path, file.read_bytes(), version))
+                git("add", "--", path)
+            continue
+        entries = stages[path]
+        if set(entries) != {"1", "2", "3"} or any(m != "100644" for m, _ in entries.values()):
+            continue
+        with tempfile.TemporaryDirectory() as temp:
+            sides = []
+            for stage in ("2", "1", "3"):
+                side = Path(temp) / stage
+                side.write_bytes(set_version(path, git("cat-file", "blob", entries[stage][1]), version))
+                sides.append(str(side))
+            merged = run("git", "merge-file", "-p", "--quiet", *sides, check=False)
+        if merged.returncode == 0:
+            file.write_bytes(merged.stdout)
+            git("add", "--", path)
+            resolved = True
+    return resolved
+
+
 def begin(base: str, upstream: str) -> dict:
     for path in changed_paths(base, upstream):
         if protected(path):
@@ -199,8 +273,9 @@ def begin(base: str, upstream: str) -> dict:
                  "merge", "--no-commit", "--no-ff", upstream, check=False)
     if result.returncode not in (0, 1):
         raise SyncError("merge failed for a reason other than a merge conflict")
+    versions_resolved = apply_fork_version(base)
     conflicts = original_conflicts()
-    if result.returncode and not conflicts:
+    if result.returncode and not conflicts and not versions_resolved:
         raise SyncError("merge failed without supported conflicts")
     return {"base": base, "upstream": upstream, "noop": False,
             "conflicts": conflicts, "snapshot": snapshot()}
@@ -280,9 +355,11 @@ def reconstruct(args):
     if state["noop"]:
         raise SyncError("no merge needed")
     obj = json_read(args.artifact)
+    version = next_patch(fork_version(base))
     for path, content in validate_resolution(obj, state).items():
         p = safe_file(path)
-        p.write_bytes(content)
+        # A resolved version file still gets the fork's version, whatever the artifact says.
+        p.write_bytes(set_version(path, content, version) if path in VERSION_FILES else content)
         git("add", "--", path)
     if git("ls-files", "--unmerged", "-z"):
         raise SyncError("unmerged index entries remain")
