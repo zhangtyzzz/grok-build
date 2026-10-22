@@ -209,10 +209,7 @@ jobs:
 
       - name: Extract exact warm inputs
         if: needs.metadata.outputs.build_run_id != ''
-        run: |
-          mkdir -p "target/release-build-cache/${{ matrix.target }}"
-          tar -xzf "$RUNNER_TEMP/release-inputs/release-inputs-${{ matrix.target }}.tar.gz" \
-            -C "target/release-build-cache/${{ matrix.target }}"
+        run: bash scripts/ci/release-inputs.sh extract "${{ matrix.target }}"
 
       - name: Install the pinned Rust toolchain
         if: needs.metadata.outputs.build_run_id == '' && steps.release-build-cache.outputs.cache-hit != 'true'
@@ -382,13 +379,14 @@ jobs:
         with:
           enabled: ${{ steps.compiler-cache.outputs.enabled }}
           cache-name: ${{ steps.compiler-cache.outputs.cache-name }}
-          save: ${{ job.status == 'success' && github.ref_type == 'branch' }}
+          save: ${{ job.status != 'cancelled' && github.ref_type == 'branch' }}
 
       - name: Upload Cargo build timings
         if: always() && steps.compiler-cache.outputs.enabled == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-timings-${{ matrix.target }}
+          overwrite: true
           path: target/cargo-timings/
           retention-days: 7
 

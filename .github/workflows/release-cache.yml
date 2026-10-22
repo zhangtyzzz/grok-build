@@ -219,9 +219,7 @@ jobs:
       # A tag cannot read alpha's branch-scoped Actions cache. The coordinator
       # passes its run ID so Release downloads these immutable artifacts instead.
       - name: Archive exact release inputs
-        run: |
-          tar -czf "$RUNNER_TEMP/release-inputs-${{ matrix.target }}.tar.gz" \
-            -C "target/release-build-cache/${{ matrix.target }}" .
+        run: bash scripts/ci/release-inputs.sh archive "${{ matrix.target }}"
 
       - name: Upload exact release inputs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -238,6 +236,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: warm-timings-${{ matrix.target }}
+          overwrite: true
           path: target/cargo-timings/
           retention-days: 7
 
@@ -247,4 +246,4 @@ jobs:
         with:
           enabled: ${{ steps.compiler-cache.outputs.enabled }}
           cache-name: ${{ steps.compiler-cache.outputs.cache-name }}
-          save: ${{ job.status == 'success' && github.ref_type == 'branch' }}
+          save: ${{ job.status != 'cancelled' && github.ref_type == 'branch' }}

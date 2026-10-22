@@ -32,8 +32,14 @@ def trusted(artifact, run, repository, branches):
             and run.get("path") in WORKFLOWS)
 
 
-def candidates(artifacts, repository, branches, get_run, name=None):
-    for artifact in sorted(artifacts, key=lambda a: (a.get("created_at", ""), a.get("id", 0)), reverse=True):
+def candidates(artifacts, repository, branches, get_run, name=None, preferred_branch=None):
+    # The current branch is likelier to contain its unchanged application crates
+    # and dependency versions, even when main published a newer snapshot.
+    def priority(artifact):
+        return (artifact.get("workflow_run", {}).get("head_branch") == preferred_branch,
+                artifact.get("created_at", ""), artifact.get("id", 0))
+
+    for artifact in sorted(artifacts, key=priority, reverse=True):
         if not artifact.get("name", "").startswith(PREFIX) or (name and artifact["name"] != name):
             continue
         source = artifact.get("workflow_run", {})
@@ -92,7 +98,7 @@ def main():
     try:
         artifacts = [a for page in api(endpoint + "?per_page=100&name=" + quote(name, safe=""), True)
                      for a in page["artifacts"]]
-        selected = next(candidates(artifacts, repository, {"main", branch}, get_run, name), None)
+        selected = next(candidates(artifacts, repository, {"main", branch}, get_run, name, preferred_branch=branch), None)
     except (subprocess.CalledProcessError, OSError, KeyError, TypeError, ValueError):
         print("Could not verify a compiler snapshot; compiling with an empty local cache")
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
