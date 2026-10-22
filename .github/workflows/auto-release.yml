@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       expected_commit:
-        description: Exact already-validated main SHA (optional for manual publication)
+        description: Exact already-validated SHA of the dispatched branch (optional for manual publication)
         required: false
         default: ""
         type: string
@@ -17,16 +17,17 @@ concurrency:
 
 jobs:
   metadata:
-    name: Detect unreleased main version
+    name: Detect unreleased branch version
     runs-on: ubuntu-22.04
     permissions:
       contents: read
     outputs:
       commit: ${{ steps.release.outputs.commit }}
       tag: ${{ steps.release.outputs.tag }}
+      branch: ${{ steps.release.outputs.branch }}
       should_release: ${{ steps.release.outputs.should_release }}
     steps:
-      - name: Check out the validated main commit
+      - name: Check out the validated branch commit
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.sha }}
@@ -42,17 +43,21 @@ jobs:
           EXPECTED_COMMIT: ${{ inputs.expected_commit }}
         run: |
           set -euo pipefail
-          test "$REQUESTED_REF" = refs/heads/main || {
-            echo "release publication must be dispatched from main" >&2
-            exit 1
-          }
+          # main publishes stable versions only; alpha publishes -alpha.N only.
+          case "$REQUESTED_REF" in
+            refs/heads/main | refs/heads/alpha) branch="${REQUESTED_REF#refs/heads/}" ;;
+            *)
+              echo "release publication must be dispatched from main or alpha" >&2
+              exit 1
+              ;;
+          esac
           if [[ -n "$EXPECTED_COMMIT" ]]; then
             [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
               echo "expected_commit must be a full commit SHA" >&2
               exit 1
             }
             test "$REQUESTED_COMMIT" = "$EXPECTED_COMMIT" || {
-              echo "main no longer matches validated commit $EXPECTED_COMMIT; refusing publication" >&2
+              echo "$branch no longer matches validated commit $EXPECTED_COMMIT; refusing publication" >&2
               exit 1
             }
           fi
@@ -62,10 +67,10 @@ jobs:
             exit 1
           }
 
-          current_main="$(git ls-remote origin refs/heads/main | awk '{ print $1 }')"
-          test -n "$current_main"
-          test "$current_main" = "$REQUESTED_COMMIT" || {
-            echo "main advanced to $current_main; dispatch the release workflow again" >&2
+          current_head="$(git ls-remote origin "refs/heads/$branch" | awk '{ print $1 }')"
+          test -n "$current_head"
+          test "$current_head" = "$REQUESTED_COMMIT" || {
+            echo "$branch advanced to $current_head; dispatch the release workflow again" >&2
             exit 1
           }
 
@@ -87,20 +92,27 @@ jobs:
             fi
           done
           tag="v$version"
-          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || \
-             "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)\.[0-9]+$ ]] || {
-            echo "unsupported release tag: $tag" >&2
-            exit 1
-          }
+          if [[ "$branch" == main ]]; then
+            [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+              echo "main publishes stable versions only, not $tag" >&2
+              exit 1
+            }
+          else
+            [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]] || {
+              echo "alpha publishes -alpha.N versions only, not $tag" >&2
+              exit 1
+            }
+          fi
 
           should_release=true
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-            echo "$tag already exists; this main commit does not need a release"
+            echo "$tag already exists; this $branch commit does not need a release"
             should_release=false
           fi
           {
             echo "commit=$REQUESTED_COMMIT"
             echo "tag=$tag"
+            echo "branch=$branch"
             echo "should_release=$should_release"
           } >>"$GITHUB_OUTPUT"
 
@@ -132,11 +144,12 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
           RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+          RELEASE_BRANCH: ${{ needs.metadata.outputs.branch }}
         run: |
           set -euo pipefail
-          current_main="$(gh api "repos/$GH_REPO/commits/main" --jq .sha)"
-          if [[ "$current_main" != "$RELEASE_COMMIT" ]]; then
-            echo "main advanced to $current_main; validate that commit and dispatch publication again" >&2
+          current_head="$(gh api "repos/$GH_REPO/commits/$RELEASE_BRANCH" --jq .sha)"
+          if [[ "$current_head" != "$RELEASE_COMMIT" ]]; then
+            echo "$RELEASE_BRANCH advanced to $current_head; validate that commit and dispatch publication again" >&2
             exit 1
           fi
           if gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
@@ -152,9 +165,9 @@ jobs:
               --raw-field type=commit \
               --jq .sha
           )"
-          current_main="$(gh api "repos/$GH_REPO/commits/main" --jq .sha)"
-          if [[ "$current_main" != "$RELEASE_COMMIT" ]]; then
-            echo "main advanced while preparing $RELEASE_TAG; leaving the unattached tag object unused"
+          current_head="$(gh api "repos/$GH_REPO/commits/$RELEASE_BRANCH" --jq .sha)"
+          if [[ "$current_head" != "$RELEASE_COMMIT" ]]; then
+            echo "$RELEASE_BRANCH advanced while preparing $RELEASE_TAG; leaving the unattached tag object unused"
             exit 1
           fi
           if gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then

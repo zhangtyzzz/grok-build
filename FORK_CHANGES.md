@@ -252,9 +252,19 @@ PR 必须列出上游 SHA、保留/替代的 fork 行为、每项冲突决策及
 
 ## 6. 版本与发布是独立的验证阶段
 
-四个 lockstep 包 `xai-grok-version`、`xai-grok-shell`、`xai-grok-pager`、`xai-grok-pager-bin` 跟随上游版本线，依据 `217891d1`。不要每次同步额外创建 fork bump PR；只有需要在下一次同步前发布的 fork-only hotfix 才使用上游之上的下一个 patch。
+**fork 独立版本号与 alpha 通道（2026-10-22 维护者确认，取代 `217891d1` 的“跟随上游版本线”）。**
 
-当前 fork-only 发布：`1.0.46`（2026-10-22，上游仍为 `1.0.45`；为让维护者立即用上 PR #104 的 Code Mode，维护者授权）。上游每次同步都会提升版本号，所以下一次同步直接取上游版本，恢复完全跟随上游版本线，不再额外 bump；若上游恰好也是 `1.0.46`，tag 已存在，同步合并但不重复发布。
+- 背景与目标：跟随上游版本号时，fork 自己的发布会占用上游未来要用的号，tag 已存在会让上游同步合并后不出包；fork 功能也缺少先给维护者试用的阶段（PR #104 直接进了稳定版 `1.0.46`，随后才由 #106 修正 MCP 提示）。改为 fork 自己编号，并用 `alpha` 分支做预发布。
+- 必须保留的约束：
+  - 四个 lockstep 包 `xai-grok-version`、`xai-grok-shell`、`xai-grok-pager`、`xai-grok-pager-bin` 仍保持一致，但不再取上游的值。
+  - 每次上游同步把 `main` 设为其当前版本的下一个 patch：`upstream_sync.py` 的 `apply_fork_version` 在合并后确定性地改写四个 Cargo.toml 和 `Cargo.lock`，只因版本行不同的冲突在三方都改写后自动消失；`reconstruct` 对 AI 解决结果再改写一次，AI 不能决定版本号。`main` 上出现预发布版本时同步失败关闭。
+  - `main` 只发稳定版 `X.Y.Z`；`alpha` 只发 `X.Y.Z-alpha.N`（`auto-release.yml` 按分支校验）。alpha 版号为 `main` 下一个稳定 patch 加 `-alpha.N`。alpha tag 由 `release.yml` 标为 prerelease、走 `release-testing` environment；只有 `[cli] channel = "alpha"` 的客户端会安装。
+  - 功能与修复 PR（含 `codex/*`）默认提到 `alpha`；`main` 只接收上游同步、维护者批准的 alpha → main 晋升，以及维护者指定的发布/自动化修改。
+  - 晋升 PR 把版本设为下一个稳定 patch，再从 `main` 发稳定版。每次稳定版发布后把 `main` 合回 `alpha`，并把 `alpha` 重置为再下一个 patch 的 `-alpha.1`，因为稳定版 `X.Y.Z` 高于所有 `X.Y.Z-alpha.N`。
+- 代码入口：`scripts/automation/upstream_sync.py`（`VERSION_FILES`、`fork_version`、`apply_fork_version`、`begin`、`reconstruct`）及 `test_upstream_sync.py` 的 `ForkVersionTests`；`.github/workflows/{auto-release,release-cache}.yml`；`AGENTS.md` Releases；`docs/release-distribution.md`。
+- 合并方法：上游若改版本号，不按上游取值，交给同步脚本；上游改发布工作流时保留按分支区分通道的校验。
+- 验证：`python3 -m unittest discover -s scripts/automation -p 'test_*.py'`；首个 alpha 发布需确认 tag、prerelease 标记、资产齐全，以及 alpha 通道客户端能升级、稳定通道不受影响。
+- 历史：`1.0.46`（2026-10-22）是采用本规则前最后一次按“上游之上的下一个 patch”发的 fork 版本，此后版本号不再与上游对应。
 
 普通 PR 合并不是发布成功。发布须在目标 main 的 CI 通过后，按 [`docs/release-distribution.md`](docs/release-distribution.md) 从 main 调用 `Publish release (warm, tag, Release)`：
 
@@ -285,7 +295,7 @@ PR 必须列出上游 SHA、保留/替代的 fork 行为、每项冲突决策及
 | 采用上游 model_providers 并保留旁路 policy | `ff1b9b32`；RFC §4.2 修订。 |
 | 缓存 placement 跟上游，保留 TTL/off 增量 | `8595f481`、`ec4bda42`；RFC §9；差异审计 §1。 |
 | Plan Mode 撤销 fork 扩展 | `1a6d8517`（PR #97）；RFC §5；差异审计 2026-09-18 更新。 |
-| 版本线跟随上游 | `217891d1`；`AGENTS.md` Releases；发布文档。 |
+| fork 独立版本号与 alpha 通道（取代 `217891d1` 的跟随上游版本线） | 本文 §6；`AGENTS.md` Releases；发布文档；`ForkVersionTests`。 |
 | 标准发行入口与精确产物复用 | `6ff1d78f`、`2e09f905`；`docs/release-distribution.md`。 |
 | JavaScript Code Mode（默认开启，全工具含 MCP） | PR #104；`docs/code-mode.md`；本文 §3.6。 |
 
