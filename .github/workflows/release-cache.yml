@@ -116,7 +116,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target/release-build-cache/${{ matrix.target }}
-          key: release-build-v2-${{ matrix.target }}-rust-${{ env.RUST_CHANNEL }}-${{ hashFiles('Cargo.lock') }}-${{ needs.metadata.outputs.commit }}
+          key: release-build-v3-${{ matrix.target }}-rust-${{ env.RUST_CHANNEL }}-${{ hashFiles('Cargo.lock') }}-${{ needs.metadata.outputs.commit }}
 
       - name: Install the pinned Rust toolchain
         if: steps.release-build-cache.outputs.cache-hit != 'true'
@@ -137,6 +137,17 @@ jobs:
           key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_CHANNEL }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_CHANNEL }}-
+
+      - name: Set up reusable release compiler cache
+        if: steps.release-build-cache.outputs.cache-hit != 'true'
+        id: compiler-cache
+        uses: ./.github/actions/setup-compiler-cache
+        with:
+          namespace: release-${{ contains(needs.metadata.outputs.version, '-alpha.') && 'alpha' || 'stable' }}-${{ matrix.target }}
+          toolchain: ${{ env.RUST_CHANNEL }}
+          lock-hash: ${{ hashFiles('Cargo.lock', '.cargo/*.toml') }}
+          revision: ${{ needs.metadata.outputs.commit }}
+          cache-size: 3G
 
       - name: Prepare checksum-pinned bundled tools
         if: steps.release-build-cache.outputs.cache-hit != 'true'
@@ -184,3 +195,36 @@ jobs:
       - name: Report exact cache hit
         if: steps.release-build-cache.outputs.cache-hit == 'true'
         run: echo "exact release build cache already exists for ${{ needs.metadata.outputs.commit }} / ${{ matrix.target }}"
+
+      # A tag cannot read alpha's branch-scoped Actions cache. The coordinator
+      # passes its run ID so Release downloads these immutable artifacts instead.
+      - name: Archive exact release inputs
+        run: |
+          tar -czf "$RUNNER_TEMP/release-inputs-${{ matrix.target }}.tar.gz" \
+            -C "target/release-build-cache/${{ matrix.target }}" .
+
+      - name: Upload exact release inputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-inputs-${{ matrix.target }}
+          overwrite: true
+          path: ${{ runner.temp }}/release-inputs-${{ matrix.target }}.tar.gz
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload Cargo build timings
+        if: always() && steps.release-build-cache.outputs.cache-hit != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: warm-timings-${{ matrix.target }}
+          path: target/cargo-timings/
+          retention-days: 7
+
+      - name: Finalize release compiler cache
+        if: always() && steps.compiler-cache.outputs.enabled == 'true'
+        uses: ./.github/actions/finalize-compiler-cache
+        with:
+          enabled: ${{ steps.compiler-cache.outputs.enabled }}
+          save: ${{ job.status == 'success' && steps.compiler-cache.outputs.cache-hit != 'true' }}
+          cache-primary-key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
