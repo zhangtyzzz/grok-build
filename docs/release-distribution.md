@@ -250,7 +250,9 @@ The coordinator uploads each executable, receipt and exact tool inputs as a
 compressed artifact (with executable permissions preserved inside tar). Release
 checks that the source run is the expected same-repository coordinator on main
 or alpha at the exact tag SHA and that all six builds and the quality gate passed
-in its current attempt. It downloads those artifacts by run ID, bypassing the
+in its current attempt. Delayed job/artifact visibility is retried for up to
+15 minutes; failed gates and source mismatches fail immediately. It downloads
+those artifacts by run ID, bypassing the
 Actions cache restriction that makes alpha caches invisible to tag runs. Missing,
 expired or mismatched handoff artifacts fail the run; they do not silently
 substitute artifacts from another revision. Packaging still verifies the receipt,

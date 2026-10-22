@@ -4,7 +4,12 @@ import json
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
+
+
+class HandoffPending(ValueError):
+    """Trusted run whose completed jobs/artifacts are not yet visible."""
 
 
 def validate(run, jobs, artifacts, repository, commit, targets):
@@ -21,13 +26,19 @@ def validate(run, jobs, artifacts, repository, commit, targets):
     required.update("Warm exact release binaries / Warm " + target for target in targets)
     for name in required:
         matches = [job for job in jobs if job.get("name") == name]
-        if (len(matches) != 1 or matches[0].get("status") != "completed"
-                or matches[0].get("conclusion") != "success"
-                or matches[0].get("head_sha") != commit
+        if not matches:
+            raise HandoffPending("job not yet visible: " + name)
+        if (len(matches) != 1 or matches[0].get("head_sha") != commit
                 or matches[0].get("run_attempt") != run.get("run_attempt")):
-            raise ValueError("missing successful current-attempt job: " + name)
+            raise ValueError("invalid current-attempt job: " + name)
+        if matches[0].get("status") != "completed" or matches[0].get("conclusion") is None:
+            raise HandoffPending("job completion not yet visible: " + name)
+        if matches[0].get("conclusion") != "success":
+            raise ValueError("unsuccessful current-attempt job: " + name)
     for target in targets:
         matches = [item for item in artifacts if item.get("name") == "release-inputs-" + target]
+        if not matches:
+            raise HandoffPending("artifact not yet visible: " + target)
         if len(matches) != 1 or matches[0].get("expired") is not False:
             raise ValueError("missing unexpired release artifact: " + target)
 
@@ -76,17 +87,31 @@ def find_ci():
     print("Verified successful exact-commit CI run " + found if found else "No reusable successful CI found")
 
 
+def wait_for_handoff(endpoint, repository, commit, targets, attempts=31):
+    # Actions can expose completed steps before updating the job conclusion.
+    # Retry visibility lag, never a source mismatch or a failed gate.
+    for attempt in range(attempts):
+        run = api(endpoint)
+        jobs = [j for page in api(endpoint + "/jobs?filter=latest&per_page=100", True) for j in page["jobs"]]
+        artifacts = [a for page in api(endpoint + "/artifacts?per_page=100", True) for a in page["artifacts"]]
+        try:
+            validate(run, jobs, artifacts, repository, commit, targets)
+            return
+        except HandoffPending as error:
+            if attempt == attempts - 1:
+                raise
+            print(f"Waiting for coordinator API visibility: {error}", flush=True)
+            time.sleep(30)
+
+
 def main():
     run_id = os.environ["BUILD_RUN_ID"]
     if not re.fullmatch(r"[1-9][0-9]*", run_id):
         raise ValueError("build_run_id must be a numeric Actions run ID")
     repository = os.environ["GH_REPO"]
     endpoint = f"repos/{repository}/actions/runs/{run_id}"
-    run = api(endpoint)
-    jobs = [j for page in api(endpoint + "/jobs?filter=latest&per_page=100", True) for j in page["jobs"]]
-    artifacts = [a for page in api(endpoint + "/artifacts?per_page=100", True) for a in page["artifacts"]]
     targets = json.loads((Path(__file__).resolve().parents[1] / "dist/targets.json").read_text())
-    validate(run, jobs, artifacts, repository, os.environ["RELEASE_COMMIT"], targets)
+    wait_for_handoff(endpoint, repository, os.environ["RELEASE_COMMIT"], targets)
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
         output.write(f"build_run_id={run_id}\n")
     print(f"Reusing all six native builds and quality gates from validated run {run_id}")
