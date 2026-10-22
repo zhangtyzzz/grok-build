@@ -288,6 +288,6 @@ PR 必须列出上游 SHA、保留/替代的 fork 行为、每项冲突决策及
 | Plan Mode 撤销 fork 扩展 | `1a6d8517`（PR #97）；RFC §5；差异审计 2026-09-18 更新。 |
 | 版本线跟随上游 | `217891d1`；`AGENTS.md` Releases；发布文档。 |
 | 标准发行入口与精确产物复用 | `6ff1d78f`、`2e09f905`；`docs/release-distribution.md`。 |
-| JavaScript Code Mode（默认开启，全工具含 MCP） | PR #104；`docs/code-mode.md`；本文 §3.6。 |
+| JavaScript Code Mode（默认开启，全工具含 MCP） | PR #104、#106（MCP 提示双路径）；`docs/code-mode.md`；本文 §3.6。 |
 
 新上游若使这些文件或符号消失，先核实行为迁移或等价替代，再更新入口；不要仅为维持本文的旧路径把已删除代码恢复。
