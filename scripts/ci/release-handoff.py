@@ -114,7 +114,7 @@ def main():
     wait_for_handoff(endpoint, repository, os.environ["RELEASE_COMMIT"], targets)
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
         output.write(f"build_run_id={run_id}\n")
-    print(f"Reusing all six native builds and quality gates from validated run {run_id}")
+    print(f"Reusing all six target builds and quality gates from validated run {run_id}")
 
 
 if __name__ == "__main__":

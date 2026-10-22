@@ -179,9 +179,9 @@ packaging dry run. A publishing run is accepted only when the workflow itself
 is running on the matching existing tag and commit.
 
 The release workflow calls the same CI workflow used by pull requests while
-building on six native hosted runners in parallel: macOS, Linux, and Windows
+packaging and testing on six native hosted runners in parallel: macOS, Linux, and Windows
 on both ARM64 and x86-64. The fan-in job depends on both the quality workflow
-and every native build, so parallel execution shortens the critical path
+and every platform job, so parallel execution shortens the critical path
 without allowing an unverified build to reach publication.
 `scripts/dist/prepare-release-tools.sh` downloads a
 checksum-pinned protoc and ripgrep for every target and builds the pinned bfs
@@ -204,6 +204,12 @@ a transient limit on that probe must not silently make the whole job read-only.
 The service's 200 cache-entry uploads/minute limit can still reject individual
 cold-build writes. Warm hit rates, rather than configuration alone, are the
 performance evidence.
+
+The Intel macOS warm build cross-compiles on the free Apple Silicon runner.
+Its pinned bfs/ugrep builds explicitly target x86_64 and retain the existing
+architecture and execution checks. Release still uses a native Intel runner
+for Intel packaging and smoke tests. All six distribution targets remain
+required; a standalone fallback Release without warm artifacts remains native.
 
 Checksum-pinned protoc and search tools are cached separately by target and the
 complete distribution-helper digest. Restores rerun the existing executable
@@ -244,14 +250,14 @@ from `main` after its required CI checks pass. Ordinary pushes and pull-request
 merges never create a tag. The publication workflow checks the four lockstepped
 package versions and whether their version tag already exists. For a new
 version, it calls `Warm release build cache` with the exact requested main
-commit. The six native jobs build that commit and save each final
+commit. The six target jobs build that commit and save each final
 executable, its build attestation, and the exact checksum-pinned bundled-tool
 inputs under a key containing the target, Rust version, `Cargo.lock` hash, and
 full commit SHA. Quality validation runs alongside the warm builds. It first
 looks for a successful CI run on the exact source SHA, restricted to push/manual runs of
 `ci.yml` on main or alpha with a successful current-attempt `CI required` job.
 If no such evidence exists, it runs all quality gates. Only after both quality
-and every native build succeed does the coordinator recheck the branch head,
+and every target build succeed does the coordinator recheck the branch head,
 create the annotated tag and dispatch `Release`, passing its own run ID.
 
 The coordinator uploads each executable, receipt and exact tool inputs as a
