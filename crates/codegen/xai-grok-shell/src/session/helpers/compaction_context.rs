@@ -28,6 +28,22 @@ pub struct McpToolNames {
     pub search: String,
     /// Model-facing name of the dispatch/call tool (e.g. "use_tool").
     pub call: String,
+    /// Code Mode's `execute` is advertised, so its catalog is a second schema source.
+    pub code_mode: bool,
+}
+
+/// MCP usage hint shared by the live reminder and the compaction reminder.
+/// With Code Mode, both discovery paths are named so the hint does not forbid `execute`.
+pub fn mcp_usage_hint(search: &str, call: &str, code_mode: bool) -> String {
+    if code_mode {
+        format!(
+            "\nTo use MCP tools, NEVER guess parameter names — always use the tool's exact input schema. Either call `{search}` to retrieve the schema and then `{call}`, or inside `execute` use `catalog.search`/`catalog.describe` and then `tools[name](args)` with the same qualified name. Call `{call}` directly for a single call or a few independent calls (they can run in parallel); prefer `execute` when results must be filtered or aggregated before you read them, or when a fixed multi-step flow feeds one result into the next. Both paths run the same MCP permission checks."
+        )
+    } else {
+        format!(
+            "\nTo use MCP tools, you MUST call `{search}` first to retrieve the tool's input schema before calling `{call}`. NEVER guess parameter names — always use the exact schema returned by `{search}`."
+        )
+    }
 }
 
 /// Resolved model-facing tool names for the subagent reminder section.
@@ -242,10 +258,7 @@ fn to_system_reminder_inner(
             .map(|s| format_compaction_server_line(&s.name, s.tool_count, &s.description))
             .collect();
         let hint = if let Some(names) = mcp_tool_names {
-            format!(
-                "\nTo use MCP tools, you MUST call `{}` first to retrieve the tool's input schema before calling `{}`. NEVER guess parameter names — always use the exact schema returned by `{}`.",
-                names.search, names.call, names.search
-            )
+            mcp_usage_hint(&names.search, &names.call, names.code_mode)
         } else {
             String::new()
         };
@@ -639,6 +652,26 @@ mod tests {
                 !text.contains("## TODO List"),
                 "TODO section should be omitted when nothing is active: {text}"
             );
+        }
+    }
+
+    #[test]
+    fn mcp_usage_hint_offers_code_mode_catalog_only_when_available() {
+        let direct = mcp_usage_hint("search_tool", "use_tool", false);
+        assert!(direct.contains("you MUST call `search_tool` first"));
+        assert!(!direct.contains("execute"));
+
+        let code_mode = mcp_usage_hint("search_tool", "use_tool", true);
+        assert!(!code_mode.contains("MUST call"), "{code_mode}");
+        for needle in [
+            "`search_tool`",
+            "`use_tool`",
+            "`execute`",
+            "catalog.describe",
+            "NEVER guess",
+            "same MCP permission checks",
+        ] {
+            assert!(code_mode.contains(needle), "missing {needle}: {code_mode}");
         }
     }
 }

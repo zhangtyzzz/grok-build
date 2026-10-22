@@ -1492,13 +1492,17 @@ impl SessionActor {
                     xai_grok_tools::implementations::use_tool::UseToolParams,
                 >>()
                 .is_some_and(|params| params.0.supports_file_input());
-        let hint_template = "\nTo use MCP tools, you MUST call `${{ tools.by_kind.search_tool }}` first to retrieve the tool's input schema before calling `${{ tools.by_kind.use_tool }}`. NEVER guess parameter names — always use the exact schema returned by `${{ tools.by_kind.search_tool }}`.";
+        let hint_template = crate::session::helpers::compaction_context::mcp_usage_hint(
+            "${{ tools.by_kind.search_tool }}",
+            "${{ tools.by_kind.use_tool }}",
+            self.code_mode_available(),
+        );
         let hint_template = if file_supported {
             format!(
                 "{hint_template}\nFor large MCP arguments, prepare one complete UTF-8 JSON file and call `${{{{ tools.by_kind.use_tool }}}}` with {{\"${{{{ params.use_tool.file }}}}\":\"/tmp/mcp-call.json\"}}; the document contains canonical tool_name and object tool_input. Alternatively supply the target plus `${{{{ params.use_tool.tool_input_file }}}}` for an arguments-only object. File reads require Read permission before MCP approval."
             )
         } else {
-            hint_template.to_owned()
+            hint_template
         };
         self.tool_bridge_handle()
             .render_prompt(&hint_template, &serde_json::json!({}))
