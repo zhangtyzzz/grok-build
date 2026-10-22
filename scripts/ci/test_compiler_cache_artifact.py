@@ -61,11 +61,14 @@ class CompilerSnapshotTests(unittest.TestCase):
         selected = list(cache.candidates(items, REPOSITORY, {"main", "alpha"}, run, NAME))
         self.assertEqual([a["id"] for a in selected], [1])
 
-    def test_alpha_selects_newest_compatible_trusted_branch_snapshot(self):
+    def test_alpha_prefers_its_own_snapshot_then_falls_back_to_main(self):
         items = [artifact(1), artifact(2, branch="alpha"), artifact(3)]
         runs = {1: run(1), 2: run(2, "alpha"), 3: run(3)}
-        selected = list(cache.candidates(items, REPOSITORY, {"main", "alpha"}, runs.__getitem__, NAME))
-        self.assertEqual([a["id"] for a in selected], [3, 2, 1])
+        selected = list(cache.candidates(items, REPOSITORY, {"main", "alpha"}, runs.__getitem__, NAME, preferred_branch="alpha"))
+        self.assertEqual([a["id"] for a in selected], [2, 3, 1])
+        items[1]["expired"] = True
+        selected = list(cache.candidates(items, REPOSITORY, {"main", "alpha"}, runs.__getitem__, NAME, preferred_branch="alpha"))
+        self.assertEqual([a["id"] for a in selected], [3, 1])
 
     def test_cleanup_retains_two_per_workload_and_branch(self):
         items = [artifact(i) for i in range(1, 5)] + [artifact(5, "alpha"), artifact(6, name=NAME + "-ci")]
