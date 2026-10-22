@@ -254,10 +254,19 @@ jobs:
           command -v zip
           command -v unzip
 
+      - name: Restore pinned bundled tools
+        if: needs.metadata.outputs.build_run_id == '' && steps.release-build-cache.outputs.cache-hit != 'true'
+        id: tools-cache
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/release-build-cache/${{ matrix.target }}/tools
+          key: release-tools-v1-${{ matrix.target }}-${{ hashFiles('scripts/dist/**') }}
+
       - name: Prepare checksum-pinned bundled tools
         run: |
           set -euo pipefail
-          if [[ -n "${{ needs.metadata.outputs.build_run_id }}" || "${{ steps.release-build-cache.outputs.cache-hit }}" == true ]]; then
+          if [[ -n "${{ needs.metadata.outputs.build_run_id }}" || "${{ steps.release-build-cache.outputs.cache-hit }}" == true || "${{ steps.tools-cache.outputs.cache-hit }}" == true ]]; then
             bash scripts/dist/prepare-release-tools.sh \
               --target "${{ matrix.target }}" \
               --output-dir "$PWD/target/release-build-cache/${{ matrix.target }}/tools" \
@@ -269,6 +278,14 @@ jobs:
               --output-dir "$PWD/target/release-build-cache/${{ matrix.target }}/tools" \
               --github-env "$GITHUB_ENV"
           fi
+
+      - name: Save pinned bundled tools
+        if: success() && needs.metadata.outputs.build_run_id == '' && steps.release-build-cache.outputs.cache-hit != 'true' && github.ref_type == 'branch' && steps.tools-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/release-build-cache/${{ matrix.target }}/tools
+          key: ${{ steps.tools-cache.outputs.cache-primary-key }}
 
       - name: Fetch locked dependencies
         if: needs.metadata.outputs.build_run_id == '' && steps.release-build-cache.outputs.cache-hit != 'true'

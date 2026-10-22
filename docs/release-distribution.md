@@ -200,6 +200,13 @@ compiler, target, flags, features and source inputs; different inputs are never
 substituted merely because the branches are related. Pull requests and tag
 fallback builds read the compiler cache without writing it.
 
+Checksum-pinned protoc and search tools are cached separately by target and the
+complete distribution-helper digest. Restores rerun the existing executable
+format and version checks before exporting their paths; the current build then
+records their hashes in its receipt. This avoids rebuilding unchanged bfs/ugrep
+for each application version. A tool-cache hit never substitutes for an
+application build. Only branch builds save tool entries.
+
 This remains crate/object reuse, not Cargo's incremental mode:
 `CARGO_INCREMENTAL=0` is required by sccache. Final executable linking and some
 build scripts still run. The fallback wrapper invokes rustc directly when the

@@ -143,13 +143,34 @@ jobs:
         id: compiler-cache
         uses: ./.github/actions/setup-compiler-cache
 
+      - name: Restore pinned bundled tools
+        if: steps.release-build-cache.outputs.cache-hit != 'true'
+        id: tools-cache
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/release-build-cache/${{ matrix.target }}/tools
+          key: release-tools-v1-${{ matrix.target }}-${{ hashFiles('scripts/dist/**') }}
+
       - name: Prepare checksum-pinned bundled tools
         if: steps.release-build-cache.outputs.cache-hit != 'true'
         run: |
-          bash scripts/dist/prepare-release-tools.sh \
-            --target "${{ matrix.target }}" \
-            --output-dir "$PWD/target/release-build-cache/${{ matrix.target }}/tools" \
-            --github-env "$GITHUB_ENV"
+          set -euo pipefail
+          args=(--target "${{ matrix.target }}"
+                --output-dir "$PWD/target/release-build-cache/${{ matrix.target }}/tools"
+                --github-env "$GITHUB_ENV")
+          if [[ "${{ steps.tools-cache.outputs.cache-hit }}" == true ]]; then
+            args+=(--reuse-existing)
+          fi
+          bash scripts/dist/prepare-release-tools.sh "${args[@]}"
+
+      - name: Save pinned bundled tools
+        if: success() && steps.release-build-cache.outputs.cache-hit != 'true' && github.ref_type == 'branch' && steps.tools-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/release-build-cache/${{ matrix.target }}/tools
+          key: ${{ steps.tools-cache.outputs.cache-primary-key }}
 
       - name: Fetch locked dependencies
         if: steps.release-build-cache.outputs.cache-hit != 'true'
