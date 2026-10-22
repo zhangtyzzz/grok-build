@@ -134,7 +134,7 @@ helper 回归覆盖同 slug 不同 provider、缺失 ref 不降级、legacy alia
 
 - 开关：默认开启，`GROK_CODE_MODE=0/false/off/no` 关闭；总时长 `GROK_CODE_MODE_TIMEOUT_SECS`（默认 600，范围 10–3600，包含工具、subagent 与审批等待），JS 主动计算 5 秒上限独立存在。
 - 并存而非替换：MCP 工具仍通过 `search_tool`/`use_tool` 渐进披露，不逐个声明给模型；`execute` 只多一条定义。不要改成 Pi 式 codemode-only，除非维护者另行决定。
-- MCP 使用提示与 Code Mode 一致：上游注入的 MCP reminder（实时注入与压缩后重注入）原文写死“必须先调 `search_tool` 再调 `use_tool`”，会让模型不敢在 `execute` 里用 `catalog.describe` + `tools[name]`。`execute` 可用时改用 `compaction_context::mcp_usage_hint` 的共享措辞：两条路径都合法，多次/依赖/需过滤的大结果 MCP 调用优先 `execute`，仍禁止猜参数；不可用时保持上游原文。上游改这段提示时，合并后两处仍须只调用这一个函数。
+- MCP 使用提示与 Code Mode 一致：上游注入的 MCP reminder（实时注入与压缩后重注入）原文写死“必须先调 `search_tool` 再调 `use_tool`”，会让模型不敢在 `execute` 里用 `catalog.describe` + `tools[name]`。`execute` 可用时改用 `compaction_context::mcp_usage_hint` 的共享措辞：两条路径都合法；按任务需要而非猜测结果大小选择（要加工后的答案或固定的多步流程用 `execute`，要读完整内容或逐步判断用直接调用），仍禁止猜参数；不可用时保持上游原文。上游改这段提示时，合并后两处仍须只调用这一个函数。
 - Inventory：所有已声明的内置工具 +（提供 `use_tool` 时）`search_tool` 所用快照中的全部 MCP/托管网关工具，名字一致（`server__tool`），禁用工具不出现。只排除 `execute` 自身、`search_tool`/`use_tool`、`enter_plan`/`exit_plan`/`ask_user`。每次运行冻结 inventory，定义变化即拒绝。
 - 调用路径：嵌套 MCP 调用转换为普通 inline `use_tool` 调用；所有嵌套调用复用 prepare/dispatch/finalize（权限、hooks、Plan Mode、信任/沙箱、同文件锁、MCP 认证重试与参数转换）。媒体生成上限按单次运行累计。
 - 隔离：每次运行一个新的 QuickJS 子进程（`--internal-code-mode-worker`，在 pager-bin 读取配置/凭据/遥测前进入），`env_clear`，无文件系统、网络、导入、定时器或跨运行状态；源码、堆、栈、调用数/并发、输出、错误信息、帧大小都有上限。

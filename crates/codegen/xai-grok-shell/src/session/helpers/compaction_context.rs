@@ -37,7 +37,7 @@ pub struct McpToolNames {
 pub fn mcp_usage_hint(search: &str, call: &str, code_mode: bool) -> String {
     if code_mode {
         format!(
-            "\nTo use MCP tools, NEVER guess parameter names — always use the tool's exact input schema. Either call `{search}` to retrieve the schema and then `{call}`, or inside `execute` use `catalog.search`/`catalog.describe` and then `tools[name](args)` with the same qualified name. Call `{call}` directly for a single call or a few independent calls (they can run in parallel); prefer `execute` when results must be filtered or aggregated before you read them, or when a fixed multi-step flow feeds one result into the next. Both paths run the same MCP permission checks."
+            "\nTo use MCP tools, NEVER guess parameter names — always use the tool's exact input schema. Either call `{search}` to retrieve the schema and then `{call}`, or inside `execute` use `catalog.search`/`catalog.describe` and then `tools[name](args)` with the same qualified name. Choose by what the task needs: call `{call}` directly (several independent calls already run in parallel) when you need to read full results or decide the next step from them; prefer `execute` when you need a derived answer (filtered, counted, deduplicated or joined data) or a fixed flow feeds one result into the next. If a direct result turns out too long, use `execute` for later similar calls. Both paths run the same MCP permission checks."
         )
     } else {
         format!(

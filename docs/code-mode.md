@@ -18,10 +18,13 @@ or intercepted. Enabling it authorizes computation only; all external effects
 still pass the existing individual tool admission checks.
 
 Direct calls already run in parallel, so a few independent calls gain nothing
-from a script. `execute` pays off when the script shrinks what the model reads
-(filter, deduplicate or aggregate large results) or removes intermediate model
-rounds (a fixed multi-step flow that feeds one result into the next). Steps
-that need the model to read and decide in between stay direct. While `execute`
+from a script. The model cannot know a result's size before calling, so the
+guidance keys on what the task needs instead: `execute` pays off when the task
+wants a derived answer (filtered, counted, deduplicated or joined data) rather
+than the raw results, or a fixed multi-step flow feeds one result into the
+next. Steps that need the model to read full content and decide in between
+stay direct; a direct result that turns out too long is a cue to script later
+similar calls. While `execute`
 is advertised, the injected MCP reminder (live and after compaction, both from
 `mcp_usage_hint`) names both schema paths — `search_tool` then `use_tool`, or
 `catalog.describe` then `tools[name]()` — instead of requiring `search_tool`.
