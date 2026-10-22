@@ -124,6 +124,8 @@ helper 回归覆盖同 slug 不同 provider、缺失 ref 不降级、legacy alia
 
 **Windows 缓存确定性。** 排查 Windows ARM 同提交热构建的 113 次 Rust 缓存未命中时，确认 MSVC 默认重复链接的 proc-macro DLL 哈希会变化。缓存初始化通过 `LINK=/Brepro` 固定链接输出，覆盖显式 `--target` 构建中的 host 宏；保留现有 LINK 参数、优化与调试信息。Windows ARM/x64 小实验验证默认重复链接哈希不同，启用后相同；原生 Windows CI 持续验证 DLL 一致且宏能执行。不要只设置 target rustflags，否则会漏掉 host 宏。
 
+**原生依赖缓存。** fallback 包装器放在独立目录并命名为 `sccache`，使 `cc-rs` 能通过 `RUSTC_WRAPPER` 识别并缓存支持的 C/C++ 编译；真实 sccache 路径独立保存，避免递归。包装器失败时回退到传入的原始编译器。保留该名称约定，不要恢复为 `cc-rs` 无法识别的自定义文件名。
+
 **代码入口。** `scripts/dist/**`、`.github/workflows/{ci,release-cache,auto-release,release}.yml`、`.github/actions/*compiler-cache/`、`packaging/profile/starter/**`；pager 的 `scripts/install.sh` / `install.ps1`；`crates/codegen/xai-grok-update/src/{auto_update,version}.rs`；`xai-grok-tools` 的 `build.rs`、`embedded_search_tools.rs`、`util/vendor.rs`；`crates/build/xai-proto-build/src/lib.rs`。
 
 **合并方法。** 保留 fork 的 GitHub Release 安装/更新 URL、下载校验和工具包版本识别；沿用上游平台分支但不恢复上游专用分发地址。不要替换正被进程执行的嵌入工具。protoc/build 依赖追踪和目标格式校验发生迁移时跟随新接口，不删除验收。普通 `cargo build --release` 不等同于发行构建。
