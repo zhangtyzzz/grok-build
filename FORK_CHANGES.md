@@ -134,13 +134,14 @@ helper 回归覆盖同 slug 不同 provider、缺失 ref 不降级、legacy alia
 
 - 开关：默认开启，`GROK_CODE_MODE=0/false/off/no` 关闭；总时长 `GROK_CODE_MODE_TIMEOUT_SECS`（默认 600，范围 10–3600，包含工具、subagent 与审批等待），JS 主动计算 5 秒上限独立存在。
 - 并存而非替换：MCP 工具仍通过 `search_tool`/`use_tool` 渐进披露，不逐个声明给模型；`execute` 只多一条定义。不要改成 Pi 式 codemode-only，除非维护者另行决定。
+- MCP 使用提示与 Code Mode 一致：上游注入的 MCP reminder（实时注入与压缩后重注入）原文写死“必须先调 `search_tool` 再调 `use_tool`”，会让模型不敢在 `execute` 里用 `catalog.describe` + `tools[name]`。`execute` 可用时改用 `compaction_context::mcp_usage_hint` 的共享措辞：两条路径都合法；按任务需要而非猜测结果大小选择（要加工后的答案或固定的多步流程用 `execute`，要读完整内容或逐步判断用直接调用），仍禁止猜参数；不可用时保持上游原文。上游改这段提示时，合并后两处仍须只调用这一个函数。
 - Inventory：所有已声明的内置工具 +（提供 `use_tool` 时）`search_tool` 所用快照中的全部 MCP/托管网关工具，名字一致（`server__tool`），禁用工具不出现。只排除 `execute` 自身、`search_tool`/`use_tool`、`enter_plan`/`exit_plan`/`ask_user`。每次运行冻结 inventory，定义变化即拒绝。
 - 调用路径：嵌套 MCP 调用转换为普通 inline `use_tool` 调用；所有嵌套调用复用 prepare/dispatch/finalize（权限、hooks、Plan Mode、信任/沙箱、同文件锁、MCP 认证重试与参数转换）。媒体生成上限按单次运行累计。
 - 隔离：每次运行一个新的 QuickJS 子进程（`--internal-code-mode-worker`，在 pager-bin 读取配置/凭据/遥测前进入），`env_clear`，无文件系统、网络、导入、定时器或跨运行状态；源码、堆、栈、调用数/并发、输出、错误信息、帧大小都有上限。
 - 历史配对：嵌套结果只进本地 trace（`code-mode-<uuid>.jsonl`，0600），模型历史只收到外层 `execute` 结果。混用 `execute` 与直接工具的响应按一轮处理，followups/插话/skill reminder 只在全部结果之后 flush 一次；用户中途发消息导致嵌套命令转入后台时，通知写给未应答的父 `execute`。
 - 副作用诚实：已完成的效果不回滚也不自动重试，未确认调用记为 `outcome_unknown`。
 
-**代码入口。** `crates/codegen/xai-grok-tools/src/code_mode/{mod.rs,bootstrap.js,tests.rs}`、`examples/code_mode_worker.rs`；shell 的 `session/acp_session_impl/{code_mode,code_mode_tests,tool_calls,cancel,sampler_turn}.rs`（inventory 来自 `tool_metadata_snapshot`）；`xai-grok-pager-bin/src/main.rs` 的 worker 入口；`docs/code-mode.md`、`docs/code-mode-live-evaluation.md`。`rquickjs` 只在 `xai-grok-tools/Cargo.toml` 声明，保持默认分配器以使堆配额生效。
+**代码入口。** `crates/codegen/xai-grok-tools/src/code_mode/{mod.rs,bootstrap.js,tests.rs}`、`examples/code_mode_worker.rs`；shell 的 `session/acp_session_impl/{code_mode,code_mode_tests,tool_calls,cancel,sampler_turn}.rs`（inventory 来自 `tool_metadata_snapshot`）；`xai-grok-pager-bin/src/main.rs` 的 worker 入口；`docs/code-mode.md`、`docs/code-mode-live-evaluation.md`。`rquickjs` 只在 `xai-grok-tools/Cargo.toml` 声明，保持默认分配器以使堆配额生效。 MCP 提示：`session/acp_session_impl/mcp.rs` 的 `rendered_mcp_hint`、`session/helpers/compaction_context.rs` 的 `mcp_usage_hint`。
 
 **合并方法。** 上游若提供等价的脚本化编排，可评估迁移，但必须保留默认开启、并存、全工具 inventory、`use_tool` 路由、隔离、历史配对和副作用约束及其测试。上游重构 `execute_tool_calls`、批次执行、取消路径、MCP 快照或 `use_tool` 时，fork 改动移植到新接口：直接写历史的地方统一走 `deliver_tool_result`；一轮收尾（`finish_tool_round`）只调用一次；MCP inventory 与 `search_tool` 共用同一数据源。
 
@@ -252,9 +253,19 @@ PR 必须列出上游 SHA、保留/替代的 fork 行为、每项冲突决策及
 
 ## 6. 版本与发布是独立的验证阶段
 
-四个 lockstep 包 `xai-grok-version`、`xai-grok-shell`、`xai-grok-pager`、`xai-grok-pager-bin` 跟随上游版本线，依据 `217891d1`。不要每次同步额外创建 fork bump PR；只有需要在下一次同步前发布的 fork-only hotfix 才使用上游之上的下一个 patch。
+**fork 独立版本号与 alpha 通道（2026-10-22 维护者确认，取代 `217891d1` 的“跟随上游版本线”）。**
 
-当前 fork-only 发布：`1.0.46`（2026-10-22，上游仍为 `1.0.45`；为让维护者立即用上 PR #104 的 Code Mode，维护者授权）。上游每次同步都会提升版本号，所以下一次同步直接取上游版本，恢复完全跟随上游版本线，不再额外 bump；若上游恰好也是 `1.0.46`，tag 已存在，同步合并但不重复发布。
+- 背景与目标：跟随上游版本号时，fork 自己的发布会占用上游未来要用的号，tag 已存在会让上游同步合并后不出包；fork 功能也缺少先给维护者试用的阶段（PR #104 直接进了稳定版 `1.0.46`，随后才由 #106 修正 MCP 提示）。改为 fork 自己编号，并用 `alpha` 分支做预发布。
+- 必须保留的约束：
+  - 四个 lockstep 包 `xai-grok-version`、`xai-grok-shell`、`xai-grok-pager`、`xai-grok-pager-bin` 仍保持一致，但不再取上游的值。
+  - 每次上游同步把 `main` 设为其当前版本的下一个 patch：`upstream_sync.py` 的 `apply_fork_version` 在合并后确定性地改写四个 Cargo.toml 和 `Cargo.lock`，只因版本行不同的冲突在三方都改写后自动消失；`reconstruct` 对 AI 解决结果再改写一次，AI 不能决定版本号。`main` 上出现预发布版本时同步失败关闭。
+  - `main` 只发稳定版 `X.Y.Z`；`alpha` 只发 `X.Y.Z-alpha.N`（`auto-release.yml` 按分支校验）。alpha 版号为 `main` 下一个稳定 patch 加 `-alpha.N`。alpha tag 由 `release.yml` 标为 prerelease、走 `release-testing` environment；只有 `[cli] channel = "alpha"` 的客户端会安装。
+  - 功能与修复 PR（含 `codex/*`）默认提到 `alpha`；`main` 只接收上游同步、维护者批准的 alpha → main 晋升，以及维护者指定的发布/自动化修改。
+  - 晋升 PR 把版本设为下一个稳定 patch，再从 `main` 发稳定版。每次稳定版发布后把 `main` 合回 `alpha`，并把 `alpha` 重置为再下一个 patch 的 `-alpha.1`，因为稳定版 `X.Y.Z` 高于所有 `X.Y.Z-alpha.N`。
+- 代码入口：`scripts/automation/upstream_sync.py`（`VERSION_FILES`、`fork_version`、`apply_fork_version`、`begin`、`reconstruct`）及 `test_upstream_sync.py` 的 `ForkVersionTests`；`.github/workflows/{auto-release,release-cache}.yml`、`ci.yml`（push 也覆盖 `alpha`，alpha 发布前其 head 有 CI）；`AGENTS.md` Releases；`docs/release-distribution.md`。
+- 合并方法：上游若改版本号，不按上游取值，交给同步脚本；上游改发布工作流时保留按分支区分通道的校验。
+- 验证：`python3 -m unittest discover -s scripts/automation -p 'test_*.py'`；首个 alpha 发布需确认 tag、prerelease 标记、资产齐全，以及 alpha 通道客户端能升级、稳定通道不受影响。
+- 历史：`1.0.46`（2026-10-22）是采用本规则前最后一次按“上游之上的下一个 patch”发的 fork 版本，此后版本号不再与上游对应。
 
 普通 PR 合并不是发布成功。发布须在目标 main 的 CI 通过后，按 [`docs/release-distribution.md`](docs/release-distribution.md) 从 main 调用 `Publish release (warm, tag, Release)`：
 
@@ -285,8 +296,8 @@ PR 必须列出上游 SHA、保留/替代的 fork 行为、每项冲突决策及
 | 采用上游 model_providers 并保留旁路 policy | `ff1b9b32`；RFC §4.2 修订。 |
 | 缓存 placement 跟上游，保留 TTL/off 增量 | `8595f481`、`ec4bda42`；RFC §9；差异审计 §1。 |
 | Plan Mode 撤销 fork 扩展 | `1a6d8517`（PR #97）；RFC §5；差异审计 2026-09-18 更新。 |
-| 版本线跟随上游 | `217891d1`；`AGENTS.md` Releases；发布文档。 |
+| fork 独立版本号与 alpha 通道（取代 `217891d1` 的跟随上游版本线） | 本文 §6；`AGENTS.md` Releases；发布文档；`ForkVersionTests`。 |
 | 标准发行入口与精确产物复用 | `6ff1d78f`、`2e09f905`；`docs/release-distribution.md`。 |
-| JavaScript Code Mode（默认开启，全工具含 MCP） | PR #104；`docs/code-mode.md`；本文 §3.6。 |
+| JavaScript Code Mode（默认开启，全工具含 MCP） | PR #104、#106（MCP 提示双路径）；`docs/code-mode.md`；本文 §3.6。 |
 
 新上游若使这些文件或符号消失，先核实行为迁移或等价替代，再更新入口；不要仅为维持本文的旧路径把已删除代码恢复。

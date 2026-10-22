@@ -3,6 +3,7 @@ import base64
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -79,7 +80,7 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(sync.validate_resolution(obj, self.state())["src/main.rs"], content)
 
 
-class RepositoryTests(unittest.TestCase):
+class RepositoryFixture(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.cwd = Path.cwd()
@@ -92,6 +93,7 @@ class RepositoryTests(unittest.TestCase):
         sync.git("config", "user.email", "test@example.invalid")
         self.write("src/main.rs", "base\n")
         self.write("untouched.txt", "keep\n")
+        self.write_versions("1.0.45")
         self.initial = self.commit("base")
         sync.git("checkout", "-q", "-b", "upstream-test")
         self.write("src/main.rs", "upstream\n")
@@ -105,6 +107,18 @@ class RepositoryTests(unittest.TestCase):
     def tearDown(self):
         os.chdir(self.cwd)
         self.temp.cleanup()
+
+    def write_versions(self, version, dependency="1"):
+        for path in sync.VERSION_MANIFESTS:
+            self.write(path, f'[package]\nname = "x"\nversion = "{version}"\n\n[dependencies]\nfoo = "{dependency}"\n')
+        self.write("Cargo.lock", "".join(
+            f'[[package]]\nname = "{name}"\nversion = "{version}"\n\n' for name in sync.VERSION_PACKAGES))
+
+    def versions_at(self, ref):
+        found = set()
+        for path in sync.VERSION_FILES:
+            found.update(re.findall(r'^version = "([^"]+)"$', sync.git("show", f"{ref}:{path}").decode(), re.MULTILINE))
+        return found
 
     def write(self, path, content):
         file = Path(path)
@@ -124,6 +138,9 @@ class RepositoryTests(unittest.TestCase):
     def export(self):
         sync.export(SimpleNamespace(state=str(self.state_path), artifact=str(self.artifact_path)))
 
+
+
+class RepositoryTests(RepositoryFixture):
     def test_real_merge_original_conflicts_and_worktree_markers(self):
         state = self.start()
         self.assertEqual(set(state["conflicts"]), {"src/main.rs"})
@@ -265,3 +282,69 @@ class PublicationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ForkVersionTests(RepositoryFixture):
+    """main numbers its own releases; a sync always lands main's next patch."""
+
+    def reconstruct_head(self):
+        args = SimpleNamespace(base=self.base, upstream=self.upstream, artifact=str(self.artifact_path))
+        with patch.object(sync, "fetch", return_value=(self.base, self.upstream)), patch.object(sync, "output") as outputs:
+            sync.reconstruct(args)
+        return outputs.call_args.kwargs["head"]
+
+    def rebuild(self, upstream_version, fork_version, upstream_dependency="1"):
+        sync.git("checkout", "-q", "--detach", self.upstream)
+        self.write_versions(upstream_version, upstream_dependency)
+        self.upstream = self.commit("upstream bump")
+        sync.git("checkout", "-q", "--detach", self.base)
+        self.write_versions(fork_version)
+        self.base = self.commit("fork bump")
+
+    def test_version_only_conflict_resolves_to_next_fork_patch(self):
+        self.rebuild("1.0.46", "1.0.50", upstream_dependency="2")
+        state = self.start()
+        self.assertEqual(set(state["conflicts"]), {"src/main.rs"})
+        self.write("src/main.rs", "resolved\n")
+        self.export()
+        sync.git("merge", "--abort")
+        head = self.reconstruct_head()
+        self.assertEqual(self.versions_at(head), {"1.0.51"})
+        manifest = sync.git("show", f"{head}:{sync.VERSION_MANIFESTS[0]}").decode()
+        self.assertIn('foo = "2"', manifest)
+
+    def test_clean_merge_still_bumps_fork_patch(self):
+        sync.git("checkout", "-q", "--detach", self.base)
+        self.write("src/main.rs", "upstream\n")
+        self.base = self.commit("fork matches upstream source")
+        state = self.start()
+        self.assertEqual(state["conflicts"], {})
+        sync.json_write(str(self.artifact_path), {"schema": 1, "base": self.base, "upstream": self.upstream, "files": {}})
+        sync.git("merge", "--abort")
+        self.assertEqual(self.versions_at(self.reconstruct_head()), {"1.0.46"})
+
+    def test_ai_resolution_cannot_choose_the_version(self):
+        sync.git("checkout", "-q", "--detach", self.upstream)
+        path = sync.VERSION_MANIFESTS[0]
+        self.write(path, '[package]\nname = "x"\nversion = "1.0.46"\n\n[dependencies]\nfoo = "upstream"\n')
+        self.upstream = self.commit("upstream dependency")
+        sync.git("checkout", "-q", "--detach", self.base)
+        self.write(path, '[package]\nname = "x"\nversion = "1.0.45"\n\n[dependencies]\nfoo = "fork"\n')
+        self.base = self.commit("fork dependency")
+        state = self.start()
+        self.assertIn(path, state["conflicts"])
+        self.write("src/main.rs", "resolved\n")
+        self.write(path, '[package]\nname = "x"\nversion = "9.9.9"\n\n[dependencies]\nfoo = "both"\n')
+        self.export()
+        sync.git("merge", "--abort")
+        head = self.reconstruct_head()
+        self.assertEqual(self.versions_at(head), {"1.0.46"})
+        self.assertIn('foo = "both"', sync.git("show", f"{head}:{path}").decode())
+
+    def test_prerelease_main_version_fails_closed(self):
+        sync.git("checkout", "-q", "--detach", self.base)
+        self.write_versions("1.0.46-alpha.1")
+        self.base = self.commit("alpha on main")
+        with self.assertRaises(sync.SyncError):
+            self.start()
+

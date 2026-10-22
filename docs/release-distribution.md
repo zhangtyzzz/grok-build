@@ -208,17 +208,21 @@ phase and produces effectively no hits. Release warmup does not save a second
 compiler cache per target because the exact final executable cache below is
 both smaller and able to skip compilation entirely.
 
-The fork's four lockstepped package versions deliberately track upstream's
-version line verbatim (no fork-side bump PRs), so upstream version bumps merge
-cleanly during daily syncs. Dispatch a release after a sync lands a new
-upstream version; the workflow's tag-versus-manifest check is unchanged. A
-fork-only hotfix that must ship before the next sync takes the next patch
-number above upstream's (for example `1.0.36` while upstream is at `1.0.35`);
-when upstream later reaches that number, resolve the one-time collision toward
-upstream's line plus the fork delta.
+The fork numbers its own releases; the four lockstepped package versions do
+not track upstream. `scripts/automation/upstream_sync.py` rewrites them during
+every sync to the next patch above `main`'s version, resolving a conflict that
+only differs in version lines and overriding any version in an AI resolution,
+so tags never collide with upstream's line. `main` publishes stable `X.Y.Z`
+versions. The `alpha` branch carries features under test at the next stable
+patch with `-alpha.N`; `Release` marks those tags as prereleases in the
+`release-testing` environment, and only clients on the alpha update channel
+install them. Promotion is an owner-approved PR from `alpha` to `main` that
+sets the next stable patch. After each stable release, merge `main` back into
+`alpha` and reset it to the following patch's `-alpha.1`, because a stable
+`X.Y.Z` sorts above every `X.Y.Z-alpha.N`.
 
 To publish a version, manually dispatch `Publish release (warm, tag, Release)`
-from `main` after its required CI checks pass. Ordinary pushes and pull-request
+from `main` or `alpha` after its required CI checks pass. Ordinary pushes and pull-request
 merges never create a tag. The publication workflow checks the four lockstepped
 package versions and whether their version tag already exists. For a new
 version, it calls `Warm release build cache` with the exact requested main
@@ -226,7 +230,7 @@ commit. The six native jobs build that commit and save each final
 executable, its build attestation, and the exact checksum-pinned bundled-tool
 inputs under a key containing the target, Rust version, `Cargo.lock` hash, and
 full commit SHA. Once every warmup succeeds, the
-workflow rechecks that `main` still points to the warmed commit, creates an
+workflow rechecks that the dispatched branch still points to the warmed commit, creates an
 annotated version tag, and dispatches the normal `Release` workflow on that
 tag. The explicit dispatch is required because GitHub suppresses recursive
 workflow triggers for refs created with `GITHUB_TOKEN`. If main advances while
@@ -245,7 +249,7 @@ different, so a concurrent push cannot substitute an unvalidated commit between
 the caller's check and workflow startup. Omitting the input preserves the manual
 entry point; maintainers must still validate the selected main commit first.
 
-`Warm release build cache` remains manually dispatchable from `main` for
+`Warm release build cache` remains manually dispatchable from `main` or `alpha` for
 recovery and diagnostics. The tag workflow restores the exact cache entry from
 the default branch and skips Rust compilation and bundled-tool preparation on
 a hit. It revalidates the cached tools' formats and versions, then packaging
@@ -259,8 +263,9 @@ exact tool inputs are saved for release reuse.
 Pull requests may restore default-branch Cargo and compiler caches but never
 save compiler entries that trusted runs consume. Trusted main and manual CI
 runs save a new immutable bounded compiler cache after successful validation.
-The release warmup runs only from `main`; tag builds consume only an exact
-commit-keyed release build. Cache misses, quota limits, and cache service
+The release warmup runs only from `main` or `alpha`; tag builds consume only an
+exact commit-keyed release build. Tag runs cannot read caches saved on `alpha`,
+so alpha releases fall back to a native build after their warmup. Cache misses, quota limits, and cache service
 failures affect performance only, never the release gates or artifact contents.
 
 The ARM64 macOS release build and cache warmup have a four-hour timeout because
