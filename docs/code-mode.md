@@ -108,6 +108,24 @@ process, timers or credentials are injected. All external access is through host
 tools. This is not a complete operating-system security sandbox. Native QuickJS
 is used through rquickjs; no Node/Bun/Python installation is needed.
 
+The `execute` result is `{ok, value, error, logs, warnings, calls, trace}`,
+plus `truncated` and `result_file` for an oversized value. `calls` lists each
+nested call as `{id, name, sequence, status}`; `trace` holds every nested call's
+arguments and full output, and the description points the model at it for
+reuse instead of calling again. Builtin `read_file` text carries `N→` line
+anchors (first line and every tenth line), so the description tells scripts to
+strip them before parsing file contents.
+
+Large results follow the same inline limit as MCP output (`MAX_MCP_OUTPUT_BYTES`,
+20 KB by default), so the model sees one size rule. A final value over it is
+written in full to `code-mode-<uuid>-result.json` (0600) beside the trace; the
+model gets `truncated: true`, the leading bytes of its JSON in `value`,
+`result_file`, and a warning worded like the MCP one ("Result truncated:
+showing first … of …. Full output written to: …"). Logs over the same limit are
+cut (the trace keeps them). Only a value beyond the worker transfer bound
+(2 MiB frame minus 128 KiB) fails the run. Earlier, any value over 64 KiB failed
+the whole run, which pushed models to return only previews.
+
 Return JSON data; explicitly await nested Promises. Cycles, functions, BigInt,
 nonfinite or imprecise integer values are rejected. Console logs and final data
 are bounded. There is no persistent store, recursive execute, automatic final

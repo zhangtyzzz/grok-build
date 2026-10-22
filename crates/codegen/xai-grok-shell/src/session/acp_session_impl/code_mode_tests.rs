@@ -894,3 +894,32 @@ fn oversized_nested_result_fails_only_its_call() {
     let mut frame = Vec::new();
     runtime::write_frame(&mut frame, &bounded).expect("the error reply fits a frame");
 }
+
+#[test]
+fn large_results_and_logs_follow_the_mcp_inline_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let limit = 2_000;
+    let rows: Vec<_> = (0..200).map(|i| json!({"id": i, "body": "x".repeat(20)})).collect();
+    let full = serde_json::to_string(&rows).unwrap();
+    let mut object = serde_json::Map::new();
+    object.insert("ok".to_owned(), json!(true));
+    object.insert("value".to_owned(), json!(rows));
+    object.insert("logs".to_owned(), json!(vec!["l".repeat(900); 4]));
+    super::spill_large_value(&mut object, dir.path(), "code-mode-t.jsonl", limit);
+    assert_eq!(object["truncated"], true);
+    let preview = object["value"].as_str().unwrap();
+    assert!(preview.len() <= limit && full.starts_with(preview));
+    let file = object["result_file"].as_str().unwrap();
+    assert!(file.ends_with("code-mode-t-result.json"));
+    assert_eq!(std::fs::read_to_string(file).unwrap(), full);
+    assert_eq!(object["logs"].as_array().unwrap().len(), 2);
+    let warnings = object["warnings"].to_string();
+    assert!(warnings.contains("Result truncated: showing first") && warnings.contains("Full output written to"), "{warnings}");
+    assert!(warnings.contains("2 log entries omitted"), "{warnings}");
+
+    let mut small = serde_json::Map::new();
+    small.insert("value".to_owned(), json!({"answer": 42}));
+    super::spill_large_value(&mut small, dir.path(), "code-mode-s.jsonl", limit);
+    assert_eq!(small["value"], json!({"answer": 42}));
+    assert!(!small.contains_key("truncated") && !small.contains_key("result_file"));
+}

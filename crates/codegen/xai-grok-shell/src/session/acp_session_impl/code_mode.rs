@@ -131,21 +131,28 @@ Writing the program:
 - `code` is an async function body: use await and an explicit return (otherwise null).
 - Find tools with catalog.search(query, offset) (a string; every word must match a name or description; 20 per page) and catalog.describe(name) (input schema), then call tools[name](args), e.g. tools["server__tool"]({{...}}). MCP tools found with search_tool use the same names. Catalog functions return objects.
 - Tool calls resolve to their text output. When that text is JSON, JSON.parse it first and work on parsed fields; never reuse character offsets from the raw text.
-- Decide what the question needs before calling, and extract it by field, heading or keyword, not by opening characters or guessed offsets.
+- read_file text marks line numbers as N→ on its first line and every 10th line; strip them (text.replace(/^\d+→/gm, "")) before parsing file contents.
+- Decide what the question needs before calling, and extract it by field, heading or keyword, not by opening characters or guessed offsets. If you have not seen a tool's output format, look at one small call first instead of guessing its structure.
 - Use Promise.allSettled when partial failure is acceptable. Await all required work: unfinished calls are interrupted at return, and completed effects are not rolled back.
 
 Returning results:
 - Return JSON sufficient for the question: the requested facts with their supporting context, irrelevant content removed. Never return only a preview.
 - Each execute starts fresh. Process a result fully in the program that fetched it. If the next step depends on what you find, return the confirmed facts and what is still missing, then work from them instead of fetching the same data again.
 
+What you receive:
+- {{ok, value, error, logs, warnings, calls, trace}}: value is your return value; error is set when ok is false; calls lists each nested call as {{id, name, sequence, status}} with status completed, failed or outcome_unknown.
+- trace is a local file holding every nested call's arguments and full output; read or search it to reuse earlier data instead of calling again.
+- When value is over the inline limit: truncated is true, value holds the leading part of its JSON, and result_file holds the full JSON.
+
 Rules and limits:
 - Every call keeps normal permissions, hooks and Plan Mode.
 - No filesystem, network, imports, timers, process access or persistent state; reach everything through tools. console.log appends bounded logs.
-- At most {in_flight} calls in flight and {calls} in total; 64 KiB source; 64 MiB heap; 5 seconds active computation; {wall} seconds overall including tool and permission waits; 64 KiB result and log text.
+- At most {in_flight} calls in flight and {calls} in total; 64 KiB source; 64 MiB heap; 5 seconds active computation; {wall} seconds overall including tool and permission waits; results and logs over {inline} (the same limit as MCP output) are cut, with a large result written to a file whose path is returned.
 - Before rerunning a failed program that performs writes, inspect its trace."#,
             in_flight = runtime::MAX_IN_FLIGHT,
             calls = runtime::MAX_CALLS,
             wall = wall_timeout().as_secs(),
+            inline = xai_grok_tools::util::truncate::format_bytes(inline_limit() as u64),
         )),
         json!({"type":"object","properties":{"code":{"type":"string"}},"required":["code"],"additionalProperties":false}),
     )
@@ -230,6 +237,86 @@ struct CodeRunDelivery {
     trace_path: Option<String>,
     /// Reminders split off nested results; the model reads them after the `execute` result.
     reminders: Vec<String>,
+}
+
+/// Same inline limit as `use_tool`'s MCP output (`MAX_MCP_OUTPUT_BYTES`, 20 KB by
+/// default), so the model sees one size rule for every large result.
+fn inline_limit() -> usize {
+    xai_grok_tools::util::mcp_truncate::mcp_max_output_bytes()
+}
+
+/// Like `use_tool`'s MCP truncation: a value over the inline limit is written in full
+/// to the session directory and the model gets the leading bytes plus the file path.
+/// Logs over the same limit are cut; the trace keeps them in full.
+fn spill_large_value(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    dir: &std::path::Path,
+    trace_name: &str,
+    limit: usize,
+) {
+    use xai_grok_tools::util::truncate::{format_bytes, truncate_str};
+    let mut notes = Vec::new();
+    if let Some(logs) = object.get_mut("logs").and_then(serde_json::Value::as_array_mut) {
+        let mut used = 0;
+        let kept = logs
+            .iter()
+            .take_while(|line| {
+                used += line.as_str().map_or(0, str::len);
+                used <= limit
+            })
+            .count();
+        if kept < logs.len() {
+            notes.push(format!(
+                "{} log entries omitted over the {} inline limit; the trace keeps them",
+                logs.len() - kept,
+                format_bytes(limit as u64)
+            ));
+            logs.truncate(kept);
+        }
+    }
+    if let Some(json) = object
+        .get("value")
+        .and_then(|value| serde_json::to_string(value).ok())
+        .filter(|json| json.len() > limit)
+    {
+        let path = dir.join(trace_name.replace(".jsonl", "-result.json"));
+        let mut options = std::fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let written = options
+            .open(&path)
+            .and_then(|mut file| file.write_all(json.as_bytes()));
+        let preview = truncate_str(&json, limit).to_owned();
+        let shown = format!(
+            "Result truncated: showing first {} of {}.",
+            format_bytes(preview.len() as u64),
+            format_bytes(json.len() as u64)
+        );
+        notes.push(match written {
+            Ok(()) => {
+                object.insert("result_file".to_owned(), json!(path.to_string_lossy()));
+                format!(
+                    "{shown} Full output written to: {}. Read or search that file instead of running the program again.",
+                    path.to_string_lossy()
+                )
+            }
+            Err(error) => format!("{shown} Writing the full output failed: {error}"),
+        });
+        object.insert("value".to_owned(), json!(preview));
+        object.insert("truncated".to_owned(), json!(true));
+    }
+    if !notes.is_empty()
+        && let Some(warnings) = object
+            .entry("warnings")
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+    {
+        warnings.extend(notes.into_iter().map(serde_json::Value::from));
+    }
 }
 
 /// A result over the frame limit fails only its own call, so the script can catch it
@@ -706,6 +793,7 @@ impl SessionActor {
             {
                 warnings.push(json!("Some unawaited calls have unknown outcome; completed effects are not rolled back"));
             }
+            spill_large_value(object, &dir, &trace_name, inline_limit());
         }
         Ok(result)
     }

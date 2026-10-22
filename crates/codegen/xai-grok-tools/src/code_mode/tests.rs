@@ -175,13 +175,20 @@ fn concurrency_limit_and_empty_log_count_are_bounded() {
 }
 #[test]
 fn output_heap_and_recursion_limits_fail_cleanly() {
+    let oversized = format!("return 'x'.repeat({});", MAX_RESULT_BYTES + 1);
     for code in [
-        "return 'x'.repeat(65537);",
+        oversized.as_str(),
         "return new Array(100000000).fill('x');",
         "function f(){return f();}return f();",
     ] {
         assert!(!finished(&run(code, vec![])).0, "{code}");
     }
+    // Above the inline model limit but within transfer: the host decides what to inline.
+    let large = format!("return 'x'.repeat({});", MAX_OUTPUT_BYTES + 1);
+    let messages = run(&large, vec![]);
+    let (ok, value, error, _) = finished(&messages);
+    assert!(*ok, "{error:?}");
+    assert_eq!(value.as_str().unwrap().len(), MAX_OUTPUT_BYTES + 1);
 }
 #[test]
 fn unhandled_rejections_are_visible() {
