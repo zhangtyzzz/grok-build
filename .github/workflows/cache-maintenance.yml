@@ -39,3 +39,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: python3 scripts/ci/prune-caches.py --delete
+
+      - name: Remove superseded compiler snapshots
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 scripts/ci/compiler-cache-artifact.py prune

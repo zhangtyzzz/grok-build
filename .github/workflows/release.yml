@@ -241,6 +241,7 @@ jobs:
         id: compiler-cache
         uses: ./.github/actions/setup-compiler-cache
         with:
+          namespace: release-${{ matrix.target }}
           read-only: ${{ github.ref_type != 'branch' }}
 
       - name: Install Windows archive tool
@@ -382,6 +383,8 @@ jobs:
         uses: ./.github/actions/finalize-compiler-cache
         with:
           enabled: ${{ steps.compiler-cache.outputs.enabled }}
+          cache-name: ${{ steps.compiler-cache.outputs.cache-name }}
+          save: ${{ job.status == 'success' && github.ref_type == 'branch' }}
 
       - name: Upload Cargo build timings
         if: always() && steps.compiler-cache.outputs.enabled == 'true'
