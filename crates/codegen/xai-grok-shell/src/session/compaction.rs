@@ -1647,7 +1647,11 @@ impl SessionActor {
                     .await
                     .filter(|s| !s.is_empty() && !s.contains("by_kind"));
                 match (search_name, call_name) {
-                    (Some(search), Some(call)) => Some(McpToolNames { search, call }),
+                    (Some(search), Some(call)) => Some(McpToolNames {
+                        search,
+                        call,
+                        code_mode: self.code_mode_available(),
+                    }),
                     _ => None,
                 }
             };
