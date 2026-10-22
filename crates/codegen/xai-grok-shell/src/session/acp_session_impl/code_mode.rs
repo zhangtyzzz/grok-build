@@ -257,7 +257,10 @@ fn spill_large_value(
 ) {
     use xai_grok_tools::util::truncate::{format_bytes, truncate_str};
     let mut notes = Vec::new();
-    if let Some(logs) = object.get_mut("logs").and_then(serde_json::Value::as_array_mut) {
+    if let Some(logs) = object
+        .get_mut("logs")
+        .and_then(serde_json::Value::as_array_mut)
+    {
         let mut used = 0;
         let kept = logs
             .iter()

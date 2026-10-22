@@ -899,7 +899,9 @@ fn oversized_nested_result_fails_only_its_call() {
 fn large_results_and_logs_follow_the_mcp_inline_limit() {
     let dir = tempfile::tempdir().unwrap();
     let limit = 2_000;
-    let rows: Vec<_> = (0..200).map(|i| json!({"id": i, "body": "x".repeat(20)})).collect();
+    let rows: Vec<_> = (0..200)
+        .map(|i| json!({"id": i, "body": "x".repeat(20)}))
+        .collect();
     let full = serde_json::to_string(&rows).unwrap();
     let mut object = serde_json::Map::new();
     object.insert("ok".to_owned(), json!(true));
@@ -914,7 +916,11 @@ fn large_results_and_logs_follow_the_mcp_inline_limit() {
     assert_eq!(std::fs::read_to_string(file).unwrap(), full);
     assert_eq!(object["logs"].as_array().unwrap().len(), 2);
     let warnings = object["warnings"].to_string();
-    assert!(warnings.contains("Result truncated: showing first") && warnings.contains("Full output written to"), "{warnings}");
+    assert!(
+        warnings.contains("Result truncated: showing first")
+            && warnings.contains("Full output written to"),
+        "{warnings}"
+    );
     assert!(warnings.contains("2 log entries omitted"), "{warnings}");
 
     let mut small = serde_json::Map::new();
