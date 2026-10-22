@@ -362,6 +362,9 @@ jobs:
           cache-size: 512M
           read-only: ${{ github.event_name == 'pull_request' || inputs.compiler_cache_read_only }}
 
+      - name: Test Windows proc-macro reproducibility
+        run: pwsh -NoProfile -File scripts/ci/test-windows-repro.ps1
+
       - name: Test native Windows release input paths
         run: bash scripts/ci/test-release-inputs.sh
 
