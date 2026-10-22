@@ -131,6 +131,7 @@ Writing the program:
 - `code` is an async function body: use await and an explicit return (otherwise null).
 - Find tools with catalog.search(query, offset) (a string; every word must match a name or description; 20 per page) and catalog.describe(name) (input schema), then call tools[name](args), e.g. tools["server__tool"]({{...}}). MCP tools found with search_tool use the same names. Catalog functions return objects.
 - Tool calls resolve to their text output. When that text is JSON, JSON.parse it first and work on parsed fields; never reuse character offsets from the raw text.
+- An MCP result's text blocks are joined with newlines, so several JSON blocks arrive as JSON Lines; structuredContent not already in the text is appended as a final JSON line. Split lines before parsing when one JSON.parse fails.
 - read_file text marks line numbers as N→ on its first line and every 10th line; strip them (text.replace(/^\d+→/gm, "")) before parsing file contents.
 - Decide what the question needs before calling, and extract it by field, heading or keyword, not by opening characters or guessed offsets. If you have not seen a tool's output format, look at one small call first instead of guessing its structure.
 - Use Promise.allSettled when partial failure is acceptable. Await all required work: unfinished calls are interrupted at return, and completed effects are not rolled back.

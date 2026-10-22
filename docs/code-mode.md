@@ -112,7 +112,11 @@ The `execute` result is `{ok, value, error, logs, warnings, calls, trace}`,
 plus `truncated` and `result_file` for an oversized value. `calls` lists each
 nested call as `{id, name, sequence, status}`; `trace` holds every nested call's
 arguments and full output, and the description points the model at it for
-reuse instead of calling again. Builtin `read_file` text carries `N→` line
+reuse instead of calling again. An MCP result reaches the script as text: `call_result.rs` joins its text blocks
+with newlines (several JSON blocks become JSON Lines) and appends
+`structuredContent` as a final JSON line when no text block already carries it;
+the description states this so scripts parse line by line instead of probing.
+Builtin `read_file` text carries `N→` line
 anchors (first line and every tenth line), so the description tells scripts to
 strip them before parsing file contents.
 
