@@ -142,12 +142,6 @@ jobs:
         if: steps.release-build-cache.outputs.cache-hit != 'true'
         id: compiler-cache
         uses: ./.github/actions/setup-compiler-cache
-        with:
-          namespace: release-${{ contains(needs.metadata.outputs.version, '-alpha.') && 'alpha' || 'stable' }}-${{ matrix.target }}
-          toolchain: ${{ env.RUST_CHANNEL }}
-          lock-hash: ${{ hashFiles('Cargo.lock', '.cargo/*.toml') }}
-          revision: ${{ needs.metadata.outputs.commit }}
-          cache-size: 3G
 
       - name: Prepare checksum-pinned bundled tools
         if: steps.release-build-cache.outputs.cache-hit != 'true'
@@ -226,5 +220,3 @@ jobs:
         uses: ./.github/actions/finalize-compiler-cache
         with:
           enabled: ${{ steps.compiler-cache.outputs.enabled }}
-          save: ${{ job.status == 'success' && steps.compiler-cache.outputs.cache-hit != 'true' }}
-          cache-primary-key: ${{ steps.compiler-cache.outputs.cache-primary-key }}

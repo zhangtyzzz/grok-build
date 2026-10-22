@@ -101,11 +101,7 @@ jobs:
         id: compiler-cache
         uses: ./.github/actions/setup-compiler-cache
         with:
-          namespace: ci-rust
-          toolchain: ${{ env.RUST_CHANNEL }}
-          lock-hash: ${{ hashFiles('Cargo.lock') }}
-          revision: ${{ github.sha }}
-          cache-size: 3G
+          read-only: ${{ github.event_name == 'pull_request' || inputs.compiler_cache_read_only }}
 
       # Shell telemetry tests execute real grep calls. Debug builds otherwise
       # rely on an unpinned (and potentially absent) rg on the runner's PATH.
@@ -168,8 +164,6 @@ jobs:
         uses: ./.github/actions/finalize-compiler-cache
         with:
           enabled: ${{ steps.compiler-cache.outputs.enabled }}
-          save: ${{ job.status == 'success' && github.event_name != 'pull_request' && !inputs.compiler_cache_read_only && steps.compiler-cache.outputs.cache-hit != 'true' }}
-          cache-primary-key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
 
   integration:
     needs: previous
@@ -245,11 +239,7 @@ jobs:
         id: compiler-cache
         uses: ./.github/actions/setup-compiler-cache
         with:
-          namespace: ci-terminal
-          toolchain: ${{ env.RUST_CHANNEL }}
-          lock-hash: ${{ hashFiles('Cargo.lock') }}
-          revision: ${{ github.sha }}
-          cache-size: 4G
+          read-only: ${{ github.event_name == 'pull_request' || inputs.compiler_cache_read_only }}
 
       - name: Prepare pinned protobuf and search tools
         run: |
@@ -294,8 +284,6 @@ jobs:
         uses: ./.github/actions/finalize-compiler-cache
         with:
           enabled: ${{ steps.compiler-cache.outputs.enabled }}
-          save: ${{ job.status == 'success' && github.event_name != 'pull_request' && !inputs.compiler_cache_read_only && steps.compiler-cache.outputs.cache-hit != 'true' }}
-          cache-primary-key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
 
   windows-protobuf:
     needs: previous
@@ -344,11 +332,7 @@ jobs:
         id: compiler-cache
         uses: ./.github/actions/setup-compiler-cache
         with:
-          namespace: ci-windows-protobuf
-          toolchain: ${{ env.RUST_CHANNEL }}
-          lock-hash: ${{ hashFiles('Cargo.lock') }}
-          revision: ${{ github.sha }}
-          cache-size: 512M
+          read-only: ${{ github.event_name == 'pull_request' || inputs.compiler_cache_read_only }}
 
       - name: Prepare pinned Windows protobuf compiler
         run: |
@@ -396,8 +380,6 @@ jobs:
         uses: ./.github/actions/finalize-compiler-cache
         with:
           enabled: ${{ steps.compiler-cache.outputs.enabled }}
-          save: ${{ job.status == 'success' && github.event_name != 'pull_request' && !inputs.compiler_cache_read_only && steps.compiler-cache.outputs.cache-hit != 'true' }}
-          cache-primary-key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
 
   required:
     name: CI required

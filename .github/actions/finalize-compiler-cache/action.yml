@@ -1,15 +1,9 @@
-name: Finalize bounded compiler cache
-description: Report, stop, and optionally save a runner-local sccache directory
+name: Finalize shared compiler cache
+description: Report cache hits and stop the compiler cache server
 
 inputs:
   enabled:
     description: Whether compiler caching was enabled by the setup action
-    required: true
-  save:
-    description: Whether this trusted successful job should save a new immutable cache
-    required: true
-  cache-primary-key:
-    description: Exact primary key emitted by the setup action
     required: true
 
 runs:
@@ -27,11 +21,3 @@ runs:
         fi
         "$GROK_SCCACHE_BIN" --show-stats
         "$GROK_SCCACHE_BIN" --stop-server
-
-    - name: Save bounded compiler cache
-      if: inputs.enabled == 'true' && inputs.save == 'true'
-      continue-on-error: true
-      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ${{ runner.temp }}/grok-sccache
-        key: ${{ inputs.cache-primary-key }}
