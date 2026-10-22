@@ -644,7 +644,10 @@ fn needs_animation_gates_prompt_history_tick_delivery() {
         "an open prompt history overlay must request animation ticks"
     );
     let mut delivered = false;
-    for _ in 0..1000 {
+    // Wall-clock bound, not an iteration count: under a loaded full-suite run the history
+    // daemon can take well over the ~1s that 1000 one-millisecond sleeps allowed.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
         if app.tick()
             && app
                 .agents

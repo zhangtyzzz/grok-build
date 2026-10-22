@@ -799,9 +799,15 @@ mod tests {
 
         record_crash_sample();
 
+        // Unserialized tests elsewhere (e.g. release_retained_memory) may write to the global sink
+        // while it is installed, so find the crash event instead of assuming the only line.
         let body = std::fs::read_to_string(&path).unwrap();
-        let event: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
-        assert_eq!(event.get("kind").and_then(|k| k.as_str()), Some("crash"));
+        assert!(
+            body.lines()
+                .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+                .any(|v| v.get("kind").and_then(|k| k.as_str()) == Some("crash")),
+            "{body}"
+        );
     }
 
     #[test]
