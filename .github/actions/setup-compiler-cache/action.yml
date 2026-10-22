@@ -31,7 +31,10 @@ runs:
     - name: Make Windows linked outputs reproducible
       if: runner.os == 'Windows'
       shell: bash
-      run: printf 'LINK=%s\n' "${LINK:+$LINK }/Brepro" >> "$GITHUB_ENV"
+      run: |
+        # Git Bash otherwise converts /Brepro into a path under its install.
+        printf 'MSYS2_ENV_CONV_EXCL=%s\n' "${MSYS2_ENV_CONV_EXCL:+$MSYS2_ENV_CONV_EXCL;}LINK" >> "$GITHUB_ENV"
+        printf 'LINK=%s\n' "${LINK:+$LINK }/Brepro" >> "$GITHUB_ENV"
 
     - name: Install pinned sccache
       id: sccache
