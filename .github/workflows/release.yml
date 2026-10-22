@@ -10,6 +10,11 @@ on:
         description: SemVer without the leading v
         required: true
         type: string
+      build_run_id:
+        description: Coordinator run containing successful quality gates and exact warm artifacts
+        required: false
+        default: ""
+        type: string
       publish:
         description: Publish only when this run targets the matching existing tag
         required: true
@@ -32,7 +37,9 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: read
+      actions: read
     outputs:
+      build_run_id: ${{ steps.handoff.outputs.build_run_id }}
       version: ${{ steps.meta.outputs.version }}
       channel: ${{ steps.meta.outputs.channel }}
       publish: ${{ steps.meta.outputs.publish }}
@@ -108,13 +115,26 @@ jobs:
             echo "commit=$CHECKOUT_SHA"
           } >>"$GITHUB_OUTPUT"
 
+      - name: Validate exact coordinator handoff
+        id: handoff
+        if: inputs.build_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          RELEASE_COMMIT: ${{ steps.meta.outputs.commit }}
+        run: python3 scripts/ci/release-handoff.py
+
   quality:
     name: Run release quality gates
+    if: needs.metadata.outputs.build_run_id == ''
     needs: metadata
     permissions:
       contents: read
+      actions: read
     uses: ./.github/workflows/ci.yml
     with:
+      reuse_successful_ci: true
       compiler_cache_read_only: true
 
   build:
@@ -146,6 +166,7 @@ jobs:
     timeout-minutes: ${{ matrix.timeout_minutes }}
     permissions:
       contents: read
+      actions: read
       id-token: write
       attestations: write
       artifact-metadata: write
@@ -169,21 +190,38 @@ jobs:
           echo "using Rust $channel from rust-toolchain.toml"
 
       - name: Restore exact release build
+        if: needs.metadata.outputs.build_run_id == ''
         id: release-build-cache
         continue-on-error: true
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target/release-build-cache/${{ matrix.target }}
-          key: release-build-v2-${{ matrix.target }}-rust-${{ env.RUST_CHANNEL }}-${{ hashFiles('Cargo.lock') }}-${{ needs.metadata.outputs.commit }}
+          key: release-build-v3-${{ matrix.target }}-rust-${{ env.RUST_CHANNEL }}-${{ hashFiles('Cargo.lock') }}-${{ needs.metadata.outputs.commit }}
+
+      - name: Download validated warm artifacts
+        if: needs.metadata.outputs.build_run_id != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-inputs-${{ matrix.target }}
+          path: ${{ runner.temp }}/release-inputs
+          run-id: ${{ needs.metadata.outputs.build_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Extract exact warm inputs
+        if: needs.metadata.outputs.build_run_id != ''
+        run: |
+          mkdir -p "target/release-build-cache/${{ matrix.target }}"
+          tar -xzf "$RUNNER_TEMP/release-inputs/release-inputs-${{ matrix.target }}.tar.gz" \
+            -C "target/release-build-cache/${{ matrix.target }}"
 
       - name: Install the pinned Rust toolchain
-        if: steps.release-build-cache.outputs.cache-hit != 'true'
+        if: needs.metadata.outputs.build_run_id == '' && steps.release-build-cache.outputs.cache-hit != 'true'
         run: |
           rustup toolchain install "$RUST_CHANNEL" --profile minimal
           rustup target add "${{ matrix.target }}"
 
       - name: Restore Cargo source cache
-        if: steps.release-build-cache.outputs.cache-hit != 'true'
+        if: needs.metadata.outputs.build_run_id == '' && steps.release-build-cache.outputs.cache-hit != 'true'
         id: cargo-cache
         continue-on-error: true
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -195,6 +233,17 @@ jobs:
           key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_CHANNEL }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_CHANNEL }}-
+
+      - name: Set up reusable release compiler cache
+        if: needs.metadata.outputs.build_run_id == '' && steps.release-build-cache.outputs.cache-hit != 'true'
+        id: compiler-cache
+        uses: ./.github/actions/setup-compiler-cache
+        with:
+          namespace: release-${{ contains(needs.metadata.outputs.version, '-alpha.') && 'alpha' || 'stable' }}-${{ matrix.target }}
+          toolchain: ${{ env.RUST_CHANNEL }}
+          lock-hash: ${{ hashFiles('Cargo.lock', '.cargo/*.toml') }}
+          revision: ${{ needs.metadata.outputs.commit }}
+          cache-size: 3G
 
       - name: Install Windows archive tool
         if: runner.os == 'Windows'
@@ -210,7 +259,7 @@ jobs:
       - name: Prepare checksum-pinned bundled tools
         run: |
           set -euo pipefail
-          if [[ "${{ steps.release-build-cache.outputs.cache-hit }}" == true ]]; then
+          if [[ -n "${{ needs.metadata.outputs.build_run_id }}" || "${{ steps.release-build-cache.outputs.cache-hit }}" == true ]]; then
             bash scripts/dist/prepare-release-tools.sh \
               --target "${{ matrix.target }}" \
               --output-dir "$PWD/target/release-build-cache/${{ matrix.target }}/tools" \
@@ -219,19 +268,19 @@ jobs:
           else
             bash scripts/dist/prepare-release-tools.sh \
               --target "${{ matrix.target }}" \
-              --output-dir "$PWD/.release-tools" \
+              --output-dir "$PWD/target/release-build-cache/${{ matrix.target }}/tools" \
               --github-env "$GITHUB_ENV"
           fi
 
       - name: Fetch locked dependencies
-        if: steps.release-build-cache.outputs.cache-hit != 'true'
+        if: needs.metadata.outputs.build_run_id == '' && steps.release-build-cache.outputs.cache-hit != 'true'
         run: cargo fetch --locked --target "${{ matrix.target }}"
 
       - name: Build, package, and verify
         id: package
         run: |
           set -euo pipefail
-          if [[ "${{ steps.release-build-cache.outputs.cache-hit }}" == true ]]; then
+          if [[ -n "${{ needs.metadata.outputs.build_run_id }}" || "${{ steps.release-build-cache.outputs.cache-hit }}" == true ]]; then
             executable="$(node scripts/dist/target.mjs "${{ matrix.target }}" cargoExecutable)"
             binary="$PWD/target/release-build-cache/${{ matrix.target }}/$executable"
             test -f "$binary"
@@ -303,7 +352,7 @@ jobs:
           }
 
       - name: Save Cargo source cache
-        if: success() && steps.release-build-cache.outputs.cache-hit != 'true' && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: success() && needs.metadata.outputs.build_run_id == '' && steps.release-build-cache.outputs.cache-hit != 'true' && steps.cargo-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -312,6 +361,22 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+      - name: Finalize release compiler cache
+        if: always() && steps.compiler-cache.outputs.enabled == 'true'
+        uses: ./.github/actions/finalize-compiler-cache
+        with:
+          enabled: ${{ steps.compiler-cache.outputs.enabled }}
+          save: ${{ job.status == 'success' && github.ref_type == 'branch' && steps.compiler-cache.outputs.cache-hit != 'true' }}
+          cache-primary-key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
+
+      - name: Upload Cargo build timings
+        if: always() && steps.compiler-cache.outputs.enabled == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-timings-${{ matrix.target }}
+          path: target/cargo-timings/
+          retention-days: 7
 
       - name: Attest release archive provenance
         id: provenance
@@ -345,6 +410,10 @@ jobs:
           retention-days: 14
 
   fan-in:
+    if: >-
+      always() && needs.metadata.result == 'success' && needs.build.result == 'success' &&
+      (needs.quality.result == 'success' ||
+       (needs.quality.result == 'skipped' && needs.metadata.outputs.build_run_id != ''))
     name: Verify complete release candidate
     needs:
       - metadata
@@ -468,7 +537,7 @@ jobs:
 
   publish:
     name: Publish ${{ needs.metadata.outputs.channel }} release
-    if: needs.metadata.outputs.publish == 'true'
+    if: always() && needs.fan-in.result == 'success' && needs.metadata.outputs.publish == 'true'
     needs:
       - metadata
       - fan-in

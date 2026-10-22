@@ -1,0 +1,5 @@
+# Alpha keeps the release-dist feature/security boundary but avoids whole-program
+# LLVM work. Stable builds never load this file. Do not edit generated Cargo.toml.
+[profile.release-dist]
+lto = "off"
+codegen-units = 16

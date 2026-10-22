@@ -200,13 +200,24 @@ wrapper retries an individual rustc invocation directly if the background
 sccache server cannot start, disconnects, or returns a failure. Incremental
 compilation stays disabled so rustc invocations are cacheable.
 
-The cache limits follow the measured working sets: 3 GiB for the Rust gates,
-4 GiB for terminal/tools/CLI, and 512 MiB for the small Windows protobuf job.
-The two larger jobs run several distinct check, test, and clippy profiles; a
-1 GiB shared LRU archive lets each early phase evict the previous run's later
-phase and produces effectively no hits. Release warmup does not save a second
-compiler cache per target because the exact final executable cache below is
-both smaller and able to skip compilation entirely.
+Release builds now also use the bounded compiler cache, separated by native
+target and alpha/stable compilation settings. A new commit restores compatible
+objects from an earlier commit; sccache validates the actual compiler inputs.
+This is crate/object reuse, not Cargo's incremental mode: `CARGO_INCREMENTAL=0`
+remains required by sccache. Source archives can be shared from main to alpha;
+objects compiled with different optimization settings cannot be mixed. The
+3 GiB per-target limit is a ceiling, not a reservation. Repository-wide cache
+quota and eviction still affect hit rates; measure the saved working sets before
+raising storage limits. A missing cache always falls back to a real build.
+
+Alpha versions (`-alpha.N`) additionally load `.cargo/release-alpha.toml` through
+`scripts/dist.sh`: LTO is off and codegen-units is 16. The profile is still named
+`release-dist`, and the `release-dist` feature, privacy hardening, panic strategy,
+debug information, portable target flags and package checks remain enabled.
+Stable versions never load that override and retain upstream's ThinLTO and
+single codegen unit. Runtime performance of the alpha optimization settings has
+not been claimed equivalent to stable. The root generated `Cargo.toml` is unchanged.
+`cargo --timings` reports are uploaded for diagnosing the remaining critical path.
 
 The fork's four lockstepped package versions deliberately track upstream's
 version line verbatim (no fork-side bump PRs), so upstream version bumps merge
@@ -225,13 +236,34 @@ version, it calls `Warm release build cache` with the exact requested main
 commit. The six native jobs build that commit and save each final
 executable, its build attestation, and the exact checksum-pinned bundled-tool
 inputs under a key containing the target, Rust version, `Cargo.lock` hash, and
-full commit SHA. Once every warmup succeeds, the
-workflow rechecks that `main` still points to the warmed commit, creates an
-annotated version tag, and dispatches the normal `Release` workflow on that
-tag. The explicit dispatch is required because GitHub suppresses recursive
-workflow triggers for refs created with `GITHUB_TOKEN`. If main advances while
-the run is warming, it does not tag; dispatch publication again from the newer
-main commit. Versions whose tag already exists are successful no-ops.
+full commit SHA. Quality validation runs alongside the warm builds. It first looks for a
+successful CI run on the exact source SHA, restricted to push/manual runs of
+`ci.yml` on main or alpha with a successful current-attempt `CI required` job.
+If no such evidence exists, it runs all quality gates. Only after both quality
+and every native build succeed does the coordinator recheck the branch head,
+create the annotated tag and dispatch `Release`, passing its own run ID.
+
+The coordinator uploads each executable, receipt and exact tool inputs as a
+compressed artifact (with executable permissions preserved inside tar). Release
+checks that the source run is the expected same-repository coordinator on main
+or alpha at the exact tag SHA and that all six builds and the quality gate passed
+in its current attempt. It downloads those artifacts by run ID, bypassing the
+Actions cache restriction that makes alpha caches invisible to tag runs. Missing,
+expired or mismatched handoff artifacts fail the run; they do not silently
+substitute artifacts from another revision. Packaging still verifies the receipt,
+binary/tool hashes, architecture and version before all native smoke tests,
+provenance, asset verification and the channel's publication environment.
+
+A manual `Release` without `build_run_id` remains a recovery/dry-run path: restore
+an exact default-branch cache when available, otherwise build normally with the
+compiler cache. Quality gates may reuse verified same-SHA CI or execute in full.
+To verify performance without publishing, dispatch `Release` on the candidate
+branch with its current version and `publish=false`. Compare a cold run and a
+second run after the compiler cache has been saved; report both separately.
+The target is under 30 minutes for alpha's six-platform build/package path,
+excluding earlier source CI, queue delays and human environment approval. It is
+an acceptance target, not a guarantee until all six runners are measured. Stable
+cold-build time is deliberately secondary to retaining its optimization level.
 
 If the tag was created but dispatch or publication subsequently failed, rerunning
 the coordinator is a no-op. Inspect the failure, preserve that existing tag,
@@ -245,10 +277,9 @@ different, so a concurrent push cannot substitute an unvalidated commit between
 the caller's check and workflow startup. Omitting the input preserves the manual
 entry point; maintainers must still validate the selected main commit first.
 
-`Warm release build cache` remains manually dispatchable from `main` for
-recovery and diagnostics. The tag workflow restores the exact cache entry from
-the default branch and skips Rust compilation and bundled-tool preparation on
-a hit. It revalidates the cached tools' formats and versions, then packaging
+`Warm release build cache` remains manually dispatchable from `main` or `alpha` for
+recovery and diagnostics. A standalone tag workflow may restore an exact cache entry from the
+default branch. Coordinated releases use the validated artifact handoff instead. It revalidates the cached tools' formats and versions, then packaging
 verifies their hashes against the build attestation together with the binary
 hash, source commit, and target before smoke tests and provenance generation. A
 miss or cache-service failure falls back to the normal native build. Neither

@@ -120,6 +120,8 @@ helper 回归覆盖同 slug 不同 provider、缺失 ref 不降级、legacy alia
 
 **实现方法。** `scripts/dist.sh` 统一 build / package / verify；六个原生目标由 `scripts/dist/targets.json` 定义。release-dist profile 和 feature、固定版本的 rg/bfs/ugrep、build attestation、manifest 与 checksums 共同约束包内容。工具的可执行格式、目标架构和最低 macOS 版本也参与校验。初始 profile 不包含个人 hook、agent、skill、plugin、登录态或 session。
 
+**发布速度约定（2026-10-22）。** 六个原生目标都保留。仅 `-alpha.N` 通过 `.cargo/release-alpha.toml` 关闭跨 crate LTO、把 codegen-units 设为 16；稳定版的 ThinLTO、单 CGU、调试信息不变，两个通道都保留 `release-dist` feature 的隐私硬化。新增按目标与优化模式隔离的编译缓存；缓存 miss 必须真实编译。协调器并行预热与质量验证，质量验证只复用同 SHA、可信分支 push/manual `ci.yml` 的当前 attempt 成功门禁。tag 从指定协调器 run 下载六个构建产物，必须核对仓库、workflow、分支、SHA、attempt 和全部成功 job；不能用 alpha 的 branch cache 向 tag 交接。原生 smoke、receipt、checksum、provenance 和 environment gate 不减。上游改发布流程时保留这些输入/来源约束；禁止为性能目标把 stable 也切到 alpha 参数。验证入口：`python3 -B -m unittest discover -s scripts/ci -p 'test_*.py'`、`scripts/dist/test.sh`、actionlint 和六平台无发布 dry run（分别记录冷/热缓存耗时）。
+
 **代码入口。** `scripts/dist/**`、`.github/workflows/{ci,release-cache,auto-release,release}.yml`、`.github/actions/*compiler-cache/`、`packaging/profile/starter/**`；pager 的 `scripts/install.sh` / `install.ps1`；`crates/codegen/xai-grok-update/src/{auto_update,version}.rs`；`xai-grok-tools` 的 `build.rs`、`embedded_search_tools.rs`、`util/vendor.rs`；`crates/build/xai-proto-build/src/lib.rs`。
 
 **合并方法。** 保留 fork 的 GitHub Release 安装/更新 URL、下载校验和工具包版本识别；沿用上游平台分支但不恢复上游专用分发地址。不要替换正被进程执行的嵌入工具。protoc/build 依赖追踪和目标格式校验发生迁移时跟随新接口，不删除验收。普通 `cargo build --release` 不等同于发行构建。
@@ -286,6 +288,7 @@ PR 必须列出上游 SHA、保留/替代的 fork 行为、每项冲突决策及
 | 缓存 placement 跟上游，保留 TTL/off 增量 | `8595f481`、`ec4bda42`；RFC §9；差异审计 §1。 |
 | Plan Mode 撤销 fork 扩展 | `1a6d8517`（PR #97）；RFC §5；差异审计 2026-09-18 更新。 |
 | 版本线跟随上游 | `217891d1`；`AGENTS.md` Releases；发布文档。 |
+| 多平台发布加速与可信产物交接 | 本文 §3.5；`.cargo/release-alpha.toml`；`scripts/ci/release-handoff.py` 与对应单测；发布文档。 |
 | 标准发行入口与精确产物复用 | `6ff1d78f`、`2e09f905`；`docs/release-distribution.md`。 |
 | JavaScript Code Mode（默认开启，全工具含 MCP） | PR #104；`docs/code-mode.md`；本文 §3.6。 |
 

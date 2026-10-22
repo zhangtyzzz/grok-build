@@ -270,10 +270,16 @@ build_target() {
     fi
     status_sha256_start="$(printf '%s' "$status_start" | sha256_stdin)"
 
+    # Keep the generated stable profile unchanged. Select the fast profile by
+    # version, so branch and tag builds always use identical compilation inputs.
+    local cargo_args=(build --timings)
+    if [[ "$version" =~ -alpha\.[0-9]+$ ]]; then
+        cargo_args+=(--config "$REPO_ROOT/.cargo/release-alpha.toml")
+    fi
     note "building grok-build $version for $target"
     (
         cd "$REPO_ROOT"
-        cargo build \
+        cargo "${cargo_args[@]}" \
             --locked \
             -p xai-grok-pager-bin \
             --profile release-dist \

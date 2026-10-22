@@ -169,6 +169,7 @@ jobs:
     needs: publish-pr
     permissions:
       contents: read
+      actions: read
     uses: ./.github/workflows/ci.yml
     with:
       checkout_ref: ${{ needs.publish-pr.outputs.head }}
