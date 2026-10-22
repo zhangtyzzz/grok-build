@@ -13,6 +13,11 @@ on:
         required: false
         default: false
         type: boolean
+      job_timeout_minutes:
+        description: Timeout for the long jobs; tag-triggered release gates cannot read alpha branch caches and build cold
+        required: false
+        default: 90
+        type: number
   pull_request:
   push:
     branches:
@@ -35,7 +40,7 @@ jobs:
   rust:
     name: Rust checks and tests
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: ${{ inputs.job_timeout_minutes || 90 }}
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -168,7 +173,7 @@ jobs:
   terminal:
     name: Terminal, tools, and CLI
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: ${{ inputs.job_timeout_minutes || 90 }}
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

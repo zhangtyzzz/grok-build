@@ -116,6 +116,8 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       compiler_cache_read_only: true
+      # Tag runs can read only default-branch caches, so an alpha tag builds cold (>90 min).
+      job_timeout_minutes: 240
 
   build:
     name: Build ${{ matrix.target }}
