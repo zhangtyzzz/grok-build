@@ -12,7 +12,8 @@ on:
 permissions: {}
 
 concurrency:
-  group: automatic-release
+  # Per branch: an alpha publication never waits behind a stable one, or vice versa.
+  group: automatic-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
