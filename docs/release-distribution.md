@@ -241,8 +241,10 @@ application build. Only branch builds save tool entries.
 
 This remains crate/object reuse, not Cargo's incremental mode:
 `CARGO_INCREMENTAL=0` is required by sccache. Final executable linking and some
-build scripts still run. The fallback wrapper invokes rustc directly when the
-local cache server fails. Source/final-binary caches remain subject to GitHub's
+build scripts still run. The fallback wrapper is named `sccache` so `cc-rs` also
+routes supported native C/C++ compilations through it; the real cache executable
+uses a separate absolute path. The wrapper invokes the original compiler directly
+when the local cache server fails. Source/final-binary caches remain subject to GitHub's
 free dependency-cache allowance; compiler snapshots are kept separately as
 public workflow artifacts.
 

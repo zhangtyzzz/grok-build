@@ -11,33 +11,33 @@ fn run(program: &OsString, args: &[OsString]) -> std::io::Result<ExitStatus> {
 
 fn main() -> ExitCode {
     let mut wrapper_args = env::args_os().skip(1);
-    let Some(rustc) = wrapper_args.next() else {
-        eprintln!("sccache fallback wrapper requires the rustc path");
+    let Some(compiler) = wrapper_args.next() else {
+        eprintln!("sccache fallback wrapper requires the compiler path");
         return ExitCode::FAILURE;
     };
-    let rustc_args: Vec<_> = wrapper_args.collect();
+    let compiler_args: Vec<_> = wrapper_args.collect();
 
     let Some(sccache) = env::var_os(SCCACHE_ENV) else {
-        eprintln!("{SCCACHE_ENV} is not set; invoking rustc directly");
-        return status_code(run(&rustc, &rustc_args));
+        eprintln!("{SCCACHE_ENV} is not set; invoking compiler directly");
+        return status_code(run(&compiler, &compiler_args));
     };
 
-    let mut sccache_args = Vec::with_capacity(rustc_args.len() + 1);
-    sccache_args.push(rustc.clone());
-    sccache_args.extend(rustc_args.iter().cloned());
+    let mut sccache_args = Vec::with_capacity(compiler_args.len() + 1);
+    sccache_args.push(compiler.clone());
+    sccache_args.extend(compiler_args.iter().cloned());
     match run(&sccache, &sccache_args) {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(status) => {
             eprintln!(
-                "sccache exited with {status}; retrying this rustc invocation without the cache"
+                "sccache exited with {status}; retrying this compiler invocation without the cache"
             );
-            status_code(run(&rustc, &rustc_args))
+            status_code(run(&compiler, &compiler_args))
         }
         Err(error) => {
             eprintln!(
-                "could not invoke sccache ({error}); retrying this rustc invocation without the cache"
+                "could not invoke sccache ({error}); retrying this compiler invocation without the cache"
             );
-            status_code(run(&rustc, &rustc_args))
+            status_code(run(&compiler, &compiler_args))
         }
     }
 }
@@ -49,7 +49,7 @@ fn status_code(result: std::io::Result<ExitStatus>) -> ExitCode {
             .and_then(|code| u8::try_from(code).ok())
             .map_or(ExitCode::FAILURE, ExitCode::from),
         Err(error) => {
-            eprintln!("could not invoke rustc: {error}");
+            eprintln!("could not invoke compiler: {error}");
             ExitCode::FAILURE
         }
     }

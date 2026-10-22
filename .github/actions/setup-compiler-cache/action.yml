@@ -97,7 +97,11 @@ runs:
           rm -rf -- "$cache_dir"
         fi
         mkdir -p "$cache_dir"
-        wrapper="$RUNNER_TEMP/grok-sccache-fallback${{ runner.os == 'Windows' && '.exe' || '' }}"
+        # cc-rs recognizes this basename and reuses the wrapper for native C/C++.
+        # GROK_SCCACHE_BIN still points to the real cache binary, avoiding recursion.
+        wrapper_dir="$RUNNER_TEMP/grok-compiler-wrapper"
+        mkdir -p "$wrapper_dir"
+        wrapper="$wrapper_dir/sccache${{ runner.os == 'Windows' && '.exe' || '' }}"
         rustc scripts/ci/sccache-fallback.rs -o "$wrapper"
         {
           echo "GROK_SCCACHE_BIN=$SCCACHE_PATH"
