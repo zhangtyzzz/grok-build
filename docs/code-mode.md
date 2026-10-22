@@ -60,10 +60,24 @@ that tool's documented output is JSON. Runtime/permission/policy/tool errors
 reject the Promise; tools' own successful structured/text contracts still apply
 (for example a reported command exit status need not be a dispatch exception).
 
-`catalog.search(query, offset)` matches names and descriptions case-insensitively
-and returns at most 20 summaries per page; `catalog.describe(name)` returns the
-full input schema. Names are not rewritten into aliases: bracket notation works
-for non-identifiers, e.g. `tools["linear__save_issue"]({...})`.
+`catalog.search(query, offset)` takes a string; every whitespace-separated word
+must appear in a tool's name or description (case-insensitive), and it returns
+at most 20 summaries per page. `catalog.describe(name)` returns the full input
+schema. Both also accept the object form (`{query, offset}`, `{name}`) models
+often write, and any other argument type throws a `TypeError` rather than
+silently matching nothing. Names are not rewritten into aliases: bracket
+notation works for non-identifiers, e.g. `tools["linear__save_issue"]({...})`;
+an unknown name throws an error that points to `catalog.search()`.
+
+Each `execute` starts a fresh runtime with no state from earlier runs. The tool
+description therefore asks for results that are sufficient for the question,
+not merely compact: parse JSON text before searching it, extract by field,
+heading or keyword instead of the opening characters or guessed offsets, and
+return the requested facts with their context. In live testing (2026-10-22) one
+page was fetched five times because the first script returned only its first
+1200 characters plus keyword offsets, and a later script applied offsets found
+in the serialized JSON to the parsed body. The runtime had delivered the full
+data each time; the repeats came from discarding it early.
 Both catalog functions return JSON objects directly; only host tool calls return
 model-facing text strings.
 
@@ -74,7 +88,16 @@ same `server__tool` names; disabled tools are absent). Excluded are only
 directly), and the turn-control tools `enter_plan`, `exit_plan` and `ask_user`,
 which wait on the user or switch the turn's mode. A nested MCP call runs as an
 ordinary inline `use_tool` call, so MCP auth retry, argument coercion,
-permissions, hooks and telemetry are unchanged. Every nested call keeps normal
+permissions, hooks and telemetry are unchanged. Only the model-facing inline
+limit is skipped: `use_tool` truncates MCP text for calls the model reads
+directly (`MAX_MCP_OUTPUT_BYTES`, 20 KB by default), but a nested call registers
+its id in `UntruncatedMcpCalls`, so the script receives complete data it can
+parse. A single nested result over the 2 MiB frame limit fails that call with a
+catchable error instead of aborting the run; the final `execute` result keeps
+its own bound. System reminders appended to a nested result (background-task
+completions, diagnostics, coercion notes) are split off before the script sees
+the text and appended after the `execute` result, so they neither corrupt JSON
+nor get lost. Every nested call keeps normal
 validation, hooks, permissions, trust/sandbox checks, same-file locking and
 cancellation. Media-generation caps count all calls admitted in one run. The
 inventory is frozen per run: a tool whose definition changes mid-run is
@@ -84,6 +107,28 @@ Each program gets a fresh QuickJS process. No imports, filesystem, network,
 process, timers or credentials are injected. All external access is through host
 tools. This is not a complete operating-system security sandbox. Native QuickJS
 is used through rquickjs; no Node/Bun/Python installation is needed.
+
+The `execute` result is `{ok, value, error, logs, warnings, calls, trace}`,
+plus `truncated` and `result_file` for an oversized value. `calls` lists each
+nested call as `{id, name, sequence, status}`; `trace` holds every nested call's
+arguments and full output, and the description points the model at it for
+reuse instead of calling again. An MCP result reaches the script as text: `call_result.rs` joins its text blocks
+with newlines (several JSON blocks become JSON Lines) and appends
+`structuredContent` as a final JSON line when no text block already carries it;
+the description states this so scripts parse line by line instead of probing.
+Builtin `read_file` text carries `N→` line
+anchors (first line and every tenth line), so the description tells scripts to
+strip them before parsing file contents.
+
+Large results follow the same inline limit as MCP output (`MAX_MCP_OUTPUT_BYTES`,
+20 KB by default), so the model sees one size rule. A final value over it is
+written in full to `code-mode-<uuid>-result.json` (0600) beside the trace; the
+model gets `truncated: true`, the leading bytes of its JSON in `value`,
+`result_file`, and a warning worded like the MCP one ("Result truncated:
+showing first … of …. Full output written to: …"). Logs over the same limit are
+cut (the trace keeps them). Only a value beyond the worker transfer bound
+(2 MiB frame minus 128 KiB) fails the run. Earlier, any value over 64 KiB failed
+the whole run, which pushed models to return only previews.
 
 Return JSON data; explicitly await nested Promises. Cycles, functions, BigInt,
 nonfinite or imprecise integer values are rejected. Console logs and final data

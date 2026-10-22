@@ -18,6 +18,7 @@ type NestedResult = (
     Vec<ConversationItem>,
     Option<ToolLoop>,
     Option<serde_json::Value>,
+    Vec<String>,
 );
 
 tokio::task_local! {
@@ -115,10 +116,44 @@ fn definition() -> ToolDefinition {
     ToolDefinition::function(
         "execute",
         Some(format!(
-            "Compose any of your tools, including MCP server tools, with JavaScript in an isolated runtime. Choose by what the task needs: prefer it when you need a derived answer (filtered, counted, deduplicated or joined data) rather than the raw results, or when a fixed multi-step flow feeds one result into the next; call tools directly (independent calls already run in parallel) when you need to read full results or decide each next step from them. If a direct result turns out too long, use it for later similar calls. Input code is an async function body: use await and explicit return (otherwise null). catalog.search(query, offset) matches names and descriptions (20 per page); catalog.describe(name) returns the input schema; then call tools[name](args), e.g. tools[\"server__tool\"]({{...}}). MCP tools found with search_tool are callable here by that same name. The catalog functions return JSON objects. Tool calls resolve to their text output; do not assume it is structured JSON. Use Promise.allSettled for partial failures; at most {in_flight} calls in flight and {calls} calls total. All calls keep normal permissions, hooks and Plan Mode. Await all required work: unfinished calls are interrupted at return, without rolling back completed effects. No filesystem, network, imports, timers, process, or persistent JS state; reach everything through tools. console.log appends bounded logs. Return compact JSON data (only the fields you need, not raw results) with all nested promises awaited. Limits: 64 KiB source, 64 MiB JS heap, 5 seconds active computation, {wall} seconds overall INCLUDING tools and permission waits, 64 KiB result/log text. Do not retry an entire failed script with writes without inspecting its trace.",
+            r#"Run an async JavaScript program that composes your tools, including MCP server tools, in an isolated runtime. Only the program's return value reaches you; nested results stay out of your context.
+
+When to use:
+- You need a derived answer (filtered, counted, deduplicated or joined data) rather than raw results.
+- A fixed multi-step flow feeds one result into the next.
+- A direct result turned out too long: script later similar calls.
+
+When not to use:
+- One call, or a few independent calls: call the tools directly; they already run in parallel.
+- You need to read full content, or decide each next step from what you read.
+
+Writing the program:
+- `code` is an async function body: use await and an explicit return (otherwise null).
+- Find tools with catalog.search(query, offset) (a string; every word must match a name or description; 20 per page) and catalog.describe(name) (input schema), then call tools[name](args), e.g. tools["server__tool"]({{...}}). MCP tools found with search_tool use the same names. Catalog functions return objects.
+- Tool calls resolve to their text output. When that text is JSON, JSON.parse it first and work on parsed fields; never reuse character offsets from the raw text.
+- An MCP result's text blocks are joined with newlines, so several JSON blocks arrive as JSON Lines; structuredContent not already in the text is appended as a final JSON line. Split lines before parsing when one JSON.parse fails.
+- read_file text marks line numbers as N→ on its first line and every 10th line; strip them (text.replace(/^\d+→/gm, "")) before parsing file contents.
+- Decide what the question needs before calling, and extract it by field, heading or keyword, not by opening characters or guessed offsets. If you have not seen a tool's output format, look at one small call first instead of guessing its structure.
+- Use Promise.allSettled when partial failure is acceptable. Await all required work: unfinished calls are interrupted at return, and completed effects are not rolled back.
+
+Returning results:
+- Return JSON sufficient for the question: the requested facts with their supporting context, irrelevant content removed. Never return only a preview.
+- Each execute starts fresh. Process a result fully in the program that fetched it. If the next step depends on what you find, return the confirmed facts and what is still missing, then work from them instead of fetching the same data again.
+
+What you receive:
+- {{ok, value, error, logs, warnings, calls, trace}}: value is your return value; error is set when ok is false; calls lists each nested call as {{id, name, sequence, status}} with status completed, failed or outcome_unknown.
+- trace is a local file holding every nested call's arguments and full output; read or search it to reuse earlier data instead of calling again.
+- When value is over the inline limit: truncated is true, value holds the leading part of its JSON, and result_file holds the full JSON.
+
+Rules and limits:
+- Every call keeps normal permissions, hooks and Plan Mode.
+- No filesystem, network, imports, timers, process access or persistent state; reach everything through tools. console.log appends bounded logs.
+- At most {in_flight} calls in flight and {calls} in total; 64 KiB source; 64 MiB heap; 5 seconds active computation; {wall} seconds overall including tool and permission waits; results and logs over {inline} (the same limit as MCP output) are cut, with a large result written to a file whose path is returned.
+- Before rerunning a failed program that performs writes, inspect its trace."#,
             in_flight = runtime::MAX_IN_FLIGHT,
             calls = runtime::MAX_CALLS,
             wall = wall_timeout().as_secs(),
+            inline = xai_grok_tools::util::truncate::format_bytes(inline_limit() as u64),
         )),
         json!({"type":"object","properties":{"code":{"type":"string"}},"required":["code"],"additionalProperties":false}),
     )
@@ -201,6 +236,126 @@ struct CodeRunDelivery {
     followups: Vec<ConversationItem>,
     images: Vec<xai_grok_sampling_types::ContentPart>,
     trace_path: Option<String>,
+    /// Reminders split off nested results; the model reads them after the `execute` result.
+    reminders: Vec<String>,
+}
+
+/// Same inline limit as `use_tool`'s MCP output (`MAX_MCP_OUTPUT_BYTES`, 20 KB by
+/// default), so the model sees one size rule for every large result.
+fn inline_limit() -> usize {
+    xai_grok_tools::util::mcp_truncate::mcp_max_output_bytes()
+}
+
+/// Like `use_tool`'s MCP truncation: a value over the inline limit is written in full
+/// to the session directory and the model gets the leading bytes plus the file path.
+/// Logs over the same limit are cut; the trace keeps them in full.
+fn spill_large_value(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    dir: &std::path::Path,
+    trace_name: &str,
+    limit: usize,
+) {
+    use xai_grok_tools::util::truncate::{format_bytes, truncate_str};
+    let mut notes = Vec::new();
+    if let Some(logs) = object
+        .get_mut("logs")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        let mut used = 0;
+        let kept = logs
+            .iter()
+            .take_while(|line| {
+                used += line.as_str().map_or(0, str::len);
+                used <= limit
+            })
+            .count();
+        if kept < logs.len() {
+            notes.push(format!(
+                "{} log entries omitted over the {} inline limit; the trace keeps them",
+                logs.len() - kept,
+                format_bytes(limit as u64)
+            ));
+            logs.truncate(kept);
+        }
+    }
+    if let Some(json) = object
+        .get("value")
+        .and_then(|value| serde_json::to_string(value).ok())
+        .filter(|json| json.len() > limit)
+    {
+        let path = dir.join(trace_name.replace(".jsonl", "-result.json"));
+        let mut options = std::fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let written = options
+            .open(&path)
+            .and_then(|mut file| file.write_all(json.as_bytes()));
+        let preview = truncate_str(&json, limit).to_owned();
+        let shown = format!(
+            "Result truncated: showing first {} of {}.",
+            format_bytes(preview.len() as u64),
+            format_bytes(json.len() as u64)
+        );
+        notes.push(match written {
+            Ok(()) => {
+                object.insert("result_file".to_owned(), json!(path.to_string_lossy()));
+                format!(
+                    "{shown} Full output written to: {}. Read or search that file instead of running the program again.",
+                    path.to_string_lossy()
+                )
+            }
+            Err(error) => format!("{shown} Writing the full output failed: {error}"),
+        });
+        object.insert("value".to_owned(), json!(preview));
+        object.insert("truncated".to_owned(), json!(true));
+    }
+    if !notes.is_empty()
+        && let Some(warnings) = object
+            .entry("warnings")
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+    {
+        warnings.extend(notes.into_iter().map(serde_json::Value::from));
+    }
+}
+
+/// A result over the frame limit fails only its own call, so the script can catch it
+/// and request less data instead of the whole run aborting.
+fn bounded_reply(reply: runtime::Reply) -> serde_json::Result<runtime::Reply> {
+    let size = serde_json::to_vec(&reply)?.len();
+    if size <= runtime::MAX_FRAME_BYTES {
+        return Ok(reply);
+    }
+    Ok(runtime::Reply {
+        id: reply.id,
+        ok: false,
+        payload: format!(
+            "Tool result is {size} bytes, over the {} byte Code Mode per-call limit; request less data (filter, paginate or narrow the query)",
+            runtime::MAX_FRAME_BYTES
+        ),
+    })
+}
+
+/// Split trailing `<system-reminder>` blocks off a nested tool result. Reminders are model
+/// guidance appended after the tool output, so a script must not parse them as data, and the
+/// model must still receive them (a background-task completion is consumed once).
+fn split_trailing_reminders(text: &str) -> (&str, Vec<String>) {
+    let tag = xai_grok_tools::reminders::DEFAULT_REMINDER_TAG;
+    let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
+    let mut data = text.trim_end();
+    let mut reminders = Vec::new();
+    while data.ends_with(&close)
+        && let Some(start) = data.rfind(&open)
+    {
+        reminders.push(data[start..].to_owned());
+        data = data[..start].trim_end();
+    }
+    reminders.reverse();
+    (data, reminders)
 }
 
 // A cancelled run keeps its slot until its worker has actually exited.
@@ -250,6 +405,23 @@ impl SessionActor {
         {
             self.chat_state_handle
                 .push_tool_result(item.expect("direct delivery"));
+        }
+    }
+    /// Nested MCP calls return complete output to the script; `use_tool` truncates only
+    /// calls the model reads directly.
+    async fn set_untruncated_mcp_call(&self, id: &str, untruncated: bool) {
+        use xai_grok_tools::util::mcp_truncate::UntruncatedMcpCalls;
+        let resources = self.tool_bridge_handle().shared_resources().await;
+        let mut resources = resources.lock().await;
+        if resources.get::<UntruncatedMcpCalls>().is_none() {
+            resources.insert(UntruncatedMcpCalls::default());
+        }
+        if let Some(calls) = resources.get_mut::<UntruncatedMcpCalls>() {
+            if untruncated {
+                calls.0.insert(id.to_owned());
+            } else {
+                calls.0.remove(id);
+            }
         }
     }
     pub(crate) fn code_mode_available(&self) -> bool {
@@ -371,8 +543,12 @@ impl SessionActor {
             }
         }
         let success = result.get("ok").and_then(serde_json::Value::as_bool) == Some(true);
-        let text = serde_json::to_string(&result)
+        let mut text = serde_json::to_string(&result)
             .unwrap_or_else(|_| "Code Mode result serialization failed".to_owned());
+        for reminder in &delivery.reminders {
+            text.push_str("\n\n");
+            text.push_str(reminder);
+        }
         self.send_update(
             acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
                 id,
@@ -552,9 +728,9 @@ impl SessionActor {
                     }
                 }
                 Some((id, child_id, result)) = running.next(), if !running.is_empty() => {
-                    let (payload, failed, messages, tool_loop, prepared) = match result {
+                    let (payload, failed, messages, tool_loop, prepared, reminders) = match result {
                         Ok(result) => result,
-                        Err(error) => (error.to_string(), true, Vec::new(), None, None),
+                        Err(error) => (error.to_string(), true, Vec::new(), None, None, Vec::new()),
                     };
                     let row = trace.rows.get_mut(&child_id).ok_or_else(|| anyhow::anyhow!("Unknown nested call"))?;
                     row["status"] = json!(if failed { "failed" } else { "completed" });
@@ -571,7 +747,10 @@ impl SessionActor {
                         *final_loop = tool_loop;
                         anyhow::bail!("Code Mode interrupted by tool permission decision");
                     }
-                    let reply = runtime::Reply { id, ok: !failed, payload: if failed { payload } else { serde_json::to_string(&payload)? } };
+                    for reminder in reminders {
+                        if !delivery.reminders.contains(&reminder) { delivery.reminders.push(reminder); }
+                    }
+                    let reply = bounded_reply(runtime::Reply { id, ok: !failed, payload: if failed { payload } else { serde_json::to_string(&payload)? } })?;
                     let mut frame = Vec::new();
                     runtime::write_frame(&mut frame, &reply)?;
                     stdin.write_all(&frame).await?;
@@ -618,6 +797,7 @@ impl SessionActor {
             {
                 warnings.push(json!("Some unawaited calls have unknown outcome; completed effects are not rolled back"));
             }
+            spill_large_value(object, &dir, &trace_name, inline_limit());
         }
         Ok(result)
     }
@@ -728,13 +908,22 @@ impl SessionActor {
                 };
                 let mut followups = Vec::new();
                 let mut outcome = None;
-                self.execute_tool_calls_batch(vec![call], &mut followups, &mut outcome, model)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                self.set_untruncated_mcp_call(id, true).await;
+                let batch = self
+                    .execute_tool_calls_batch(vec![call], &mut followups, &mut outcome, model)
+                    .await;
+                self.set_untruncated_mcp_call(id, false).await;
+                batch.map_err(|e| anyhow::anyhow!("{e}"))?;
                 let mut results = sink.results.take();
+                let mut reminders = Vec::new();
                 let text = results
                     .iter()
-                    .map(ConversationItem::text_content)
+                    .map(|item| {
+                        let content = item.text_content();
+                        let (data, split) = split_trailing_reminders(&content);
+                        reminders.extend(split);
+                        data.to_owned()
+                    })
                     .collect::<Vec<_>>()
                     .join("\n");
                 let failed = sink.failed.get()
@@ -742,7 +931,14 @@ impl SessionActor {
                         .as_ref()
                         .is_some_and(|v| !matches!(v, ToolLoop::Continue));
                 results.extend(followups);
-                Ok((text, failed, results, outcome, sink.prepared.take()))
+                Ok((
+                    text,
+                    failed,
+                    results,
+                    outcome,
+                    sink.prepared.take(),
+                    reminders,
+                ))
             })
             .await
     }

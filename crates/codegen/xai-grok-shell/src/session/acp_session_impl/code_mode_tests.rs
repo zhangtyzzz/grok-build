@@ -53,7 +53,7 @@ async fn nested(
         .await
         .into_iter()
         .find(|d| d.function.name == name);
-    tokio::time::timeout(
+    let (text, failed, messages, tool_loop, prepared, _reminders) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         actor.execute_nested_code_call(
             "outer",
@@ -67,7 +67,8 @@ async fn nested(
     )
     .await
     .expect("must not deadlock")
-    .unwrap()
+    .unwrap();
+    (text, failed, messages, tool_loop, prepared)
 }
 #[tokio::test(flavor = "current_thread")]
 async fn nested_success_reuses_real_tools_without_orphan_results_and_direct_still_delivers() {
@@ -638,6 +639,27 @@ async fn real_worker_saturated_in_flight_calls_share_the_session_pipeline() {
 }
 
 struct GatewayReceiver(parking_lot::Mutex<Vec<serde_json::Value>>);
+/// Returns one large JSON document, well over `use_tool`'s inline MCP limit.
+struct LargeGateway(String);
+#[async_trait::async_trait]
+impl xai_grok_tools::types::resources::ManagedGatewayToolCaller for LargeGateway {
+    async fn call_tool(
+        &self,
+        _: &str,
+        _: serde_json::Value,
+        _: &str,
+    ) -> Result<
+        xai_grok_tools::types::resources::ManagedGatewayToolCallResponse,
+        xai_tool_runtime::ToolError,
+    > {
+        Ok(
+            xai_grok_tools::types::resources::ManagedGatewayToolCallResponse {
+                result: json!({"content":[{"type":"text","text":self.0}]}),
+                connectors_needing_reauth: vec![],
+            },
+        )
+    }
+}
 #[async_trait::async_trait]
 impl xai_grok_tools::types::resources::ManagedGatewayToolCaller for GatewayReceiver {
     async fn call_tool(
@@ -711,7 +733,7 @@ async fn mcp_tools_enter_the_catalog_and_dispatch_through_use_tool() {
             for hidden in ["use_tool", "search_tool", "execute"] {
                 assert!(!inventory.contains_key(hidden), "{hidden}");
             }
-            let (text, failed, _, _, prepared) = tokio::time::timeout(
+            let (text, failed, _, _, prepared, _) = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 actor.execute_nested_code_call(
                     "outer",
@@ -755,4 +777,155 @@ fn wall_timeout_defaults_to_ten_minutes_and_is_clamped() {
         assert_eq!(wall_timeout().as_secs(), secs, "{value}");
     }
     unsafe { std::env::remove_var(ENV_TIMEOUT_SECS) };
+}
+
+/// A script parses complete MCP output; only calls the model reads directly are truncated.
+#[tokio::test(flavor = "current_thread")]
+async fn nested_mcp_output_is_complete_for_the_script() {
+    use xai_grok_tools::types::resources::{
+        ManagedGatewayToolCatalog, ManagedGatewayToolClient, ManagedGatewayToolSource,
+    };
+    use xai_grok_tools::util::mcp_truncate::{MCP_MAX_OUTPUT_BYTES, UntruncatedMcpCalls};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut tools = read_and_edit_toolset();
+            tools.push(xai_grok_tools::registry::types::ToolConfig::for_tool::<
+                xai_grok_tools::implementations::use_tool::UseTool,
+            >());
+            let (actor, _directory) = fixture_with(tools).await;
+            let rows: Vec<_> = (0..1500)
+                .map(|i| json!({"id": i, "name": format!("row-{i}")}))
+                .collect();
+            let document = serde_json::to_string(&rows).unwrap();
+            assert!(document.len() > 2 * MCP_MAX_OUTPUT_BYTES);
+            let resources = actor.tool_bridge_handle().shared_resources().await;
+            {
+                let mut resources = resources.lock().await;
+                resources.insert(ManagedGatewayToolCatalog(std::collections::HashMap::from(
+                    [(
+                        "fixture__list".to_owned(),
+                        ManagedGatewayToolSource {
+                            connector_id: "fixture".to_owned(),
+                            connector_name: "fixture".to_owned(),
+                            tool_id: "list".to_owned(),
+                            tool_name: "list".to_owned(),
+                            call_id: "fixture.list".to_owned(),
+                        },
+                    )],
+                )));
+                resources.insert(ManagedGatewayToolClient(Arc::new(LargeGateway(
+                    document.clone(),
+                ))));
+            }
+            actor.tool_metadata_snapshot.lock().unwrap().tools =
+                vec![crate::session::tool_index::ToolMetadata {
+                    qualified_name: "fixture__list".to_owned(),
+                    server_name: "fixture".to_owned(),
+                    tool_name: "list".to_owned(),
+                    description: "List fixture rows".to_owned(),
+                    parameters: vec![],
+                    input_schema: json!({"type":"object"}),
+                }];
+            let definition = actor.code_mode_inventory().await["fixture__list"].clone();
+            let (text, failed, _, _, _, reminders) = actor
+                .execute_nested_code_call(
+                    "outer",
+                    "outer/code/1",
+                    "fixture__list",
+                    json!({}),
+                    Some(definition),
+                    None,
+                    Locks::default(),
+                )
+                .await
+                .unwrap();
+            assert!(!failed, "{}", &text[..text.len().min(300)]);
+            assert!(!text.contains("MCP output truncated"));
+            let parsed: Vec<serde_json::Value> =
+                serde_json::from_str(&text).expect("complete JSON");
+            assert_eq!(parsed.len(), 1500);
+            assert!(reminders.is_empty());
+            let resources = resources.lock().await;
+            assert!(
+                resources
+                    .get::<UntruncatedMcpCalls>()
+                    .is_some_and(|c| c.0.is_empty()),
+                "the opt-out is removed after the call"
+            );
+        })
+        .await;
+}
+
+#[test]
+fn trailing_reminders_split_off_nested_results() {
+    let text = "{\"a\":1}\n\n<system-reminder>\nTask t1 finished.\n</system-reminder>\n\n<system-reminder>\nLSP: 1 error\n</system-reminder>\n";
+    let (data, reminders) = super::split_trailing_reminders(text);
+    assert_eq!(data, "{\"a\":1}");
+    assert_eq!(reminders.len(), 2);
+    assert!(reminders[0].contains("Task t1 finished."));
+    assert!(reminders[1].contains("LSP: 1 error"));
+    let inline = "before <system-reminder>x</system-reminder> after";
+    assert_eq!(super::split_trailing_reminders(inline), (inline, vec![]));
+    assert_eq!(super::split_trailing_reminders("plain"), ("plain", vec![]));
+}
+
+#[test]
+fn oversized_nested_result_fails_only_its_call() {
+    let small = runtime::Reply {
+        id: 7,
+        ok: true,
+        payload: "\"ok\"".to_owned(),
+    };
+    let kept = super::bounded_reply(small).unwrap();
+    assert!(kept.ok && kept.payload == "\"ok\"");
+    let large = runtime::Reply {
+        id: 8,
+        ok: true,
+        payload: "x".repeat(runtime::MAX_FRAME_BYTES),
+    };
+    let bounded = super::bounded_reply(large).unwrap();
+    assert_eq!(bounded.id, 8);
+    assert!(!bounded.ok);
+    assert!(
+        bounded.payload.contains("per-call limit"),
+        "{}",
+        bounded.payload
+    );
+    let mut frame = Vec::new();
+    runtime::write_frame(&mut frame, &bounded).expect("the error reply fits a frame");
+}
+
+#[test]
+fn large_results_and_logs_follow_the_mcp_inline_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let limit = 2_000;
+    let rows: Vec<_> = (0..200)
+        .map(|i| json!({"id": i, "body": "x".repeat(20)}))
+        .collect();
+    let full = serde_json::to_string(&rows).unwrap();
+    let mut object = serde_json::Map::new();
+    object.insert("ok".to_owned(), json!(true));
+    object.insert("value".to_owned(), json!(rows));
+    object.insert("logs".to_owned(), json!(vec!["l".repeat(900); 4]));
+    super::spill_large_value(&mut object, dir.path(), "code-mode-t.jsonl", limit);
+    assert_eq!(object["truncated"], true);
+    let preview = object["value"].as_str().unwrap();
+    assert!(preview.len() <= limit && full.starts_with(preview));
+    let file = object["result_file"].as_str().unwrap();
+    assert!(file.ends_with("code-mode-t-result.json"));
+    assert_eq!(std::fs::read_to_string(file).unwrap(), full);
+    assert_eq!(object["logs"].as_array().unwrap().len(), 2);
+    let warnings = object["warnings"].to_string();
+    assert!(
+        warnings.contains("Result truncated: showing first")
+            && warnings.contains("Full output written to"),
+        "{warnings}"
+    );
+    assert!(warnings.contains("2 log entries omitted"), "{warnings}");
+
+    let mut small = serde_json::Map::new();
+    small.insert("value".to_owned(), json!({"answer": 42}));
+    super::spill_large_value(&mut small, dir.path(), "code-mode-s.jsonl", limit);
+    assert_eq!(small["value"], json!({"answer": 42}));
+    assert!(!small.contains_key("truncated") && !small.contains_key("result_file"));
 }

@@ -137,6 +137,10 @@ helper 回归覆盖同 slug 不同 provider、缺失 ref 不降级、legacy alia
 - MCP 使用提示与 Code Mode 一致：上游注入的 MCP reminder（实时注入与压缩后重注入）原文写死“必须先调 `search_tool` 再调 `use_tool`”，会让模型不敢在 `execute` 里用 `catalog.describe` + `tools[name]`。`execute` 可用时改用 `compaction_context::mcp_usage_hint` 的共享措辞：两条路径都合法；按任务需要而非猜测结果大小选择（要加工后的答案或固定的多步流程用 `execute`，要读完整内容或逐步判断用直接调用），仍禁止猜参数；不可用时保持上游原文。上游改这段提示时，合并后两处仍须只调用这一个函数。
 - Inventory：所有已声明的内置工具 +（提供 `use_tool` 时）`search_tool` 所用快照中的全部 MCP/托管网关工具，名字一致（`server__tool`），禁用工具不出现。只排除 `execute` 自身、`search_tool`/`use_tool`、`enter_plan`/`exit_plan`/`ask_user`。每次运行冻结 inventory，定义变化即拒绝。
 - 调用路径：嵌套 MCP 调用转换为普通 inline `use_tool` 调用；所有嵌套调用复用 prepare/dispatch/finalize（权限、hooks、Plan Mode、信任/沙箱、同文件锁、MCP 认证重试与参数转换）。媒体生成上限按单次运行累计。
+- 嵌套结果给脚本的是完整数据：`use_tool` 对模型直接读取的 MCP 文本按 20 KB 截断（`util/mcp_truncate.rs`），嵌套调用前把 call id 登记到 `UntruncatedMcpCalls`、结束后移除，脚本拿到可解析的完整输出；单次结果超过 2 MiB 帧上限时只让该次调用返回可捕获错误（`bounded_reply`），不终止整个 run；嵌套结果末尾追加的 `<system-reminder>` 块（后台任务完成、诊断、参数转换提示）在交给脚本前剥离，并追加到外层 `execute` 结果之后（`split_trailing_reminders`），避免污染 JSON 或丢失只投递一次的通知。上游改 MCP 截断或 reminder 追加方式时，须保持这三点。
+- catalog 输入容错（实测 DeepSeek 把 `catalog.search("…")` 写成对象形式，旧实现 `String(query)` 静默返回空列表，浪费多轮）：`search`/`describe` 接受 `{query, offset}`/`{name}`，其他类型抛 `TypeError`；多词查询按词 AND 匹配；未知工具名报错并指向 `catalog.search()`。`execute` 描述按“何时用 / 何时不用 / 编写程序 / 返回结果 / 规则与限制”分块（参照 Claude Code 工具描述的写法），要求返回“足以回答问题”的结果而非仅“紧凑”：JSON 文本先解析再定位，按字段/标题/关键词提取，不取开头片段或猜字符偏移；同一结果在取到它的脚本里处理完，依赖中间内容时返回已确认信息与缺失项，不重复抓取（实测同一页面被抓 5 次的原因是脚本过早丢弃正文，运行时每次都交付了完整数据）。
+- 大结果落盘，与 MCP 截断统一大小规则：最终返回值和日志使用与 `use_tool` MCP 输出相同的内联上限（`mcp_max_output_bytes()`，默认 20 KB，`MAX_MCP_OUTPUT_BYTES` 可调），描述里的数字也取自它；超限返回值完整写入会话目录 `code-mode-<uuid>-result.json`（0600），模型拿到前缀预览、`truncated`、`result_file` 和与 MCP 同措辞的警告（`spill_large_value`），超限日志截断、trace 保留全文；只有超过 worker 传输上限（2 MiB 帧减 128 KiB）才失败。此前超过 64 KiB 即整个 run 失败，促使模型只返回预览。
+- `execute` 描述写明返回结构（`ok/value/error/logs/warnings/calls/trace`，超限时 `truncated/result_file`；`calls` 每项 `{id,name,sequence,status}`；trace 含每次嵌套调用的参数与完整输出，可读取复用而不必重调），并提示 `read_file` 文本带 `N→` 行号锚点、解析前需去除；说明 MCP 结果的文本拼接规则（多个文本块换行连接，多个 JSON 块即 JSON Lines；文本中未包含的 `structuredContent` 作为末行 JSON 追加，见 `xai-grok-mcp/src/call_result.rs`）。原始内容块接口（如 `tools.raw`）需改上游 `MCPOutput`，按数据再定。
 - 隔离：每次运行一个新的 QuickJS 子进程（`--internal-code-mode-worker`，在 pager-bin 读取配置/凭据/遥测前进入），`env_clear`，无文件系统、网络、导入、定时器或跨运行状态；源码、堆、栈、调用数/并发、输出、错误信息、帧大小都有上限。
 - 历史配对：嵌套结果只进本地 trace（`code-mode-<uuid>.jsonl`，0600），模型历史只收到外层 `execute` 结果。混用 `execute` 与直接工具的响应按一轮处理，followups/插话/skill reminder 只在全部结果之后 flush 一次；用户中途发消息导致嵌套命令转入后台时，通知写给未应答的父 `execute`。
 - 副作用诚实：已完成的效果不回滚也不自动重试，未确认调用记为 `outcome_unknown`。
@@ -298,6 +302,6 @@ PR 必须列出上游 SHA、保留/替代的 fork 行为、每项冲突决策及
 | Plan Mode 撤销 fork 扩展 | `1a6d8517`（PR #97）；RFC §5；差异审计 2026-09-18 更新。 |
 | fork 独立版本号与 alpha 通道（取代 `217891d1` 的跟随上游版本线） | 本文 §6；`AGENTS.md` Releases；发布文档；`ForkVersionTests`。 |
 | 标准发行入口与精确产物复用 | `6ff1d78f`、`2e09f905`；`docs/release-distribution.md`。 |
-| JavaScript Code Mode（默认开启，全工具含 MCP） | PR #104、#106（MCP 提示双路径）；`docs/code-mode.md`；本文 §3.6。 |
+| JavaScript Code Mode（默认开启，全工具含 MCP） | PR #104、#106（MCP 提示双路径）、嵌套结果完整性修复；`docs/code-mode.md`；本文 §3.6。 |
 
 新上游若使这些文件或符号消失，先核实行为迁移或等价替代，再更新入口；不要仅为维持本文的旧路径把已删除代码恢复。

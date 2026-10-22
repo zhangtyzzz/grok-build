@@ -175,13 +175,20 @@ fn concurrency_limit_and_empty_log_count_are_bounded() {
 }
 #[test]
 fn output_heap_and_recursion_limits_fail_cleanly() {
+    let oversized = format!("return 'x'.repeat({});", MAX_RESULT_BYTES + 1);
     for code in [
-        "return 'x'.repeat(65537);",
+        oversized.as_str(),
         "return new Array(100000000).fill('x');",
         "function f(){return f();}return f();",
     ] {
         assert!(!finished(&run(code, vec![])).0, "{code}");
     }
+    // Above the inline model limit but within transfer: the host decides what to inline.
+    let large = format!("return 'x'.repeat({});", MAX_OUTPUT_BYTES + 1);
+    let messages = run(&large, vec![]);
+    let (ok, value, error, _) = finished(&messages);
+    assert!(*ok, "{error:?}");
+    assert_eq!(value.as_str().unwrap().len(), MAX_OUTPUT_BYTES + 1);
 }
 #[test]
 fn unhandled_rejections_are_visible() {
@@ -249,4 +256,39 @@ fn patched_builtins_cannot_redirect_host_replies() {
         vec![reply(1, true, "5")],
     );
     assert_eq!(finished(&messages).1, &serde_json::json!(5));
+}
+#[test]
+fn catalog_accepts_object_form_and_rejects_non_strings() {
+    let messages = run(
+        r#"
+        const err = f => { try { f(); return null; } catch (e) { return [e.name, e.message]; } };
+        return {
+          object: catalog.search({query: "te"}).total,
+          terms: catalog.search("te  st").total,
+          miss: catalog.search("te zz").total,
+          number: err(() => catalog.search(42)),
+          describe: catalog.describe({name: "test"}).name,
+          describeBad: err(() => catalog.describe(7)),
+          unknown: err(() => tools.nope({})),
+          then: typeof tools.then,
+        };
+        "#,
+        vec![],
+    );
+    let (ok, value, error, _) = finished(&messages);
+    assert!(*ok, "{error:?}");
+    assert_eq!(value["object"], 1);
+    assert_eq!(value["terms"], 1);
+    assert_eq!(value["miss"], 0);
+    assert_eq!(value["number"][0], "TypeError");
+    assert_eq!(value["describe"], "test");
+    assert_eq!(value["describeBad"][0], "TypeError");
+    assert!(
+        value["unknown"][1]
+            .as_str()
+            .unwrap()
+            .contains("catalog.search()"),
+        "{value}"
+    );
+    assert_eq!(value["then"], "undefined");
 }

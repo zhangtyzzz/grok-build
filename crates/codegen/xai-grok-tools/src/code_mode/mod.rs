@@ -15,6 +15,9 @@ pub const ENV_ENABLED: &str = "GROK_CODE_MODE";
 pub const MAX_CODE_BYTES: usize = 64 * 1024;
 pub const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+/// Largest final value the worker hands to the host; the host inlines at most
+/// `MAX_OUTPUT_BYTES` for the model and writes larger values to a file.
+pub const MAX_RESULT_BYTES: usize = MAX_FRAME_BYTES - 2 * MAX_OUTPUT_BYTES;
 pub const MAX_CALLS: usize = 64;
 pub const MAX_IN_FLIGHT: usize = 8;
 pub const WALL_TIMEOUT: Duration = Duration::from_secs(120);
@@ -213,10 +216,10 @@ fn execute(init: Init, mut reader: impl Read, writer: impl Write + 'static) -> s
                 accepting.set(false);
                 let value = result?;
                 let json: String = serialize.call((value,))?;
-                if json.len().saturating_add(logs_bytes.get()) > MAX_OUTPUT_BYTES {
+                if json.len() > MAX_RESULT_BYTES {
                     return Err(rquickjs::Exception::throw_message(
                         &ctx,
-                        "Code Mode output limit exceeded; return a smaller summary",
+                        "Code Mode result exceeds the transfer limit; return a smaller summary",
                     ));
                 }
                 return serde_json::from_str(&json).map_err(|_| rquickjs::Error::Unknown);
