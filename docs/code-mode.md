@@ -60,10 +60,20 @@ that tool's documented output is JSON. Runtime/permission/policy/tool errors
 reject the Promise; tools' own successful structured/text contracts still apply
 (for example a reported command exit status need not be a dispatch exception).
 
-`catalog.search(query, offset)` matches names and descriptions case-insensitively
-and returns at most 20 summaries per page; `catalog.describe(name)` returns the
-full input schema. Names are not rewritten into aliases: bracket notation works
-for non-identifiers, e.g. `tools["linear__save_issue"]({...})`.
+`catalog.search(query, offset)` takes a string; every whitespace-separated word
+must appear in a tool's name or description (case-insensitive), and it returns
+at most 20 summaries per page. `catalog.describe(name)` returns the full input
+schema. Both also accept the object form (`{query, offset}`, `{name}`) models
+often write, and any other argument type throws a `TypeError` rather than
+silently matching nothing. Names are not rewritten into aliases: bracket
+notation works for non-identifiers, e.g. `tools["linear__save_issue"]({...})`;
+an unknown name throws an error that points to `catalog.search()`.
+
+Each `execute` starts a fresh runtime with no state from earlier runs, so fetch
+and analyze in one program and return only what the answer needs. A script
+that returns a preview and fetches the same data again in a later `execute`
+repeats every call; that pattern caused most of the duplicated requests in
+live testing.
 Both catalog functions return JSON objects directly; only host tool calls return
 model-facing text strings.
 

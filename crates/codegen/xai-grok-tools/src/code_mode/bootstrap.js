@@ -8,6 +8,8 @@
   const isFinite = Number.isFinite.bind(Number);
   const PromiseClass = Promise;
   const ErrorClass = Error;
+  const TypeErrorClass = TypeError;
+  const ProxyClass = Proxy;
   const call = globalThis.__hostCall;
   const log = globalThis.__hostLog;
   const inventory = parse(globalThis.__inventoryJson);
@@ -31,16 +33,33 @@
       pending[id] = {resolve, reject};
     });
   }
-  globalThis.tools = freeze(tools);
+  // An unknown name fails with guidance instead of "not a function"; then/toJSON stay
+  // undefined so awaiting or serializing the object behaves like a plain object.
+  globalThis.tools = new ProxyClass(freeze(tools), {
+    get(target, key) {
+      if (typeof key !== 'string' || key in target || key === 'then' || key === 'toJSON') return target[key];
+      throw new ErrorClass(`Unknown tool "${key}"; use catalog.search() to find tool names`);
+    },
+  });
   globalThis.catalog = freeze({
     search(query = '', offset = 0) {
+      // Accept the common object form; reject other types instead of searching "[object Object]".
+      if (query !== null && typeof query === 'object') ({query = '', offset = 0} = query);
+      if (typeof query !== 'string')
+        throw new TypeErrorClass('catalog.search(query, offset) takes a string query, e.g. catalog.search("issue")');
       if (!isSafeInteger(offset) || offset < 0) throw new ErrorClass('Invalid catalog offset');
-      const needle = String(query).toLowerCase();
-      const matches = inventory.filter(t =>
-        t.name.toLowerCase().includes(needle) || String(t.description || '').toLowerCase().includes(needle));
+      // Every whitespace-separated term must appear in the name or description.
+      const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+      const matches = inventory.filter(t => {
+        const text = `${t.name} ${String(t.description || '')}`.toLowerCase();
+        return terms.every(term => text.includes(term));
+      });
       return {total: matches.length, tools: matches.slice(offset, offset + 20).map(t => ({name: t.name, description: t.description}))};
     },
     describe(name) {
+      if (name !== null && typeof name === 'object') ({name} = name);
+      if (typeof name !== 'string')
+        throw new TypeErrorClass('catalog.describe(name) takes a tool name string');
       const entry = inventory.find(t => t.name === name);
       if (!entry) throw new ErrorClass('Unknown tool; use catalog.search()');
       return parse(stringify(entry));
