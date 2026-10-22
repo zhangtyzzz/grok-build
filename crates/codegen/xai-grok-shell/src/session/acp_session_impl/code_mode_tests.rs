@@ -53,7 +53,7 @@ async fn nested(
         .await
         .into_iter()
         .find(|d| d.function.name == name);
-    tokio::time::timeout(
+    let (text, failed, messages, tool_loop, prepared, _reminders) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         actor.execute_nested_code_call(
             "outer",
@@ -67,7 +67,8 @@ async fn nested(
     )
     .await
     .expect("must not deadlock")
-    .unwrap()
+    .unwrap();
+    (text, failed, messages, tool_loop, prepared)
 }
 #[tokio::test(flavor = "current_thread")]
 async fn nested_success_reuses_real_tools_without_orphan_results_and_direct_still_delivers() {
