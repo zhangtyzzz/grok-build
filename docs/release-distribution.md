@@ -201,9 +201,9 @@ and final-binary caches for the 10 GiB dependency-cache pool or the service's
 200-small-cache-entry uploads/minute limit.
 
 The snapshot name separates workload, host OS/architecture, Rust and sccache
-versions. Restore looks for the newest compatible artifact from the current
-branch or main; PRs use their base branch, and main never consumes alpha or
-feature-branch snapshots. The helper verifies the same repository and head
+versions. Restore prefers the newest compatible artifact from the current
+branch, then falls back to main; PRs prefer their base branch. Main never consumes
+alpha or feature-branch snapshots. The helper verifies the same repository and head
 repository, artifact/run source identity, a push/manual event and an allowed
 CI/release workflow. PR artifacts, expired snapshots and other workloads are
 rejected. A missing snapshot or service failure starts an empty local cache.
@@ -212,7 +212,7 @@ an older snapshot cannot substitute a different crate's output. Restoring a
 compiler snapshot never skips source validation or release verification.
 
 PRs, coordinator quality checks and tag fallback builds do not publish compiler
-snapshots. Retention is seven days; maintenance keeps the newest two snapshots
+snapshots. Retention is 30 days; maintenance keeps the newest two snapshots
 per workload and release branch. This preserves main-to-alpha reuse without
 paid cache capacity, an external storage service or a paid runner.
 
