@@ -265,7 +265,10 @@ save compiler entries that trusted runs consume. Trusted main and manual CI
 runs save a new immutable bounded compiler cache after successful validation.
 The release warmup runs only from `main` or `alpha`; tag builds consume only an
 exact commit-keyed release build. Tag runs cannot read caches saved on `alpha`,
-so alpha releases fall back to a native build after their warmup. Cache misses, quota limits, and cache service
+so alpha releases fall back to a native build after their warmup. The same
+scoping makes the release quality gates compile the workspace cold for an alpha
+tag (over 90 minutes), so `release.yml` passes `job_timeout_minutes: 240` to the
+reusable CI; ordinary push and pull-request CI keeps its 90-minute limit. Cache misses, quota limits, and cache service
 failures affect performance only, never the release gates or artifact contents.
 
 The ARM64 macOS release build and cache warmup have a four-hour timeout because

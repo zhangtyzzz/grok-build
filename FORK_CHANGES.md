@@ -266,6 +266,7 @@ PR 必须列出上游 SHA、保留/替代的 fork 行为、每项冲突决策及
   - `main` 只发稳定版 `X.Y.Z`；`alpha` 只发 `X.Y.Z-alpha.N`（`auto-release.yml` 按分支校验）。alpha 版号为 `main` 下一个稳定 patch 加 `-alpha.N`。alpha tag 由 `release.yml` 标为 prerelease、走 `release-testing` environment；只有 `[cli] channel = "alpha"` 的客户端会安装。
   - 功能与修复 PR（含 `codex/*`）默认提到 `alpha`；`main` 只接收上游同步、维护者批准的 alpha → main 晋升，以及维护者指定的发布/自动化修改。
   - 晋升 PR 把版本设为下一个稳定 patch，再从 `main` 发稳定版。每次稳定版发布后把 `main` 合回 `alpha`，并把 `alpha` 重置为再下一个 patch 的 `-alpha.1`，因为稳定版 `X.Y.Z` 高于所有 `X.Y.Z-alpha.N`。
+- 缓存作用域：tag 触发的 Release 只能读 tag 与默认分支（main）的缓存，读不到 `alpha` 的缓存，alpha tag 的质量门禁要冷编译整个 workspace（实测 `1.0.47-alpha.1` 的 Rust checks 超过 90 分钟被取消）。`ci.yml` 新增 `job_timeout_minutes` 输入（默认 90），`release.yml` 调用时传 240；普通 push/PR CI 不变。门禁内容不削减。
 - 代码入口：`scripts/automation/upstream_sync.py`（`VERSION_FILES`、`fork_version`、`apply_fork_version`、`begin`、`reconstruct`）及 `test_upstream_sync.py` 的 `ForkVersionTests`；`.github/workflows/{auto-release,release-cache}.yml`、`ci.yml`（push 也覆盖 `alpha`，alpha 发布前其 head 有 CI）；`AGENTS.md` Releases；`docs/release-distribution.md`。
 - 合并方法：上游若改版本号，不按上游取值，交给同步脚本；上游改发布工作流时保留按分支区分通道的校验。
 - 验证：`python3 -m unittest discover -s scripts/automation -p 'test_*.py'`；首个 alpha 发布需确认 tag、prerelease 标记、资产齐全，以及 alpha 通道客户端能升级、稳定通道不受影响。
