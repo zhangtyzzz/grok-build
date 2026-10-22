@@ -407,7 +407,7 @@ jobs:
 
   fan-in:
     if: >-
-      always() && needs.metadata.result == 'success' && needs.build.result == 'success' &&
+      !cancelled() && needs.metadata.result == 'success' && needs.build.result == 'success' &&
       (needs.quality.result == 'success' ||
        (needs.quality.result == 'skipped' && needs.metadata.outputs.build_run_id != ''))
     name: Verify complete release candidate
@@ -533,7 +533,7 @@ jobs:
 
   publish:
     name: Publish ${{ needs.metadata.outputs.channel }} release
-    if: always() && needs.fan-in.result == 'success' && needs.metadata.outputs.publish == 'true'
+    if: ${{ !cancelled() && needs.fan-in.result == 'success' && needs.metadata.outputs.publish == 'true' }}
     needs:
       - metadata
       - fan-in

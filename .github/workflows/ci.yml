@@ -66,7 +66,7 @@ jobs:
   rust:
     needs: previous
     if: >-
-      always() && (needs.previous.result == 'skipped' ||
+      !cancelled() && (needs.previous.result == 'skipped' ||
       (needs.previous.result == 'success' && needs.previous.outputs.reuse != 'true'))
     name: Rust checks and tests
     runs-on: ubuntu-22.04
@@ -174,7 +174,7 @@ jobs:
   integration:
     needs: previous
     if: >-
-      always() && (needs.previous.result == 'skipped' ||
+      !cancelled() && (needs.previous.result == 'skipped' ||
       (needs.previous.result == 'success' && needs.previous.outputs.reuse != 'true'))
     name: Distribution E2E
     runs-on: ubuntu-22.04
@@ -204,7 +204,7 @@ jobs:
   terminal:
     needs: previous
     if: >-
-      always() && (needs.previous.result == 'skipped' ||
+      !cancelled() && (needs.previous.result == 'skipped' ||
       (needs.previous.result == 'success' && needs.previous.outputs.reuse != 'true'))
     name: Terminal, tools, and CLI
     runs-on: ubuntu-22.04
@@ -294,7 +294,7 @@ jobs:
   windows-protobuf:
     needs: previous
     if: >-
-      always() && (needs.previous.result == 'skipped' ||
+      !cancelled() && (needs.previous.result == 'skipped' ||
       (needs.previous.result == 'success' && needs.previous.outputs.reuse != 'true'))
     name: Windows protobuf build
     runs-on: windows-2025
