@@ -13,6 +13,11 @@ on:
         required: false
         default: false
         type: boolean
+      reuse_successful_ci:
+        description: Reuse a successful trusted push/manual CI run for this exact source commit
+        required: false
+        default: false
+        type: boolean
   pull_request:
   push:
     branches:
@@ -31,10 +36,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  previous:
+    name: Check existing exact-commit CI
+    if: inputs.reuse_successful_ci
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      reuse: ${{ steps.ci.outputs.reuse }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
+          persist-credentials: false
+      - name: Verify previous successful CI
+        id: ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ inputs.checkout_ref || github.sha }}
+        run: python3 scripts/ci/release-handoff.py find-ci
   rust:
+    needs: previous
+    if: >-
+      !cancelled() && (needs.previous.result == 'skipped' ||
+      (needs.previous.result == 'success' && needs.previous.outputs.reuse != 'true'))
     name: Rust checks and tests
     runs-on: ubuntu-22.04
     timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -72,10 +105,8 @@ jobs:
         uses: ./.github/actions/setup-compiler-cache
         with:
           namespace: ci-rust
-          toolchain: ${{ env.RUST_CHANNEL }}
-          lock-hash: ${{ hashFiles('Cargo.lock') }}
-          revision: ${{ github.sha }}
           cache-size: 3G
+          read-only: ${{ github.event_name == 'pull_request' || inputs.compiler_cache_read_only }}
 
       # Shell telemetry tests execute real grep calls. Debug builds otherwise
       # rely on an unpinned (and potentially absent) rg on the runner's PATH.
@@ -138,10 +169,14 @@ jobs:
         uses: ./.github/actions/finalize-compiler-cache
         with:
           enabled: ${{ steps.compiler-cache.outputs.enabled }}
-          save: ${{ job.status == 'success' && github.event_name != 'pull_request' && !inputs.compiler_cache_read_only && steps.compiler-cache.outputs.cache-hit != 'true' }}
-          cache-primary-key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
+          cache-name: ${{ steps.compiler-cache.outputs.cache-name }}
+          save: ${{ job.status == 'success' && github.ref_type == 'branch' && github.event_name != 'pull_request' && !inputs.compiler_cache_read_only }}
 
   integration:
+    needs: previous
+    if: >-
+      !cancelled() && (needs.previous.result == 'skipped' ||
+      (needs.previous.result == 'success' && needs.previous.outputs.reuse != 'true'))
     name: Distribution E2E
     runs-on: ubuntu-22.04
     timeout-minutes: 30
@@ -158,6 +193,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes zip
 
+      - name: Test release handoff trust checks
+        run: python3 -B -m unittest discover -s scripts/ci -p 'test_*.py'
+
       - name: Test deterministic distribution
         run: bash scripts/dist/test.sh
 
@@ -165,9 +203,16 @@ jobs:
         run: python3 -m unittest discover -s scripts/automation -p 'test_*.py'
 
   terminal:
+    needs: previous
+    if: >-
+      !cancelled() && (needs.previous.result == 'skipped' ||
+      (needs.previous.result == 'success' && needs.previous.outputs.reuse != 'true'))
     name: Terminal, tools, and CLI
     runs-on: ubuntu-22.04
     timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -205,10 +250,8 @@ jobs:
         uses: ./.github/actions/setup-compiler-cache
         with:
           namespace: ci-terminal
-          toolchain: ${{ env.RUST_CHANNEL }}
-          lock-hash: ${{ hashFiles('Cargo.lock') }}
-          revision: ${{ github.sha }}
           cache-size: 4G
+          read-only: ${{ github.event_name == 'pull_request' || inputs.compiler_cache_read_only }}
 
       - name: Prepare pinned protobuf and search tools
         run: |
@@ -253,16 +296,23 @@ jobs:
         uses: ./.github/actions/finalize-compiler-cache
         with:
           enabled: ${{ steps.compiler-cache.outputs.enabled }}
-          save: ${{ job.status == 'success' && github.event_name != 'pull_request' && !inputs.compiler_cache_read_only && steps.compiler-cache.outputs.cache-hit != 'true' }}
-          cache-primary-key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
+          cache-name: ${{ steps.compiler-cache.outputs.cache-name }}
+          save: ${{ job.status == 'success' && github.ref_type == 'branch' && github.event_name != 'pull_request' && !inputs.compiler_cache_read_only }}
 
   windows-protobuf:
+    needs: previous
+    if: >-
+      !cancelled() && (needs.previous.result == 'skipped' ||
+      (needs.previous.result == 'success' && needs.previous.outputs.reuse != 'true'))
     name: Windows protobuf build
     runs-on: windows-2025
     timeout-minutes: 30
     defaults:
       run:
         shell: bash
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -300,10 +350,8 @@ jobs:
         uses: ./.github/actions/setup-compiler-cache
         with:
           namespace: ci-windows-protobuf
-          toolchain: ${{ env.RUST_CHANNEL }}
-          lock-hash: ${{ hashFiles('Cargo.lock') }}
-          revision: ${{ github.sha }}
           cache-size: 512M
+          read-only: ${{ github.event_name == 'pull_request' || inputs.compiler_cache_read_only }}
 
       - name: Prepare pinned Windows protobuf compiler
         run: |
@@ -351,13 +399,14 @@ jobs:
         uses: ./.github/actions/finalize-compiler-cache
         with:
           enabled: ${{ steps.compiler-cache.outputs.enabled }}
-          save: ${{ job.status == 'success' && github.event_name != 'pull_request' && !inputs.compiler_cache_read_only && steps.compiler-cache.outputs.cache-hit != 'true' }}
-          cache-primary-key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
+          cache-name: ${{ steps.compiler-cache.outputs.cache-name }}
+          save: ${{ job.status == 'success' && github.ref_type == 'branch' && github.event_name != 'pull_request' && !inputs.compiler_cache_read_only }}
 
   required:
     name: CI required
     if: always()
     needs:
+      - previous
       - rust
       - integration
       - terminal
@@ -366,11 +415,16 @@ jobs:
     steps:
       - name: Require every CI job
         env:
+          REUSED_CI: ${{ needs.previous.result == 'success' && needs.previous.outputs.reuse == 'true' }}
           RUST_RESULT: ${{ needs.rust.result }}
           INTEGRATION_RESULT: ${{ needs.integration.result }}
           TERMINAL_RESULT: ${{ needs.terminal.result }}
           WINDOWS_PROTOBUF_RESULT: ${{ needs.windows-protobuf.result }}
         run: |
+          if [[ "$REUSED_CI" == true ]]; then
+            echo "All gates already passed for this exact source commit"
+            exit 0
+          fi
           test "$RUST_RESULT" = success
           test "$INTEGRATION_RESULT" = success
           test "$TERMINAL_RESULT" = success

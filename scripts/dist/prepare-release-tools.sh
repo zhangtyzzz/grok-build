@@ -133,6 +133,13 @@ if [[ "$TARGET" == *-apple-darwin ]]; then
     [[ "$MACOSX_DEPLOYMENT_TARGET" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] ||
         die "MACOSX_DEPLOYMENT_TARGET must be a dotted numeric version"
     export CPPFLAGS="${CPPFLAGS:+$CPPFLAGS }-Werror=unguarded-availability-new"
+    if [[ "$TARGET" == x86_64-apple-darwin && "$(uname -m)" == arm64 ]]; then
+        # Build Intel bundled tools with the native Apple Silicon compiler.
+        # The hosted macOS image can execute the resulting Intel tools, and
+        # the usual format/version checks below still validate every output.
+        export CC="${CC:-clang} -arch x86_64"
+        export CXX="${CXX:-clang++} -arch x86_64"
+    fi
 fi
 
 mkdir -p "$OUTPUT_DIR"

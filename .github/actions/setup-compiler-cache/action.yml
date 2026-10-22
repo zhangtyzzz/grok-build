@@ -1,75 +1,100 @@
-name: Set up bounded compiler cache
-description: Restore and configure a bounded runner-local sccache directory
+name: Set up shared compiler cache
+description: Restore bounded compiler results from trusted public workflow artifacts
 
 inputs:
   namespace:
-    description: Stable workload name used to isolate incompatible cache populations
-    required: true
-  toolchain:
-    description: Rust toolchain identity
-    required: true
-  lock-hash:
-    description: Cargo.lock hash
-    required: true
-  revision:
-    description: Source revision used for the immutable primary cache key
+    description: Compiler workload, including the release target when applicable
     required: true
   cache-size:
-    description: Maximum size of the runner-local sccache directory
+    description: Maximum runner-local compiler cache size
     required: false
-    default: 512M
+    default: 2G
+  read-only:
+    description: Read compiler results without publishing a new snapshot
+    required: false
+    default: "false"
 
 outputs:
-  cache-hit:
-    description: Whether the exact immutable compiler cache was restored
-    value: ${{ steps.restore.outputs.cache-hit }}
-  cache-primary-key:
-    description: Primary key callers can save after successful validation
-    value: ${{ steps.restore.outputs.cache-primary-key }}
   enabled:
     description: Whether sccache and its fallback wrapper were configured
     value: ${{ steps.enable.outputs.enabled }}
+  cache-name:
+    description: Artifact name for this compiler workload
+    value: ${{ steps.location.outputs.name }}
 
 runs:
   using: composite
   steps:
-    - name: Restore bounded compiler cache
-      id: restore
-      continue-on-error: true
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ${{ runner.temp }}/grok-sccache
-        key: sccache-disk-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.namespace }}-${{ inputs.toolchain }}-${{ inputs.lock-hash }}-${{ inputs.revision }}
-        restore-keys: |
-          sccache-disk-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.namespace }}-${{ inputs.toolchain }}-${{ inputs.lock-hash }}-
-          sccache-disk-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.namespace }}-${{ inputs.toolchain }}-
-
     - name: Install pinned sccache
       id: sccache
       continue-on-error: true
       uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       with:
-        version: v0.16.0
+        version: v0.18.0
         disable_annotations: true
 
-    - name: Enable bounded compiler cache
+    - name: Identify compiler snapshot
+      id: location
+      if: steps.sccache.outcome == 'success'
+      shell: bash
+      env:
+        CACHE_NAMESPACE: ${{ inputs.namespace }}
+      run: |
+        set -euo pipefail
+        [[ "$CACHE_NAMESPACE" =~ ^[a-zA-Z0-9_.-]+$ ]]
+        test -n "$RUST_CHANNEL"
+        mkdir -p "$RUNNER_TEMP/grok-sccache"
+        echo "name=compiler-cache-v1-${{ runner.os }}-${{ runner.arch }}-$CACHE_NAMESPACE-rust-$RUST_CHANNEL-sccache-0.18" >> "$GITHUB_OUTPUT"
+
+    - name: Find a trusted compiler snapshot
+      id: snapshot
+      if: steps.sccache.outcome == 'success'
+      continue-on-error: true
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        CACHE_NAME: ${{ steps.location.outputs.name }}
+        CACHE_BRANCH: ${{ github.base_ref || (github.ref_type == 'branch' && github.ref_name) || github.event.repository.default_branch }}
+      run: python3 scripts/ci/compiler-cache-artifact.py
+
+    - name: Restore compiler snapshot
+      id: restore
+      if: steps.snapshot.outputs.artifact_id != ''
+      continue-on-error: true
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        artifact-ids: ${{ steps.snapshot.outputs.artifact_id }}
+        path: ${{ runner.temp }}/grok-sccache
+        merge-multiple: true
+        run-id: ${{ steps.snapshot.outputs.run_id }}
+        github-token: ${{ github.token }}
+
+    - name: Enable local compiler cache
       id: enable
       if: steps.sccache.outcome == 'success'
       shell: bash
       env:
         CACHE_SIZE: ${{ inputs.cache-size }}
+        CACHE_RW_MODE: ${{ inputs.read-only == 'true' && 'READ_ONLY' || 'READ_WRITE' }}
+        RESTORE_OUTCOME: ${{ steps.restore.outcome }}
       run: |
         set -euo pipefail
         cache_dir="$RUNNER_TEMP/grok-sccache"
-        wrapper="$RUNNER_TEMP/grok-sccache-fallback${{ runner.os == 'Windows' && '.exe' || '' }}"
+        if [[ "$RESTORE_OUTCOME" == failure ]]; then
+          # Discard a partial download; this directory is owned by this action.
+          rm -rf -- "$cache_dir"
+        fi
         mkdir -p "$cache_dir"
+        wrapper="$RUNNER_TEMP/grok-sccache-fallback${{ runner.os == 'Windows' && '.exe' || '' }}"
         rustc scripts/ci/sccache-fallback.rs -o "$wrapper"
         {
           echo "GROK_SCCACHE_BIN=$SCCACHE_PATH"
           echo "RUSTC_WRAPPER=$wrapper"
-          echo "SCCACHE_CACHE_SIZE=$CACHE_SIZE"
           echo "SCCACHE_DIR=$cache_dir"
+          echo "SCCACHE_CACHE_SIZE=$CACHE_SIZE"
+          echo "SCCACHE_LOCAL_RW_MODE=$CACHE_RW_MODE"
           echo "SCCACHE_ERROR_LOG=$RUNNER_TEMP/grok-sccache-error.log"
           echo "SCCACHE_IDLE_TIMEOUT=0"
-        } >>"$GITHUB_ENV"
-        echo "enabled=true" >>"$GITHUB_OUTPUT"
+        } >> "$GITHUB_ENV"
+        echo "enabled=true" >> "$GITHUB_OUTPUT"

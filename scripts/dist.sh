@@ -270,10 +270,13 @@ build_target() {
     fi
     status_sha256_start="$(printf '%s' "$status_start" | sha256_stdin)"
 
+    # Stable and alpha use identical optimization flags. Security is still
+    # selected by the release-dist feature below, independently of the profile.
+    local cargo_args=(build --timings --config "$REPO_ROOT/.cargo/release-distribution.toml")
     note "building grok-build $version for $target"
     (
         cd "$REPO_ROOT"
-        cargo build \
+        cargo "${cargo_args[@]}" \
             --locked \
             -p xai-grok-pager-bin \
             --profile release-dist \
