@@ -175,6 +175,7 @@ helper 回归覆盖同 slug 不同 provider、缺失 ref 不降级、legacy alia
 | pager 的 `scrollback/blocks/user.rs`、`app/modals.rs`、`views/picker.rs` | 分离确定性主题测试与进程全局终端能力；保留生产环境 terminal theme 的提示粗体（`a08549a1`）。 | 上游等价测试 seam 可替换；不是新增 UI 产品功能。 |
 | `xai-grok-session-search/src/bootstrap.rs` 及配套测试 | `#[cfg(test)] claim_hold` 用于确定性观察 single-flight 竞争，正常构建不增加延时。 | 钩子与测试成对处理；先证明上游测试在 CI 不再 flaky，不能只删一侧。 |
 | test-support、fixtures、内存 trace、canonical path、序列化测试 | 适配真实接口或去除主机环境依赖，保持 CI 可复现。 | 新上游 fixture 已覆盖时可以删除 fork 修补；不能保留过期字段，也不能弱化断言。 |
+| pager 测试稳定性：`memory_trace.rs` 的 `crash_sample_lands_even_when_the_trace_directory_is_missing`、`app/app_view_tests.rs` 的 `needs_animation_gates_prompt_history_tick_delivery` | 2026-10-22 两次 alpha 发布门禁各随机失败一次。前者假设全局 trace sink 只有一行，但未加 `MEMTRACE_SINK` 锁的测试（如走 `release_retained_memory` 的路径）会写入 purge 事件，改为按 `kind` 查找 crash 事件（与同文件 purge 测试一致）；后者只轮询约 1 秒等待历史搜索后台线程，满载时不够，改为 10 秒墙钟上限。 | 上游修复同一不稳定性（加锁、隔离 sink、改等待方式）后跟上游并删除本行。 |
 | 宏内空白、changelog 尾换行等纯噪音 | 没有用户行为目标。 | 跟上游，不为这些差异争夺冲突块。 |
 
 这些项目是已定位的维护修补，不声称它们就是维护者回忆中的全部“小优化”。新发现的小差异同样需要行为证据，不能只凭文件名给它编一个背景。
