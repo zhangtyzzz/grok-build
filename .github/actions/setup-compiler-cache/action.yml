@@ -25,6 +25,17 @@ outputs:
 runs:
   using: composite
   steps:
+    # Rust proc-macro DLLs are linked on every fresh runner. MSVC's default PE
+    # timestamps change their hashes and invalidate otherwise unchanged crates.
+    # LINK also reaches host proc macros when Cargo builds with --target.
+    - name: Make Windows linked outputs reproducible
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        # Git Bash otherwise converts /Brepro into a path under its install.
+        printf 'MSYS2_ENV_CONV_EXCL=%s\n' "${MSYS2_ENV_CONV_EXCL:+$MSYS2_ENV_CONV_EXCL;}LINK" >> "$GITHUB_ENV"
+        printf 'LINK=%s\n' "${LINK:+$LINK }/Brepro" >> "$GITHUB_ENV"
+
     - name: Install pinned sccache
       id: sccache
       continue-on-error: true
@@ -86,7 +97,11 @@ runs:
           rm -rf -- "$cache_dir"
         fi
         mkdir -p "$cache_dir"
-        wrapper="$RUNNER_TEMP/grok-sccache-fallback${{ runner.os == 'Windows' && '.exe' || '' }}"
+        # cc-rs recognizes this basename and reuses the wrapper for native C/C++.
+        # GROK_SCCACHE_BIN still points to the real cache binary, avoiding recursion.
+        wrapper_dir="$RUNNER_TEMP/grok-compiler-wrapper"
+        mkdir -p "$wrapper_dir"
+        wrapper="$wrapper_dir/sccache${{ runner.os == 'Windows' && '.exe' || '' }}"
         rustc scripts/ci/sccache-fallback.rs -o "$wrapper"
         {
           echo "GROK_SCCACHE_BIN=$SCCACHE_PATH"
