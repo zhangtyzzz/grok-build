@@ -137,6 +137,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       reuse_successful_ci: true
+      compiler_cache_read_only: true
       checkout_ref: ${{ needs.metadata.outputs.commit }}
 
   tag:

@@ -197,8 +197,13 @@ content hash instead of copying a multi-gigabyte cache archive for every commit.
 Compatible results can be reused across CI jobs and from main to alpha under
 GitHub's default-branch cache visibility rules. A cache key incorporates the
 compiler, target, flags, features and source inputs; different inputs are never
-substituted merely because the branches are related. Pull requests and tag
-fallback builds read the compiler cache without writing it.
+substituted merely because the branches are related. Pull requests, coordinator quality checks and tag
+fallback builds read the compiler cache without writing it. sccache 0.18 skips
+its remote capability probe and uses the explicitly configured read/write mode:
+a transient limit on that probe must not silently make the whole job read-only.
+The service's 200 cache-entry uploads/minute limit can still reject individual
+cold-build writes. Warm hit rates, rather than configuration alone, are the
+performance evidence.
 
 Checksum-pinned protoc and search tools are cached separately by target and the
 complete distribution-helper digest. Restores rerun the existing executable

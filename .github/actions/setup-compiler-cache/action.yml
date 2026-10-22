@@ -20,7 +20,7 @@ runs:
       continue-on-error: true
       uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       with:
-        version: v0.16.0
+        version: v0.18.0
         disable_annotations: true
 
     - name: Enable shared compiler cache
@@ -45,6 +45,9 @@ runs:
           echo "SCCACHE_GHA_ENABLED=on"
           echo "SCCACHE_GHA_VERSION=grok-build-v1"
           echo "SCCACHE_GHA_RW_MODE=$CACHE_RW_MODE"
+          # A rate-limited capability probe otherwise downgrades the entire
+          # server lifetime to read-only. Preserve the explicitly chosen mode.
+          echo "SCCACHE_SKIP_CACHE_CHECK=true"
           echo "SCCACHE_ERROR_LOG=$RUNNER_TEMP/grok-sccache-error.log"
           echo "SCCACHE_IDLE_TIMEOUT=0"
         } >>"$GITHUB_ENV"
