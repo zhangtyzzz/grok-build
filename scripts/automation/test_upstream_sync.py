@@ -3,7 +3,6 @@ import base64
 import importlib.util
 import json
 import os
-import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -80,6 +79,213 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(sync.validate_resolution(obj, self.state())["src/main.rs"], content)
 
 
+class VersionNormalizationTests(unittest.TestCase):
+    def manifest(self, package, version="1.2.3"):
+        return f'[package]\nname = "{package}"\nversion = "{version}"\n'.encode()
+
+    def lock(self):
+        return b"".join(b'[[package]]\nname = "' + p.encode() + b'"\nversion = "1.2.3"\n\n'
+                        for p in sync.VERSION_PACKAGES)
+
+    def test_only_package_version_changes_not_dependency_table_version(self):
+        dependency = b'\n[dependencies.foo]\nversion = "4.5.6"\n'
+        for package, path in zip(sync.VERSION_PACKAGES, sync.VERSION_MANIFESTS):
+            with self.subTest(package=package):
+                actual = sync.set_version(path, self.manifest(package) + dependency, "2.0.0")
+                expected = "2.0.0" if package == sync.BINARY_PACKAGE else "0.0.0"
+                self.assertEqual(actual, self.manifest(package, expected) + dependency)
+
+    def test_missing_duplicate_or_renamed_manifest_identity_fails_closed(self):
+        path = sync.VERSION_MANIFESTS[0]
+        original = self.manifest(sync.BINARY_PACKAGE)
+        invalid = (
+            original.replace(b'version = "1.2.3"\n', b''),
+            original + b'version = "4.5.6"\n',
+            original.replace(sync.BINARY_PACKAGE.encode(), b"renamed-package"),
+            original.replace(b'[package]\n', b''),
+            original + original,
+            original.replace(b'version = "1.2.3"\n', b'[dependencies.foo]\nversion = "1.2.3"\n'),
+        )
+        for content in invalid:
+            with self.subTest(content=content), self.assertRaises(sync.SyncError):
+                sync.set_version(path, content, "2.0.0")
+
+    def test_missing_duplicate_or_sourced_lock_identity_fails_closed(self):
+        original = self.lock()
+        first = next(sync.LOCK_PACKAGE.finditer(original))[0]
+        invalid = (
+            original.replace(first, b''),
+            original + first,
+            original.replace(b'version = "1.2.3"', b'source = "registry+https://example.invalid"', 1),
+            original.replace(b'version = "1.2.3"', b'version = "1.2.3"\nsource = "registry+https://example.invalid"', 1),
+            original.replace(b'version = "1.2.3"', b'version = "1.2.3"\nversion = "4.5.6"', 1),
+        )
+        for content in invalid:
+            with self.subTest(content=content), self.assertRaises(sync.SyncError):
+                sync.set_version("Cargo.lock", content, "2.0.0")
+
+    def test_lock_dependency_and_unrelated_package_bytes_are_preserved(self):
+        dependency = b'dependencies = ["other"]\n'
+        lock = self.lock().replace(b'version = "1.2.3"\n', b'version = "1.2.3"\n' + dependency)
+        unrelated = b'[[package]]\nname = "other"\nversion = "9.9.9"\nsource = "registry+https://example.invalid"\n'
+        updated = sync.set_version("Cargo.lock", lock + unrelated, "2.0.0")
+        self.assertEqual(updated.count(dependency), len(sync.VERSION_PACKAGES))
+        self.assertTrue(updated.endswith(unrelated))
+        self.assertEqual(updated.count(b'version = "0.0.0"'), 3)
+        self.assertEqual(updated.count(b'version = "2.0.0"'), 1)
+
+    def test_second_release_changes_only_executable_identity(self):
+        for package, path in zip(sync.VERSION_PACKAGES, sync.VERSION_MANIFESTS):
+            initial = sync.set_version(path, self.manifest(package), "2.0.0")
+            second = sync.set_version(path, initial, "2.0.1")
+            with self.subTest(package=package):
+                self.assertEqual(initial == second, package != sync.BINARY_PACKAGE)
+        first = sync.set_version("Cargo.lock", self.lock(), "2.0.0")
+        second = sync.set_version("Cargo.lock", first, "2.0.1")
+        self.assertEqual(second, first.replace(b'version = "2.0.0"', b'version = "2.0.1"'))
+
+
+class RuntimeVersionNormalizationTests(unittest.TestCase):
+    pager = "crates/codegen/xai-grok-pager/src/client_identity.rs"
+    shell = "crates/codegen/xai-grok-shell/src/leader/mod.rs"
+
+    def normalize(self, source, path=None):
+        actual = sync.normalize_runtime_version(path or self.pager, source.encode()).decode()
+        self.assertEqual(sync.normalize_runtime_version(path or self.pager, actual.encode()).decode(), actual)
+        return actual
+
+    def test_qualified_paths_preserve_unrelated_identifiers_and_literal_bytes(self):
+        untouched = r'''// xai_grok_version::VERSION
+/* VERSION /* xai_grok_version::IS_DEV_BUILD */ VERSION */
+const VERSION: &str = "local";
+const λVERSION: &str = "unrelated unicode identifier";
+const MESSAGE: &str = "xai_grok_version::VERSION {VERSION}";
+const RAW: &str = r###"xai_grok_version::VERSION /* {"###;
+const BYTES: &[u8] = b"xai_grok_version::VERSION";
+const RAW_BYTES: &[u8] = br##"xai_grok_version::VERSION"##;
+fn local<'a>(s: &'a str) { let c = '}'; let escaped = '\''; other::VERSION; s.VERSION; send(λVERSION); }
+'''
+        source = untouched + '''fn identity() {
+    send(xai_grok_version /* keep */ :: VERSION);
+    if !xai_grok_version::IS_DEV_BUILD { emit(xai_grok_tools::VERSION); }
+}
+'''
+        actual = self.normalize(source)
+        self.assertTrue(actual.startswith(untouched))
+        self.assertIn("xai_grok_version /* keep */ :: version()", actual)
+        self.assertIn("!xai_grok_version::is_dev_build()", actual)
+        self.assertIn("xai_grok_tools::version()", actual)
+
+    def test_precise_capture_bounds_are_not_imports(self):
+        source = 'fn f() -> impl Fn() + use<> { || { "OTEL_METRICS_INCLUDE_VERSION"; } }\n'
+        self.assertEqual(self.normalize(source), source)
+
+    def test_import_aliases_grouped_imports_and_comparisons(self):
+        source = '''use xai_grok_version::{VERSION as BUILD, IS_DEV_BUILD, installed};
+fn f() { if BUILD == "1.2.3" && !IS_DEV_BUILD { send(BUILD.to_string(), installed()); } }
+'''
+        self.assertEqual(self.normalize(source), '''use xai_grok_version::{version as BUILD, is_dev_build, installed};
+fn f() { if BUILD() == "1.2.3" && !is_dev_build() { send(BUILD().to_string(), installed()); } }
+''')
+
+    def test_nested_import_tree(self):
+        source = 'use xai_grok_pager::{client_identity::{PAGER_CLIENT_VERSION, PAGER_CLIENT_TYPE}, App};\nfn f() { send(PAGER_CLIENT_VERSION, PAGER_CLIENT_TYPE); }\n'
+        expected = source.replace("PAGER_CLIENT_VERSION,", "pager_client_version,", 1).replace("send(PAGER_CLIENT_VERSION,", "send(pager_client_version(),")
+        self.assertEqual(self.normalize(source), expected)
+
+    def test_real_upstream_alias_and_format_shapes(self):
+        # Shapes from a372cbc6's pager/client_identity.rs and shell/leader/mod.rs.
+        source = '''const CLIENT_LEADER_VERSION: &str = xai_grok_version::VERSION;
+fn test(binary_version: &str) {
+    let client: semver::Version = CLIENT_LEADER_VERSION.parse().expect("CLIENT_LEADER_VERSION parses as semver");
+    assert_eq!(client, binary_version, "leader version {binary_version:?} vs client {CLIENT_LEADER_VERSION}");
+}
+'''
+        actual = self.normalize(source, self.shell)
+        self.assertIn("use xai_grok_version::version as client_leader_version;", actual)
+        self.assertIn("client_leader_version().parse()", actual)
+        self.assertIn('"CLIENT_LEADER_VERSION parses as semver"', actual)
+        self.assertIn('"leader version {binary_version:?} vs client {CLIENT_LEADER_VERSION}", CLIENT_LEADER_VERSION = client_leader_version()', actual)
+        pager = self.normalize('pub const PAGER_CLIENT_VERSION: &str = xai_grok_version::VERSION;\nfn f() { send(PAGER_CLIENT_VERSION); }\n')
+        self.assertIn("pub use xai_grok_version::version as pager_client_version;", pager)
+        self.assertIn("send(pager_client_version())", pager)
+
+    def test_const_alias_through_private_import_requires_manual_migration(self):
+        source = "use xai_grok_version::IS_DEV_BUILD as DEV;\nconst IS_LOCAL: bool = DEV;\nfn f() { send(IS_LOCAL); }\n"
+        with self.assertRaises(sync.SyncError):
+            self.normalize(source)
+
+    def test_tools_reexport_and_leader_child_import(self):
+        self.assertEqual(self.normalize("pub use xai_grok_version::VERSION;\n", "crates/codegen/xai-grok-tools/src/lib.rs"), "pub use xai_grok_version::version;\n")
+        child = "use super::CLIENT_LEADER_VERSION;\nfn f() { send(CLIENT_LEADER_VERSION); }\n"
+        self.assertEqual(self.normalize(child, self.shell.replace("mod.rs", "client.rs")), "use super::client_leader_version;\nfn f() { send(client_leader_version()); }\n")
+
+    def test_format_captures_only_in_known_format_macros(self):
+        source = '''use xai_grok_version::VERSION;
+fn f() {
+    let ordinary = "{VERSION}";
+    let raw = r#"{VERSION}"#;
+    custom!("{VERSION}");
+    format!("{{VERSION}} {VERSION:?}");
+    format!(r#"{VERSION}"#);
+    format!("{VERSION}", VERSION = "explicit");
+    format!("{VERSION}",);
+    assert_eq!(1, 1, "{VERSION}");
+    write!(sink, "{VERSION}");
+}
+'''
+        actual = self.normalize(source)
+        for retained in ('let ordinary = "{VERSION}";', 'let raw = r#"{VERSION}"#;', 'custom!("{VERSION}");', 'format!("{VERSION}", VERSION = "explicit");'):
+            self.assertIn(retained, actual)
+        self.assertIn('format!("{{VERSION}} {VERSION:?}", VERSION = version())', actual)
+        self.assertIn('format!(r#"{VERSION}"#, VERSION = version())', actual)
+        self.assertIn('format!("{VERSION}", VERSION = version())', actual)
+        self.assertIn('write!(sink, "{VERSION}", VERSION = version())', actual)
+
+    def test_clean_merge_can_mix_existing_getter_import_with_new_legacy_reference(self):
+        source = '''use crate::client_identity::{pager_client_version, PAGER_CLIENT_TYPE};
+fn f() { send(pager_client_version(), PAGER_CLIENT_VERSION, PAGER_CLIENT_TYPE); }
+'''
+        self.assertEqual(self.normalize(source), source.replace(", PAGER_CLIENT_VERSION,", ", pager_client_version(),"))
+        source = "pub use xai_grok_version::version as pager_client_version;\nfn f() { send(PAGER_CLIENT_VERSION); }\n"
+        self.assertEqual(self.normalize(source), source.replace("send(PAGER_CLIENT_VERSION)", "send(pager_client_version())"))
+
+    def test_library_stamp_macros_are_scoped_to_application_identity(self):
+        source = '''fn f() { send(env! ( "CARGO_PKG_VERSION" ));
+    send(option_env!("GROK_VERSION").is_none(), option_env!("GROK_VERSION").is_some()); }
+'''
+        actual = self.normalize(source)
+        self.assertIn("send(xai_grok_version::version())", actual)
+        self.assertIn("send(xai_grok_version::is_dev_build(), !xai_grok_version::is_dev_build())", actual)
+        self.assertEqual(self.normalize(source, "crates/codegen/xai-grok-pager-bin/src/main.rs"), source)
+        independent = self.normalize(source, "crates/codegen/xai-grok-workspace/src/lib.rs")
+        self.assertIn('env! ( "CARGO_PKG_VERSION" )', independent)
+        self.assertIn("xai_grok_version::is_dev_build()", independent)
+
+    def test_shadowed_and_unsupported_bindings_fail_closed(self):
+        invalid = (
+            'use xai_grok_version::VERSION; fn f() { let VERSION = "local"; send(VERSION); }',
+            'use xai_grok_version::VERSION; fn f(VERSION: &str) { send(VERSION); }',
+            'use xai_grok_version::VERSION; mod other { use unrelated::VERSION; fn f() { send(VERSION); } }',
+            'use xai_grok_version::VERSION; fn f() { let version = || "wrong"; send(VERSION); }',
+            'use xai_grok_version as metadata; fn f() { send(metadata::VERSION); }',
+            'use xai_grok_version::*; fn f() { send(VERSION); }',
+            'static STAMP: &str = xai_grok_version::VERSION;',
+            'const STAMP: Option<&str> = Some(xai_grok_version::VERSION);',
+            'const STAMP /* keep this comment */: &str = xai_grok_version::VERSION;',
+        )
+        for source in invalid:
+            with self.subTest(source=source), self.assertRaises(sync.SyncError):
+                self.normalize(source)
+
+    def test_unsupported_or_non_rust_paths_are_not_rewritten(self):
+        source = "xai_grok_version::VERSION"
+        for path in ("README.md", "third_party/test.rs", "scripts/automation/test.rs",
+                     "crates/codegen/xai-grok-version/src/lib.rs"):
+            with self.subTest(path=path):
+                self.assertEqual(sync.normalize_runtime_version(path, source.encode()), source.encode())
+
+
 class RepositoryFixture(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -109,15 +315,16 @@ class RepositoryFixture(unittest.TestCase):
         self.temp.cleanup()
 
     def write_versions(self, version, dependency="1"):
-        for path in sync.VERSION_MANIFESTS:
-            self.write(path, f'[package]\nname = "x"\nversion = "{version}"\n\n[dependencies]\nfoo = "{dependency}"\n')
+        for package, path in zip(sync.VERSION_PACKAGES, sync.VERSION_MANIFESTS):
+            self.write(path, f'[package]\nname = "{package}"\nversion = "{version}"\n\n[dependencies]\nfoo = "{dependency}"\n')
         self.write("Cargo.lock", "".join(
             f'[[package]]\nname = "{name}"\nversion = "{version}"\n\n' for name in sync.VERSION_PACKAGES))
 
     def versions_at(self, ref):
-        found = set()
-        for path in sync.VERSION_FILES:
-            found.update(re.findall(r'^version = "([^"]+)"$', sync.git("show", f"{ref}:{path}").decode(), re.MULTILINE))
+        found = {}
+        for package, path in zip(sync.VERSION_PACKAGES, sync.VERSION_MANIFESTS):
+            _, match = sync.manifest_package(path, sync.git("show", f"{ref}:{path}"))
+            found[package] = match[1].decode()
         return found
 
     def write(self, path, content):
@@ -137,7 +344,6 @@ class RepositoryFixture(unittest.TestCase):
 
     def export(self):
         sync.export(SimpleNamespace(state=str(self.state_path), artifact=str(self.artifact_path)))
-
 
 
 class RepositoryTests(RepositoryFixture):
@@ -208,6 +414,93 @@ class RepositoryTests(RepositoryFixture):
         self.assertFalse(Path(".github/workflows/pwn.yml").exists())
 
 
+class RuntimeVersionMergeTests(RepositoryFixture):
+    path = "crates/codegen/xai-grok-pager/src/client_identity.rs"
+
+    def branches(self, ancestor, ours, theirs):
+        sync.git("checkout", "-q", "--detach", self.initial)
+        self.write(self.path, ancestor)
+        initial = self.commit("runtime ancestor")
+        self.write(self.path, theirs)
+        self.upstream = self.commit("upstream runtime change")
+        sync.git("checkout", "-q", "--detach", initial)
+        self.write(self.path, ours)
+        self.write("untouched.txt", "fork\n")
+        self.base = self.commit("fork runtime change")
+
+    def reconstruct_head(self):
+        args = SimpleNamespace(base=self.base, upstream=self.upstream, artifact=str(self.artifact_path))
+        with patch.object(sync, "fetch", return_value=(self.base, self.upstream)), patch.object(sync, "output") as outputs:
+            sync.reconstruct(args)
+        return outputs.call_args.kwargs["head"]
+
+    def test_clean_upstream_additions_are_normalized_and_reconstructed(self):
+        ancestor = "use crate::client_identity::PAGER_CLIENT_VERSION;\n\n\nfn existing() {}\n"
+        ours = ancestor.replace("PAGER_CLIENT_VERSION", "pager_client_version")
+        theirs = ancestor + "fn added() { send(PAGER_CLIENT_VERSION); }\n"
+        self.branches(ancestor, ours, theirs)
+        state = self.start()
+        self.assertEqual(state["conflicts"], {})
+        expected = ours + "fn added() { send(pager_client_version()); }\n"
+        self.assertEqual(Path(self.path).read_text(), expected)
+        self.export()
+        sync.git("merge", "--abort")
+        head = self.reconstruct_head()
+        self.assertEqual(sync.git("show", f"{head}:{self.path}").decode(), expected)
+        self.assertEqual(sync.git("show", f"{head}:untouched.txt"), b"fork\n")
+        self.assertEqual(sync.git("show", "-s", "--format=%P", head).decode().strip().split(), [self.base, self.upstream])
+
+    def test_three_way_version_api_only_conflict_resolves_without_ai(self):
+        ancestor = "fn f() { send(xai_grok_version::VERSION); }\n"
+        ours = ancestor.replace("::VERSION", "::version()")
+        theirs = ancestor.replace("send(", "emit(")
+        self.branches(ancestor, ours, theirs)
+        state = self.start()
+        self.assertEqual(state["conflicts"], {})
+        expected = "fn f() { emit(xai_grok_version::version()); }\n"
+        self.assertEqual(Path(self.path).read_text(), expected)
+        self.export()
+        sync.git("merge", "--abort")
+        head = self.reconstruct_head()
+        self.assertEqual(sync.git("show", f"{head}:{self.path}").decode(), expected)
+
+    def test_three_way_unrelated_semantic_conflict_stays_for_ai(self):
+        ancestor = 'fn f() { send("base", xai_grok_version::VERSION); }\n'
+        ours = ancestor.replace('"base"', '"fork"').replace("::VERSION", "::version()")
+        theirs = ancestor.replace('"base"', '"upstream"')
+        self.branches(ancestor, ours, theirs)
+        state = self.start()
+        self.assertEqual(set(state["conflicts"]), {self.path})
+        # A model may reintroduce the legacy API. The trusted reconstruction
+        # repeats the transform after exact path/SHA validation of the artifact.
+        resolved = ancestor.replace('"base"', '"resolved"')
+        self.write(self.path, resolved)
+        self.export()
+        sync.git("merge", "--abort")
+        head = self.reconstruct_head()
+        self.assertEqual(sync.git("show", f"{head}:{self.path}").decode(), resolved.replace("::VERSION", "::version()"))
+        self.assertEqual(sync.git("show", f"{head}:untouched.txt"), b"fork\n")
+
+    def test_reconstruction_rejects_ambiguous_legacy_binding_before_commit(self):
+        self.branches('fn f() { send("base"); }\n', 'fn f() { send("ours"); }\n', 'fn f() { send("theirs"); }\n')
+        self.start()
+        self.write(self.path, 'use xai_grok_version::VERSION; fn f() { let VERSION = "shadow"; send(VERSION); }\n')
+        self.export()
+        sync.git("merge", "--abort")
+        with self.assertRaises(sync.SyncError):
+            self.reconstruct_head()
+        self.assertEqual(sync.git("rev-parse", "HEAD").decode().strip(), self.base)
+
+    def test_runtime_migration_cannot_enlarge_ai_resolution_paths(self):
+        ancestor = "fn f() { send(xai_grok_version::VERSION); }\n"
+        self.branches(ancestor, ancestor.replace("::VERSION", "::version()"), ancestor.replace("send(", "emit("))
+        state = self.start()
+        self.assertEqual(state["conflicts"], {})
+        self.write(self.path, "fn injected() {}\n")
+        with self.assertRaises(sync.SyncError):
+            self.export()
+
+
 class PublicationTests(unittest.TestCase):
     def args(self):
         return SimpleNamespace(repo="owner/fork", base="a" * 40, head="b" * 40,
@@ -229,7 +522,9 @@ class PublicationTests(unittest.TestCase):
             return {"tree": {"sha": args.tree}}
         if "/contents/" in endpoint:
             self.assertTrue(endpoint.endswith("?ref=" + "d" * 40))
-            return {"encoding": "base64", "content": base64.b64encode(b'version = "1.2.3"\n').decode()}
+            self.assertIn("/xai-grok-pager-bin/Cargo.toml?", endpoint)
+            return {"encoding": "base64", "content": base64.encodebytes(
+                b'[package]\nname = "xai-grok-pager-bin"\nversion = "1.2.3"\n').decode()}
         if "/git/matching-refs/" in endpoint:
             return self.tags
         if endpoint.endswith("/dispatches"):
@@ -253,6 +548,20 @@ class PublicationTests(unittest.TestCase):
             sync.merge_release(self.args())
         self.assertTrue(self.merged)
         self.assertEqual(self.dispatched, [])
+
+    def test_invalid_executable_version_or_identity_never_dispatches(self):
+        for text in ('[package]\nname = "xai-grok-pager-bin"\n',
+                     '[package]\nname = "renamed"\nversion = "1.2.3"\n',
+                     '[package]\nname = "xai-grok-pager-bin"\nversion = "1.2.3-alpha.1"\n'):
+            self.setUp()
+            def changed(endpoint, *args, **kwargs):
+                if "/contents/" in endpoint:
+                    return {"encoding": "base64", "content": base64.b64encode(text.encode()).decode()}
+                return self.responses(endpoint, *args, **kwargs)
+            with self.subTest(text=text), patch.object(sync, "release_guard"), patch.object(
+                    sync, "api", side_effect=changed), self.assertRaises(sync.SyncError):
+                sync.merge_release(self.args())
+            self.assertEqual(self.dispatched, [])
 
     def test_merge_tree_mismatch_never_dispatches(self):
         def changed(endpoint, *args, **kwargs):
@@ -279,13 +588,21 @@ class PublicationTests(unittest.TestCase):
         with patch.object(sync, "api", return_value=pages), self.assertRaises(sync.SyncError):
             sync.release_guard("owner/fork")
 
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ForkVersionTests(RepositoryFixture):
     """main numbers its own releases; a sync always lands main's next patch."""
+
+    def assert_versions(self, ref, executable):
+        expected = {p: "0.0.0" for p in sync.INTERNAL_PACKAGES}
+        expected[sync.BINARY_PACKAGE] = executable
+        self.assertEqual(self.versions_at(ref), expected)
+        lock = sync.git("show", f"{ref}:Cargo.lock")
+        actual = {}
+        for match in sync.LOCK_PACKAGE.finditer(lock):
+            name = sync.PACKAGE_NAME.search(match[0])
+            version = sync.MANIFEST_VERSION.search(match[0])
+            if name and name[1].decode() in expected:
+                actual[name[1].decode()] = version[1].decode()
+        self.assertEqual(actual, expected)
 
     def reconstruct_head(self):
         args = SimpleNamespace(base=self.base, upstream=self.upstream, artifact=str(self.artifact_path))
@@ -309,7 +626,7 @@ class ForkVersionTests(RepositoryFixture):
         self.export()
         sync.git("merge", "--abort")
         head = self.reconstruct_head()
-        self.assertEqual(self.versions_at(head), {"1.0.51"})
+        self.assert_versions(head, "1.0.51")
         manifest = sync.git("show", f"{head}:{sync.VERSION_MANIFESTS[0]}").decode()
         self.assertIn('foo = "2"', manifest)
 
@@ -321,24 +638,24 @@ class ForkVersionTests(RepositoryFixture):
         self.assertEqual(state["conflicts"], {})
         sync.json_write(str(self.artifact_path), {"schema": 1, "base": self.base, "upstream": self.upstream, "files": {}})
         sync.git("merge", "--abort")
-        self.assertEqual(self.versions_at(self.reconstruct_head()), {"1.0.46"})
+        self.assert_versions(self.reconstruct_head(), "1.0.46")
 
     def test_ai_resolution_cannot_choose_the_version(self):
         sync.git("checkout", "-q", "--detach", self.upstream)
         path = sync.VERSION_MANIFESTS[0]
-        self.write(path, '[package]\nname = "x"\nversion = "1.0.46"\n\n[dependencies]\nfoo = "upstream"\n')
+        self.write(path, '[package]\nname = "xai-grok-pager-bin"\nversion = "1.0.46"\n\n[dependencies]\nfoo = "upstream"\n')
         self.upstream = self.commit("upstream dependency")
         sync.git("checkout", "-q", "--detach", self.base)
-        self.write(path, '[package]\nname = "x"\nversion = "1.0.45"\n\n[dependencies]\nfoo = "fork"\n')
+        self.write(path, '[package]\nname = "xai-grok-pager-bin"\nversion = "1.0.45"\n\n[dependencies]\nfoo = "fork"\n')
         self.base = self.commit("fork dependency")
         state = self.start()
         self.assertIn(path, state["conflicts"])
         self.write("src/main.rs", "resolved\n")
-        self.write(path, '[package]\nname = "x"\nversion = "9.9.9"\n\n[dependencies]\nfoo = "both"\n')
+        self.write(path, '[package]\nname = "xai-grok-pager-bin"\nversion = "9.9.9"\n\n[dependencies]\nfoo = "both"\n')
         self.export()
         sync.git("merge", "--abort")
         head = self.reconstruct_head()
-        self.assertEqual(self.versions_at(head), {"1.0.46"})
+        self.assert_versions(head, "1.0.46")
         self.assertIn('foo = "both"', sync.git("show", f"{head}:{path}").decode())
 
     def test_prerelease_main_version_fails_closed(self):
@@ -348,3 +665,101 @@ class ForkVersionTests(RepositoryFixture):
         with self.assertRaises(sync.SyncError):
             self.start()
 
+
+    def test_upstream_far_ahead_does_not_choose_fork_release_number(self):
+        self.rebuild("99.50.70", "1.0.50")
+        self.start()
+        self.write("src/main.rs", "resolved\n")
+        self.export()
+        sync.git("merge", "--abort")
+        self.assert_versions(self.reconstruct_head(), "1.0.51")
+
+    def test_version_conflicts_alone_resolve_without_ai(self):
+        self.rebuild("99.50.70", "1.0.50")
+        self.write("src/main.rs", "upstream\n")
+        self.base = self.commit("same source")
+        state = self.start()
+        self.assertEqual(state["conflicts"], {})
+        self.export()
+        sync.git("merge", "--abort")
+        self.assert_versions(self.reconstruct_head(), "1.0.51")
+
+    def test_internal_dependency_conflict_stays_and_ai_cannot_change_identity(self):
+        package = sync.INTERNAL_PACKAGES[0]
+        path = sync.VERSION_MANIFESTS[1]
+        sync.git("checkout", "-q", "--detach", self.upstream)
+        self.write(path, f'[package]\nname = "{package}"\nversion = "10.0.0"\n\n[dependencies]\nfoo = "upstream"\n')
+        self.upstream = self.commit("upstream internal dependency")
+        sync.git("checkout", "-q", "--detach", self.base)
+        self.write(path, f'[package]\nname = "{package}"\nversion = "0.0.0"\n\n[dependencies]\nfoo = "fork"\n')
+        self.base = self.commit("fork internal dependency")
+        state = self.start()
+        self.assertIn(path, state["conflicts"])
+        self.write("src/main.rs", "resolved\n")
+        self.write(path, f'[package]\nname = "{package}"\nversion = "99.9.9"\n\n[dependencies]\nfoo = "both"\n')
+        self.export()
+        sync.git("merge", "--abort")
+        head = self.reconstruct_head()
+        self.assert_versions(head, "1.0.46")
+        self.assertIn(b'foo = "both"', sync.git("show", f"{head}:{path}"))
+
+    def test_lock_dependency_conflict_stays_and_resolution_versions_are_overridden(self):
+        def lock_with_dependency(value):
+            raw = sync.git("show", f"{self.initial}:Cargo.lock")
+            return raw.replace(b'version = "1.0.45"\n',
+                               b'version = "99.9.9"\ndependencies = ["' + value + b'"]\n', 1)
+        sync.git("checkout", "-q", "--detach", self.upstream)
+        Path("Cargo.lock").write_bytes(lock_with_dependency(b"upstream"))
+        self.upstream = self.commit("upstream lock dependency")
+        sync.git("checkout", "-q", "--detach", self.base)
+        Path("Cargo.lock").write_bytes(lock_with_dependency(b"fork"))
+        self.base = self.commit("fork lock dependency")
+        state = self.start()
+        self.assertIn("Cargo.lock", state["conflicts"])
+        self.write("src/main.rs", "resolved\n")
+        Path("Cargo.lock").write_bytes(lock_with_dependency(b"both"))
+        self.export()
+        sync.git("merge", "--abort")
+        head = self.reconstruct_head()
+        self.assert_versions(head, "1.0.46")
+        self.assertIn(b'dependencies = ["both"]', sync.git("show", f"{head}:Cargo.lock"))
+
+    def test_missing_upstream_manifest_version_fails_closed(self):
+        sync.git("checkout", "-q", "--detach", self.upstream)
+        path = sync.VERSION_MANIFESTS[1]
+        self.write(path, f'[package]\nname = "{sync.INTERNAL_PACKAGES[0]}"\n')
+        self.upstream = self.commit("missing version")
+        sync.git("checkout", "-q", "--detach", self.base)
+        with self.assertRaises(sync.SyncError):
+            self.start()
+
+    def test_missing_upstream_lock_package_fails_closed(self):
+        sync.git("checkout", "-q", "--detach", self.upstream)
+        lock = Path("Cargo.lock")
+        blocks = list(sync.LOCK_PACKAGE.finditer(lock.read_bytes()))
+        lock.write_bytes(b"".join(m[0] for m in blocks[1:]))
+        self.upstream = self.commit("missing lock package")
+        sync.git("checkout", "-q", "--detach", self.base)
+        with self.assertRaises(sync.SyncError):
+            self.start()
+
+    def test_symlink_or_executable_version_file_is_rejected(self):
+        path = sync.VERSION_MANIFESTS[1]
+        for symlink in (False, True):
+            with self.subTest(symlink=symlink):
+                sync.git("checkout", "-q", "--detach", self.upstream)
+                file = Path(path)
+                if symlink:
+                    file.unlink()
+                    file.symlink_to("../../../untouched.txt")
+                else:
+                    file.chmod(0o755)
+                upstream = self.commit("unsupported version file mode")
+                sync.git("checkout", "-q", "--detach", self.base)
+                with self.assertRaises(sync.SyncError):
+                    sync.begin(self.base, upstream)
+                sync.git("merge", "--abort")
+
+
+if __name__ == "__main__":
+    unittest.main()

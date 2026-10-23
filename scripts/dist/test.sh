@@ -18,6 +18,7 @@ cleanup() {
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/grok-dist-test.XXXXXX")"
 trap cleanup EXIT
 
+node "$HERE/release-version.test.mjs"
 node "$HERE/policy.test.mjs"
 node "$HERE/artifact-format.test.mjs"
 if node "$HERE/manifest.mjs" \

@@ -5,7 +5,7 @@ const BUILTIN_FILES: &[(&str, &str)] = &[("README.md", include_str!("../README.m
 /// Extract built-in metadata files to `~/.grok/` on startup.
 /// User skills under `~/.grok/skills/` are never managed here. Platform skills are delivered separately through the bundled skill cache.
 pub fn extract_builtin_files(grok_home: &std::path::Path) {
-    let version = xai_grok_version::VERSION;
+    let version = xai_grok_version::version();
     let marker = grok_home.join(".metadata_version");
 
     if let Ok(existing) = std::fs::read_to_string(&marker)
@@ -224,7 +224,7 @@ mod tests {
         let home = tmp.path();
         std::fs::create_dir_all(home.join("skills/check")).unwrap();
         std::fs::write(home.join("skills/check/SKILL.md"), "custom check").unwrap();
-        std::fs::write(home.join(".metadata_version"), xai_grok_version::VERSION).unwrap();
+        std::fs::write(home.join(".metadata_version"), xai_grok_version::version()).unwrap();
 
         extract_builtin_files(home);
 

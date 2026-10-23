@@ -181,9 +181,10 @@ and payload checks and failing if any verification fails.
 - `vX.Y.Z-alpha.N`, `vX.Y.Z-beta.N`, and `vX.Y.Z-rc.N` are the testing channel
   and publish as prereleases through the `release-testing` environment.
 
-The tag must exactly match the lockstepped versions in the pager binary,
-pager, shell, and version crates. A manual run with `publish=false` is a
-packaging dry run. A publishing run is accepted only when the workflow itself
+The tag must exactly match the `xai-grok-pager-bin` package version. The pager,
+shell, and version library packages remain at `0.0.0` on both branches. The
+shared `scripts/dist/release-version.mjs` gate checks this contract and all four
+matching lockfile entries. A manual run with `publish=false` is a packaging dry run. A publishing run is accepted only when the workflow itself
 is running on the matching existing tag and commit.
 
 The release workflow calls the same CI workflow used by pull requests while
@@ -271,23 +272,33 @@ performance; startup measurements are not proof of equivalence for every
 workload. The generated root `Cargo.toml` is unchanged. `cargo --timings` reports
 are uploaded separately from release payloads.
 
-The fork numbers its own releases; the four lockstepped package versions do
-not track upstream. `scripts/automation/upstream_sync.py` rewrites them during
-every sync to the next patch above `main`'s version, resolving a conflict that
-only differs in version lines and overriding any version in an AI resolution,
-so tags never collide with upstream's line. `main` publishes stable `X.Y.Z`
-versions. The `alpha` branch carries features under test at the next stable
-patch with `-alpha.N`; `Release` marks those tags as prereleases in the
-`release-testing` environment, and only clients on the alpha update channel
-install them. Promotion is an owner-approved PR from `alpha` to `main` that
-sets the next stable patch. After each stable release, merge `main` back into
-`alpha` and reset it to the following patch's `-alpha.1`, because a stable
-`X.Y.Z` sorts above every `X.Y.Z-alpha.N`.
+The fork numbers its releases independently of upstream. Upstream synchronization
+advances the binary to the next patch above the fork's current stable version;
+it does not adopt upstream's potentially colliding or far-ahead version. This
+is the policy already present on alpha, now shared by main's sync automation.
+Alpha versions use the next stable patch with `-alpha.N`. Only the binary's
+manifest and matching lockfile entry advance for a release. Sync normalizes
+the three library versions to `0.0.0` before resolving version-only conflicts;
+other dependency/source conflicts still require the normal resolution process.
+
+The binary supplies runtime version metadata to the libraries before startup.
+Release version changes therefore do not change library package identities or
+their compile-time environment dependencies. `--version`, updater comparisons,
+HTTP client headers, leader compatibility and trust checks use that injected
+identity. Ordinary source changes, dependency/toolchain updates, uncacheable
+compiler work, final linking, and cache downloads can still take time: a
+same-commit cache hit is not evidence that a new-version release is fast.
+
+The alpha channel publishes prereleases through `release-testing`; stable users
+stay on main releases. Promotion is an owner-approved alpha-to-main PR that sets
+the next stable binary patch. After a stable release, merge main back into alpha
+and set only the binary to the following patch's `-alpha.1`, which sorts above
+that stable release.
 
 To publish a version, manually dispatch `Publish release (warm, tag, Release)`
 from `main` or `alpha` after its required CI checks pass. Ordinary pushes and pull-request
-merges never create a tag. The publication workflow checks the four lockstepped
-package versions and whether their version tag already exists. For a new
+merges never create a tag. The publication workflow checks the binary version,
+fixed library versions, lockfile consistency and whether the release tag already exists. For a new
 version, it calls `Warm release build cache` with the exact requested main
 commit. The six target jobs build that commit and save each final
 executable, its build attestation, and the exact checksum-pinned bundled-tool
@@ -406,8 +417,8 @@ The owner-authorized `Sync upstream and release validated versions` workflow
 runs daily at 15:23 UTC (23:23 Singapore) or by manual dispatch from `main`.
 It pins the fork and official upstream commits, attempts a normal merge, opens
 a PR, invokes the full reusable CI on its exact candidate, and merges only
-after every job succeeds. If the four lockstepped versions have no existing
-tag, it dispatches the existing publication coordinator with `expected_commit`.
+after every job succeeds. If the binary's release version has no existing tag,
+it dispatches the existing publication coordinator with `expected_commit`.
 Ordinary PR merges still do not publish, and stable environment approval still
 applies. An active publication blocks synchronization from advancing `main`.
 

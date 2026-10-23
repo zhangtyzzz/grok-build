@@ -491,7 +491,7 @@ async fn build_report(cwd: &Path) -> InspectReport {
     let mcp_config_problems = crate::util::config::load_mcp_server_problems_with_project(cwd);
 
     InspectReport {
-        grok_version: xai_grok_version::VERSION.to_string(),
+        grok_version: xai_grok_version::version().to_string(),
         channel: crate::util::config::channel_name_from_cache()
             .unwrap_or("unknown")
             .to_string(),

@@ -332,7 +332,7 @@ async fn setup_persistent_server_with_agent(
             ready_rx,
             watch::channel(false).0,
             shutdown_tx,
-            None, // use LEADER_VERSION constant
+            None, // use the runtime registration version
             control_state,
         )
         .await;
@@ -469,7 +469,7 @@ async fn client_registration_flow() {
             assert_eq!(leader_protocol_version, Some(LEADER_PROTOCOL_VERSION));
             assert_eq!(
                 leader_binary_version.as_deref(),
-                Some(env!("CARGO_PKG_VERSION"))
+                Some(xai_grok_version::version())
             );
             let capabilities = leader_capabilities.expect("leader capabilities metadata");
             assert!(capabilities.control_v1);
@@ -2217,6 +2217,14 @@ fn inject_client_identity_preserves_existing_meta() {
 // ── make_version_mismatch_notification unit tests ─────────────────────────
 
 #[test]
+fn unstamped_leader_skips_version_mismatch_notifications() {
+    // Library tests do not initialize a shipping executable identity.
+    assert!(xai_grok_version::is_dev_build());
+    assert_eq!(registration_version(), "unknown");
+    assert!(make_version_mismatch_notification("1.2.3", registration_version()).is_none());
+}
+
+#[test]
 fn version_mismatch_notification_contains_correct_fields() {
     let payload = make_version_mismatch_notification("0.1.157", "0.1.150")
         .expect("should produce notification");
@@ -2462,7 +2470,7 @@ async fn client_count_returns_to_zero_after_all_disconnect() {
             watch::channel(true).1,
             watch::channel(false).0,
             watch::channel(super::super::protocol::ShutdownReason::Manual).0,
-            None, // use LEADER_VERSION constant
+            None, // use the runtime registration version
             control_state,
         )
         .await;
@@ -2537,7 +2545,7 @@ async fn fallback_routing_forwards_notifications_but_drops_responses() {
             watch::channel(true).1,
             watch::channel(false).0,
             watch::channel(super::super::protocol::ShutdownReason::Manual).0,
-            None, // use LEADER_VERSION constant
+            None, // use the runtime registration version
             control_state,
         )
         .await;
@@ -2804,7 +2812,7 @@ async fn server_sends_shutting_down_before_shutdown() {
             watch::channel(true).1,
             watch::channel(false).0,
             watch::channel(super::super::protocol::ShutdownReason::Manual).0,
-            None, // use LEADER_VERSION constant
+            None, // use the runtime registration version
             control_state,
         )
         .await;
@@ -3071,7 +3079,7 @@ async fn agent_busy_clears_when_client_disconnects_mid_request() {
             watch::channel(true).1,
             watch::channel(false).0,
             watch::channel(super::super::protocol::ShutdownReason::Manual).0,
-            None, // use LEADER_VERSION constant
+            None, // use the runtime registration version
             control_state,
         )
         .await;
@@ -3235,7 +3243,7 @@ async fn evict_sessions_notification_on_disconnect() {
             watch::channel(true).1,
             watch::channel(false).0,
             watch::channel(super::super::protocol::ShutdownReason::Manual).0,
-            None, // use LEADER_VERSION constant
+            None, // use the runtime registration version
             control_state,
         )
         .await;
@@ -3319,7 +3327,7 @@ async fn no_eviction_when_client_has_no_sessions() {
             watch::channel(true).1,
             watch::channel(false).0,
             watch::channel(super::super::protocol::ShutdownReason::Manual).0,
-            None, // use LEADER_VERSION constant
+            None, // use the runtime registration version
             control_state,
         )
         .await;

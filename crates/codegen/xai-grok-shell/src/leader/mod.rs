@@ -94,7 +94,7 @@ const SPAWN_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// absence in argv marks an externally supervised daemon (never reclaim).
 const RELAY_ON_DEMAND_FLAG: &str = "--relay-on-demand";
 /// Same source the leader reports, so adoption compares versions like-for-like.
-const CLIENT_LEADER_VERSION: &str = xai_grok_version::VERSION;
+use xai_grok_version::version as client_leader_version;
 /// Max wait for an evicted leader to exit before force-killing (relaunch drain ~5s).
 const EVICT_WAIT_TIMEOUT: Duration = Duration::from_secs(8);
 /// How long the SAME live grok flock-holder may stay unconnectable before
@@ -584,7 +584,7 @@ pub async fn kill_stale_reachable_leaders(reason: &'static str) {
                             "pid": *pid,
                             "dead_leader_ver": dead_leader_ver,
                             "reason": reason,
-                            "killer_ver": xai_grok_version::VERSION,
+                            "killer_ver": xai_grok_version::version(),
                         })),
                     );
                 }
@@ -1090,7 +1090,7 @@ async fn wait_for_pid_exit(pid: u32, timeout: Duration) {
 fn should_evict_conn(conn: &LeaderConnection) -> bool {
     should_evict(
         conn.registration().leader_binary_version.as_deref(),
-        CLIENT_LEADER_VERSION,
+        client_leader_version(),
     )
 }
 /// Ask a stale leader to vacate so it releases the flock: graceful `RelaunchForUpdate` if relaunch-capable (the leader dedupes concurrent requests
@@ -1101,7 +1101,7 @@ async fn request_leader_vacate(conn: &LeaderConnection, pid: Option<u32>) {
     let (method, outcome) = if conn.registration().supports_relaunch() {
         let outcome = match conn
             .send_control(ControlCommand::RelaunchForUpdate {
-                to_version: CLIENT_LEADER_VERSION.to_string(),
+                to_version: client_leader_version().to_string(),
             })
             .await
         {
@@ -1135,7 +1135,7 @@ async fn request_leader_vacate(conn: &LeaderConnection, pid: Option<u32>) {
             "outcome": outcome,
             "leader_pid": pid,
             "leader_version": leader_version,
-            "client_version": CLIENT_LEADER_VERSION,
+            "client_version": client_leader_version(),
         })),
     );
 }
@@ -1173,7 +1173,7 @@ async fn evict_leader(conn: LeaderConnection, lock: &LeaderLock) {
             "outcome": outcome,
             "leader_pid": pid,
             "leader_version": leader_version,
-            "client_version": CLIENT_LEADER_VERSION,
+            "client_version": client_leader_version(),
             "waited_ms": wait_start.elapsed().as_millis() as u64,
         })),
     );
@@ -1365,7 +1365,7 @@ async fn evict_zombie_leader(pid: u32, sock_path: &Path, waited: Duration) {
             "zombie_pid": pid,
             "socket_path": sock_path.display().to_string(),
             "outcome": outcome,
-            "client_version": CLIENT_LEADER_VERSION,
+            "client_version": client_leader_version(),
             "waited_ms": waited.as_millis() as u64,
         })),
     );
@@ -1447,7 +1447,7 @@ pub async fn connect_or_spawn(
                                     .registration()
                                     .leader_binary_version
                                     .as_deref(),
-                                "client_version": CLIENT_LEADER_VERSION,
+                                "client_version": client_leader_version(),
                                 "elapsed_ms": elapsed_ms,
                             })),
                         );
@@ -1494,7 +1494,7 @@ pub async fn connect_or_spawn(
                         None,
                         Some(serde_json::json!({
                             "reason": "version_floor",
-                            "client_version": CLIENT_LEADER_VERSION,
+                            "client_version": client_leader_version(),
                             "elapsed_ms": elapsed_ms,
                         })),
                     );
@@ -2101,12 +2101,12 @@ mod tests {
         fake.cancel();
     }
     /// Version-floor decision against a live registration: only a strictly older parseable leader version trips eviction; dev/`unknown` and missing versions are kept (anti-thrash, both directions).
-    /// Fake versions are derived RELATIVE to the runtime `CLIENT_LEADER_VERSION` (cargo builds see the crate version, bazel fastbuild sees the unstamped `0.0.0`), with each expectation following structurally from how the case was constructed, never from re-running the comparison under test.
+    /// Fake versions are derived RELATIVE to the runtime `client_leader_version` (the binary injects its release version; standalone tests use `0.0.0-dev`), with each expectation following structurally from how the case was constructed, never from re-running the comparison under test.
     #[tokio::test]
     async fn should_evict_conn_decides_from_live_fake_registrations() {
-        let client: semver::Version = CLIENT_LEADER_VERSION
+        let client: semver::Version = client_leader_version()
             .parse()
-            .expect("CLIENT_LEADER_VERSION parses as semver");
+            .expect("client_leader_version() parses as semver");
         let newer = format!("{}.{}.{}", client.major, client.minor, client.patch + 1);
         let older = if client.patch > 0 {
             Some(format!(
@@ -2129,7 +2129,7 @@ mod tests {
         };
         let mut cases: Vec<(Option<String>, bool)> = vec![
             // Same version as this client: keep
-            (Some(CLIENT_LEADER_VERSION.to_string()), false),
+            (Some(client_leader_version().to_string()), false),
             // Newer than this client: keep (never downgrade)
             (Some(newer), false),
             // Dev build reports "unknown": keep (unparseable is left alone)
@@ -2166,7 +2166,8 @@ mod tests {
             assert_eq!(
                 should_evict_conn(&conn),
                 expect_evict,
-                "leader version {binary_version:?} vs client {CLIENT_LEADER_VERSION}"
+                "leader version {binary_version:?} vs client {}",
+                client_leader_version()
             );
             drop(conn);
             fake.cancel();
@@ -2190,7 +2191,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             conn.registration().leader_binary_version.as_deref(),
-            Some(CLIENT_LEADER_VERSION)
+            Some(client_leader_version())
         );
         assert!(!should_evict_conn(&conn));
         fake.cancel();

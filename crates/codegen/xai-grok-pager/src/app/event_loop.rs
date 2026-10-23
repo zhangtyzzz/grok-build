@@ -12,7 +12,7 @@ use super::session_load_barrier::{
 use super::{PagerArgs, PagerTerminal, acp_handler, dispatch, effects};
 use crate::app::reader_thread::ReaderThread;
 use crate::appearance::ConfigWatcher;
-use crate::client_identity::{PAGER_CLIENT_TYPE, PAGER_CLIENT_VERSION};
+use crate::client_identity::{PAGER_CLIENT_TYPE, pager_client_version};
 use crate::render::draw::{EscapeWriter, WriterDrain, WriterEvent};
 use crate::theme::system_appearance::{self, SystemAppearanceWatcher};
 use crate::theme::{Theme, ThemeKind, cache as theme_cache};
@@ -2730,7 +2730,7 @@ pub(crate) async fn run(
                                         .meta(Some(echo_meta)),
                                 ).meta(serde_json::json!({
                                         "clientType": PAGER_CLIENT_TYPE,
-                                        "clientVersion": PAGER_CLIENT_VERSION,
+                                        "clientVersion": pager_client_version(),
                                     }).as_object().cloned());
                                 if let Err(e) = acp_send(init_req, &acp_tx).await {
                                     tracing::error!(error = %e, "reconnect: re-initialize failed");

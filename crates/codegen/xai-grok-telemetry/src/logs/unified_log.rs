@@ -17,7 +17,7 @@ use xai_grok_config::grok_home;
 /// Set once at startup via [`set_version()`]; entries emitted before that get `None`.
 static VERSION: OnceLock<String> = OnceLock::new();
 
-/// Register the binary version (e.g. shell's `CARGO_PKG_VERSION`).
+/// Register the running executable's version.
 /// Call once at startup; subsequent calls are no-ops.
 pub fn set_version(ver: &str) {
     let _ = VERSION.set(ver.to_owned());

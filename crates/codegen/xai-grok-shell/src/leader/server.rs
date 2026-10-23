@@ -3,12 +3,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-/// The binary version of the currently running leader process. Registration compares it against each client's `ClientCapabilities::client_version` to catch mismatches early.
-/// A mismatch produces a structured ACP notification. In development builds where `VERSION_WITH_COMMIT` is not set, this is `"unknown"`. Version-mismatch detection is then disabled (no notification sent).
-const LEADER_VERSION: &str = match option_env!("VERSION_WITH_COMMIT") {
-    Some(v) => v,
-    None => "unknown",
-};
+/// Registration compares plain release versions with `ClientCapabilities::client_version`.
+/// Unstamped source builds keep mismatch notifications disabled, as before.
+fn registration_version() -> &'static str {
+    if xai_grok_version::is_dev_build() {
+        "unknown"
+    } else {
+        xai_grok_version::version()
+    }
+}
 use super::protocol::{
     ClientCapabilities, ClientId, ClientMessage, ClientMode, ControlCommand, ControlPayload,
     FrameReader, InternalMethod, LEADER_PROTOCOL_VERSION, LeaderCapabilities, ProtocolError,
@@ -1624,7 +1627,7 @@ pub async fn run_leader_server(
                             }
                         }
                         let effective_leader_version =
-                            leader_version_override.unwrap_or(LEADER_VERSION);
+                            leader_version_override.unwrap_or_else(registration_version);
                         if let Some(ref cv) = client.capabilities.client_version
                             && let Some(payload) = make_version_mismatch_notification(
                                 cv.as_str(),
@@ -2571,7 +2574,7 @@ fn default_test_control_state(socket_path: &Path) -> LeaderServerControlState {
         socket_path: socket_path.to_path_buf(),
         lock_path: socket_path.with_extension("lock"),
         ws_url_suffix: String::new(),
-        leader_binary_version: env!("CARGO_PKG_VERSION").to_string(),
+        leader_binary_version: xai_grok_version::version().to_string(),
     })
 }
 pub async fn spawn_leader_server(socket_path: PathBuf) -> Result<ServerHandle, ServerError> {
