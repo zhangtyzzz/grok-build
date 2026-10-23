@@ -19,10 +19,12 @@ pub struct BuildInfo {
 
 // Standalone library tests and auxiliary tools have no shipping binary identity.
 // Reading this fallback must not prevent a later composition-root initialization.
+// Dev-build mode relaxes safety checks such as folder trust, so an optimized binary
+// that forgot to initialize fails closed instead of silently trusting every folder.
 static UNINITIALIZED_BUILD: BuildInfo = BuildInfo {
     version: "0.0.0-dev",
     full_version: "0.0.0-dev",
-    is_dev_build: true,
+    is_dev_build: cfg!(debug_assertions),
 };
 static BUILD_INFO: OnceLock<BuildInfo> = OnceLock::new();
 
@@ -61,7 +63,7 @@ pub fn version() -> &'static str {
     build_info_in(&BUILD_INFO).version
 }
 
-/// True for an unstamped source build or an uninitialized standalone library harness.
+/// True for an unstamped source build or an uninitialized debug-profile harness.
 pub fn is_dev_build() -> bool {
     build_info_in(&BUILD_INFO).is_dev_build
 }
@@ -111,6 +113,11 @@ mod tests {
         assert!(state.get().is_none());
         initialize_in(&state, RELEASE).unwrap();
         assert_eq!(build_info_in(&state), &RELEASE);
+    }
+
+    #[test]
+    fn uninitialized_optimized_binary_is_not_a_dev_build() {
+        assert_eq!(UNINITIALIZED_BUILD.is_dev_build, cfg!(debug_assertions));
     }
 
     #[test]

@@ -10,6 +10,11 @@ on:
       - Publish release (warm, tag, Release)
     types: [completed]
     branches: [main, alpha]
+  # Automatic alpha warm runs are dispatched with GITHUB_TOKEN, and GitHub does
+  # not raise workflow_run for those, so their ~1.5 GB of per-commit binaries
+  # would otherwise wait for the next human-triggered run.
+  schedule:
+    - cron: "41 */2 * * *"
 
 permissions: {}
 
@@ -21,6 +26,7 @@ jobs:
   prune:
     if: >-
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event != 'pull_request')
     runs-on: ubuntu-22.04
