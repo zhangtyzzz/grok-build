@@ -50,6 +50,10 @@ rules.
   following patch's `-alpha.1`, so alpha builds always sort above stable.
 - Ordinary pushes and pull-request merges must not publish a release. See
   `docs/release-distribution.md` for recovery and verification details.
+- Successful alpha branch CI may trigger exact-commit prewarming only; it must
+  not create tags, publish releases, or approve environments. The dispatcher
+  runs trusted default-main code and activates only after reviewed promotion;
+  keep the receiving workflow's exact-SHA guards on both release branches.
 - The owner-authorized upstream-sync workflow may merge its own exact tested
   PR head after all reusable CI jobs succeed, then dispatch the existing
   publication coordinator with `expected_commit` set to the validated main

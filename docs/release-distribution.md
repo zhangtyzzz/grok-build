@@ -295,11 +295,50 @@ the next stable binary patch. After a stable release, merge main back into alpha
 and set only the binary to the following patch's `-alpha.1`, which sorts above
 that stable release.
 
+`Warm alpha after CI` automatically dispatches only `Warm release build cache`
+after a completed, successful alpha push/manual CI run. Its dispatcher executes
+trusted default-main code with `contents: read` and `actions: write`; it never
+checks out alpha code or downloads CI artifacts in that privileged job. It
+re-fetches the source run, checks same-repository provenance, the successful
+current-attempt `CI required` gate, and the current alpha head. It dispatches the
+warm workflow with that exact commit, never the publication coordinator. Tags,
+releases and environment approvals remain under the existing owner-authorized
+publication flow.
+
+The receiving warm workflow requires a main/alpha branch and agreement between
+the requested commit, workflow SHA, checkout and current branch head before any
+build or cache-producing job runs. This rejects a branch advance between the
+CI check, dispatch and runner startup. An already-running warm remains bound to
+its original SHA; the publication coordinator still rechecks the branch before
+creating a tag. Standalone prewarm artifacts do not replace the coordinator's
+verified handoff: the later owner-dispatched coordinator restores exact branch
+caches and creates its own release inputs and quality evidence.
+
+Dispatchers serialize and skip an active exact-SHA warm or coordinator, or a
+successful standalone warm. A completed successful coordinator suppresses a new
+warm only when all six warm jobs succeeded for its current attempt and exact
+SHA; a tag-already-exists result with skipped warm jobs does not. After a new
+dispatch, they check run visibility at most six times
+with five-second intervals, without retrying an ambiguous dispatch request. Existing
+same-SHA warm concurrency is retained. API deduplication is best effort, and
+GitHub's single-pending concurrency queue can still replace an older pending
+run after simultaneous manual requests. Cached inputs may also be evicted
+after a successful prewarm; the coordinator remains responsible for a valid
+build when publication is requested.
+
+Roll out the receiving input/guards to alpha before activating the dispatcher
+on default main. The dispatcher YAML and helper must reach main through a
+reviewed promotion; adding them only to alpha does not enable `workflow_run`.
+Keep both branches' receiver guards together in later promotions. Validate the
+transport with `python3 -B -m unittest discover -s scripts/ci -p
+'test_dispatch_alpha_warm.py'`, then observe successful alpha CI followed by a
+same-SHA six-target warm without any new tag or release.
+
 To publish a version, manually dispatch `Publish release (warm, tag, Release)`
 from `main` or `alpha` after its required CI checks pass. Ordinary pushes and pull-request
 merges never create a tag. The publication workflow checks the binary version,
 fixed library versions, lockfile consistency and whether the release tag already exists. For a new
-version, it calls `Warm release build cache` with the exact requested main
+version, it calls `Warm release build cache` with the exact requested branch
 commit. The six target jobs build that commit and save each final
 executable, its build attestation, and the exact checksum-pinned bundled-tool
 inputs under a key containing the target, Rust version, `Cargo.lock` hash, and

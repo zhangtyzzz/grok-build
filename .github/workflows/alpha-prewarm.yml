@@ -1,0 +1,34 @@
+name: Warm alpha after CI
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [alpha]
+permissions: {}
+concurrency:
+  group: alpha-prewarm-dispatch
+  cancel-in-progress: false
+jobs:
+  dispatch:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'alpha' &&
+      (github.event.workflow_run.event == 'push' ||
+       github.event.workflow_run.event == 'workflow_dispatch')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      # workflow_run GITHUB_SHA is trusted default-main, NOT alpha's CI SHA.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Dispatch only the verified alpha warm workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 -B scripts/ci/dispatch-alpha-warm.py
