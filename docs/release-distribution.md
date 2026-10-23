@@ -164,6 +164,14 @@ repository and install it as a trusted plugin. This keeps release artifacts
 portable and prevents one user's reviewer policy, model choice, or host
 dependencies from becoming part of the terminal runtime.
 
+Tar packages use deterministic gzip level 6. A comparison using the published
+Linux ARM64 alpha.3 payload (1.5 GiB before compression) took 23 seconds at level 6
+versus 84 seconds at level 9 on the same local machine, for a 1.1% size increase.
+The decompressed payload hashes were identical; this changes compression only,
+not the executable, debug information, or manifest. CI time depends on the runner.
+The release fan-in verifies two archives concurrently, retaining all six signature
+and payload checks and failing if any verification fails.
+
 ## GitHub release channels
 
 `.github/workflows/release.yml` accepts only two tag families:
@@ -244,7 +252,12 @@ This remains crate/object reuse, not Cargo's incremental mode:
 build scripts still run. The fallback wrapper is named `sccache` so `cc-rs` also
 routes supported native C/C++ compilations through it; the real cache executable
 uses a separate absolute path. The wrapper invokes the original compiler directly
-when the local cache server fails. Source/final-binary caches remain subject to GitHub's
+when the local cache server fails. Windows x64 release jobs explicitly select the
+same MSVC compiler and its SDK include/library paths because the pinned cc-rs
+registry-discovery path bypasses its wrapper. The setup preserves custom compiler
+or SDK environments and does not import developer-shell state that would change
+Rust linker discovery. CI checks C and C++ compilation in two clean directories,
+verifies cache hits, and requires the compiler path to stay unchanged. Source/final-binary caches remain subject to GitHub's
 free dependency-cache allowance; compiler snapshots are kept separately as
 public workflow artifacts.
 
