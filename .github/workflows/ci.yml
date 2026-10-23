@@ -373,6 +373,9 @@ jobs:
       - name: Test Windows proc-macro reproducibility
         run: pwsh -NoProfile -File scripts/ci/test-windows-repro.ps1
 
+      - name: Test Windows native compiler cache reuse
+        run: pwsh -NoProfile -File scripts/ci/test-windows-native-cache.ps1
+
       - name: Test native Windows release input paths
         run: bash scripts/ci/test-release-inputs.sh
 

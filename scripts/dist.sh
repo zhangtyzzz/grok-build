@@ -405,7 +405,7 @@ create_tar_archive() {
                 "${owner_args[@]}" \
                 -cf - \
                 -T -
-    ) | gzip -n -9 >"$output"
+    ) | gzip -n -6 >"$output"
 }
 
 create_zip_archive() {
