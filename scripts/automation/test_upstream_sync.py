@@ -36,7 +36,8 @@ class ValidationTests(unittest.TestCase):
 
     def test_protected_paths(self):
         for path in (".github/workflows/ci.yml", "scripts/automation/new.py", "scripts/dist.sh",
-                     "rust-toolchain.toml", "FORK_CHANGES.md", "a/AGENTS.md", ".env.production",
+                     "rust-toolchain.toml", "scripts/ci/dispatch-alpha-warm.py",
+                     "FORK_CHANGES.md", "a/AGENTS.md", ".env.production",
                      "config/key.pem", "auth.json", ".gitmodules", ".gitattributes"):
             with self.subTest(path=path):
                 self.assertTrue(sync.protected(path))

@@ -296,6 +296,18 @@ fork 自己维护发布编号：upstream sync 从 fork main 当前稳定版递�
 
 配置、恢复、旧本地调度器排查及认证说明见 [`docs/release-distribution.md`](docs/release-distribution.md#daily-upstream-release-automation)。ZCode CLI 的额外额度权益没有官方确认，本流程不承诺 1.5 倍优惠，也不伪装桌面客户端身份。
 
+### 6.2 alpha CI 后自动预热
+
+**背景与目标。** alpha 的完整 CI 已通过后立即预热六平台，省去等待维护者手动启动的空档；预热不代表发版授权。
+
+**必须保留的约束。** `.github/workflows/alpha-prewarm.yml` 只监听 alpha 的 CI 完成事件，只执行可信默认 main 的 helper；用 API 重查同仓库的 push/manual CI、精确 SHA、当前 attempt 的成功 `CI required` 和当前 alpha HEAD。凭据只有 `contents: read`、`actions: write`，唯一写操作是 dispatch `release-cache.yml`，不运行 alpha 代码、读取候选 artifacts、打 tag、发布或批准 environment。接收端先校验发布分支、输入 SHA、workflow SHA、checkout 和当前远端 HEAD 一致，再允许构建/保存缓存。预热既不放进 CI required，也不扩大 compiler-cache 或 Release handoff 的可信来源。
+
+**代码入口。** `.github/workflows/{alpha-prewarm,release-cache}.yml`；`scripts/ci/dispatch-alpha-warm.py`、`test_dispatch_alpha_warm.py`；`scripts/automation/upstream_sync.py::protected` 单独保护这个持写权限的 dispatcher 路径。
+
+**合并方法。** 先让 alpha 具备接收输入与校验，再经审核晋升将调度 workflow/helper 放进默认 main；仅合到 alpha 不会激活 `workflow_run`。后续工作流修改随 alpha → main 晋升，保持两端合同一致。保留已有精确 SHA 的 warm 并发组、运行前去重和 dispatch 后有界可见性确认；已完成的成功协调器只有当前 attempt、同一 SHA 的全部六平台 warm jobs 成功才可去重，tag 已存在导致 warm skipped 不算已预热；API 去重不是原子锁，不能承诺同时人工 dispatch 时绝无重复或 pending run 被替换。旧预热成功也不保证缓存永远未被淘汰，owner 发版协调器仍需独立验证构建与质量证据。
+
+**验证。** `python3 -B -m unittest discover -s scripts/ci -p 'test_dispatch_alpha_warm.py'` 实际执行接收 workflow 的 shell 校验，覆盖 SHA/分支不符、来源/attempt 不符、tag 已存在时跳过 warm 的成功协调器、重复运行与 API 可见性延迟；`python3 -B -m unittest discover -s scripts/automation -p 'test_*.py'` 检查受保护路径。首次上线观察 alpha CI 通过后自动产生同一 SHA 的六平台预热，确认无新 tag/release；正式发布仍由 owner 调用既有协调器。
+
 ## 7. 维护证据索引
 
 | 决策 | 历史锚点 / 长期依据 |
@@ -308,6 +320,7 @@ fork 自己维护发布编号：upstream sync 从 fork main 当前稳定版递�
 | 二进制独占发布版本、库固定版本与 fork patch 编号 | 本文 §6；`xai-grok-version::BuildInfo`；`scripts/dist/release-version.mjs`；`scripts/automation/upstream_sync.py` 与对应单测；`AGENTS.md` Releases。 |
 | 多平台发布加速与可信产物交接 | 本文 §3.5；`.cargo/release-distribution.toml`；`scripts/ci/release-handoff.py` 与对应单测；`cache-maintenance.yml` / `scripts/ci/prune-caches.py` 删除旧 sccache 整包缓存，并按发布分支清理重复源缓存与精确构建缓存，保留未知缓存及 PR / 功能分支缓存；`compiler-cache-artifact.py` 校验并恢复可信编译快照、保留各发布分支每个工作负载最新两份；发布文档。 |
 | fork 独立版本号与 alpha 通道（取代 `217891d1` 的跟随上游版本线） | 本文 §6；`AGENTS.md` Releases；发布文档；`ForkVersionTests`。 |
+| alpha CI 后仅预热、默认 main 可信调度与精确 SHA 接收 | 本文 §6.2；`alpha-prewarm.yml` / `release-cache.yml`；`dispatch-alpha-warm.py` 与实际 shell guard 测试；`upstream_sync.py::protected`。 |
 | 标准发行入口与精确产物复用 | `6ff1d78f`、`2e09f905`；`docs/release-distribution.md`。 |
 | JavaScript Code Mode（默认开启，全工具含 MCP） | PR #104、#106（MCP 提示双路径）、嵌套结果完整性修复；`docs/code-mode.md`；本文 §3.6。 |
 

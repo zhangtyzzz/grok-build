@@ -2,6 +2,12 @@ name: Warm release build cache
 
 on:
   workflow_dispatch:
+    inputs:
+      commit:
+        description: Exact main or alpha commit to warm; defaults to the dispatched ref
+        required: false
+        default: ""
+        type: string
   workflow_call:
     inputs:
       commit:
@@ -37,21 +43,39 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Require a release branch
+      - name: Require an exact release branch commit
         id: meta
         shell: bash
         env:
           REQUESTED_COMMIT: ${{ inputs.commit }}
+          WORKFLOW_COMMIT: ${{ github.sha }}
           REF_NAME: ${{ github.ref }}
         run: |
           set -euo pipefail
-          checkout_sha="$(git rev-parse HEAD)"
-          test -n "$REQUESTED_COMMIT" || test "$REF_NAME" = refs/heads/main || test "$REF_NAME" = refs/heads/alpha || {
-            echo "release cache warmup must be dispatched from main or alpha" >&2
+          case "$REF_NAME" in
+            refs/heads/main | refs/heads/alpha) branch="${REF_NAME#refs/heads/}" ;;
+            *)
+              echo "release cache warmup must run on main or alpha" >&2
+              exit 1
+              ;;
+          esac
+          expected="${REQUESTED_COMMIT:-$WORKFLOW_COMMIT}"
+          [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "warmup commit must be a full SHA" >&2
             exit 1
           }
-          test -z "$REQUESTED_COMMIT" || test "$checkout_sha" = "$REQUESTED_COMMIT" || {
-            echo "warmup checkout $checkout_sha does not match requested commit $REQUESTED_COMMIT" >&2
+          test "$expected" = "$WORKFLOW_COMMIT" || {
+            echo "$branch advanced before dispatch; requested source differs from workflow SHA" >&2
+            exit 1
+          }
+          checkout_sha="$(git rev-parse HEAD)"
+          test "$checkout_sha" = "$expected" || {
+            echo "warmup checkout differs from the exact workflow commit" >&2
+            exit 1
+          }
+          current_head="$(git ls-remote origin "refs/heads/$branch" | awk '{ print $1 }')"
+          test "$current_head" = "$expected" || {
+            echo "$branch advanced before warmup; skip this obsolete commit" >&2
             exit 1
           }
           version="$(node scripts/dist/release-version.mjs)"
