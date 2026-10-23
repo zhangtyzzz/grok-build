@@ -124,7 +124,7 @@ helper 回归覆盖同 slug 不同 provider、缺失 ref 不降级、legacy alia
 
 **Windows 缓存确定性。** 排查 Windows ARM 同提交热构建的 113 次 Rust 缓存未命中时，确认 MSVC 默认重复链接的 proc-macro DLL 哈希会变化。缓存初始化通过 `LINK=/Brepro` 固定链接输出，覆盖显式 `--target` 构建中的 host 宏；保留现有 LINK 参数、优化与调试信息。Windows ARM/x64 小实验验证默认重复链接哈希不同，启用后相同；原生 Windows CI 持续验证 DLL 一致且宏能执行。不要只设置 target rustflags，否则会漏掉 host 宏。
 
-**原生依赖缓存。** fallback 包装器放在独立目录并命名为 `sccache`，使 `cc-rs` 能通过 `RUSTC_WRAPPER` 识别并缓存支持的 C/C++ 编译；真实 sccache 路径独立保存，避免递归。包装器失败时回退到传入的原始编译器。保留该名称约定，不要恢复为 `cc-rs` 无法识别的自定义文件名。
+**原生依赖缓存。** fallback 包装器放在独立目录并命名为 `sccache`，使 `cc-rs` 能通过 `RUSTC_WRAPPER` 识别并缓存支持的 C/C++ 编译；真实 sccache 路径独立保存，避免递归。包装器失败时回退到传入的原始编译器。保留该名称约定，不要恢复为 `cc-rs` 无法识别的自定义文件名。 Windows x64 发布另外显式选择相同的 MSVC 编译器与 SDK 头文件/库路径，绕开固定版本 cc-rs 的注册表发现分支遗漏 wrapper 的问题；保留用户编译器覆盖，不导入会改变 Rust 链接器发现的完整开发者环境。CI 通过真实 C/C++ 编译验证命中和编译器路径一致性。发行 tar 使用确定性的 gzip 6 级压缩，包内容与调试信息不变；最终资产检查并发上限为 2，任一 provenance 或 payload 校验失败仍阻断发布。
 
 **代码入口。** `scripts/dist/**`、`.github/workflows/{ci,release-cache,auto-release,release}.yml`、`.github/actions/*compiler-cache/`、`packaging/profile/starter/**`；pager 的 `scripts/install.sh` / `install.ps1`；`crates/codegen/xai-grok-update/src/{auto_update,version}.rs`；`xai-grok-tools` 的 `build.rs`、`embedded_search_tools.rs`、`util/vendor.rs`；`crates/build/xai-proto-build/src/lib.rs`。
 
@@ -270,6 +270,10 @@ PR 必须列出上游 SHA、保留/替代的 fork 行为、每项冲突决策及
 
 fork 自己维护发布编号：upstream sync 从 fork main 当前稳定版递增一个 patch，不跟随上游编号；这是 alpha 已有的规则，本轮同步到 main。alpha 使用下个稳定 patch 的 `-alpha.N`。同步脚本只递增二进制版本，把三份库 manifest 和 lockfile 中对应条目归一到固定值；版本之外的合并冲突不得自动抹去。`scripts/dist/release-version.mjs` 在预热、协调和发布阶段校验二进制版本、固定库版本及 lockfile，现有 tag 与精确 commit 验证继续保留。
 
+**上游旧接口的机械迁移。** `scripts/automation/upstream_sync.py::normalize_runtime_version` 对 `crates/` 内的普通 Rust 源文件应用同一确定性转换：干净合并结果、冲突的原始三方内容，以及校验过路径和双 SHA 的 AI resolution 都经过它。已知的 `xai_grok_version::VERSION` / `IS_DEV_BUILD`、tools 的版本 reexport、pager / leader 常量别名和对应 `use`（含分组、item alias）转换为运行时 getter；已迁移的导入旁新增旧引用也可处理。标准格式/断言宏里的旧隐式捕获补显式参数，字符串字节保持不变。pager/shell 表示应用版本的 `env!("CARGO_PKG_VERSION")` 及库中的 `option_env!("GROK_VERSION").is_none/is_some` 一并迁移，其他 crate 的独立 package 元数据和二进制 stamp 输入不改。
+
+转换器只做受限词法识别，不执行待合并源码或仓库工具。注释、普通/原始字符串及无关 `VERSION` 名字不能全局替换；同名遮蔽、getter 名字冲突、version 模块别名/glob、通过私有导入间接初始化的常量、声明内带注释或已识别的复杂常量表达式停止自动同步。版本库自身定义/构建脚本、未知宏展开、raw identifier 或其他未支持的常量/模式上下文仍需人工迁移和完整 Rust CI，不能据机械迁移成功就跳过门禁。若上游更改接口形态，先增加对应 hermetic 测试再扩展识别范围；三方归一化只消除版本 API 的机械冲突，其余语义冲突仍由原始冲突集约束。测试覆盖幂等性、字面量/无关符号保留、真实干净/冲突 Git merge、重建时再迁移以及不扩大 AI 可写文件集合。
+
 版本边界改动须执行 `cargo test --locked -p xai-grok-version -p xai-grok-permission-rules`、`cargo test --locked -p xai-grok-shell --test runtime_version_identity`、`node --test scripts/dist/release-version.test.mjs` 和 `python3 -B -m unittest discover -s scripts/automation -p 'test_*.py'`。性能验收还需在六平台对同一份库源码连续构建两个不同发布版本，记录 sccache 统计与打包结果；不能用同一 SHA 的热缓存结果替代改版本的验收。
 
   - `main` 只发稳定版 `X.Y.Z`；`alpha` 只发 `X.Y.Z-alpha.N`（`auto-release.yml` 按分支校验）。alpha 版号为 `main` 下一个稳定 patch 加 `-alpha.N`。alpha tag 由 `release.yml` 标为 prerelease、走 `release-testing` environment；只有 `[cli] channel = "alpha"` 的客户端会安装。
@@ -317,7 +321,7 @@ fork 自己维护发布编号：upstream sync 从 fork main 当前稳定版递�
 | 采用上游 model_providers 并保留旁路 policy | `ff1b9b32`；RFC §4.2 修订。 |
 | 缓存 placement 跟上游，保留 TTL/off 增量 | `8595f481`、`ec4bda42`；RFC §9；差异审计 §1。 |
 | Plan Mode 撤销 fork 扩展 | `1a6d8517`（PR #97）；RFC §5；差异审计 2026-09-18 更新。 |
-| 二进制独占发布版本、库固定版本与 fork patch 编号 | 本文 §6；`xai-grok-version::BuildInfo`；`scripts/dist/release-version.mjs`；`scripts/automation/upstream_sync.py` 与对应单测；`AGENTS.md` Releases。 |
+| 二进制独占发布版本、库固定版本与 fork patch 编号 | 本文 §6；`xai-grok-version::BuildInfo`；`scripts/dist/release-version.mjs`；`scripts/automation/upstream_sync.py::normalize_runtime_version` / `apply_runtime_versions` 与对应词法、三方合并、重建单测；`AGENTS.md` Releases。 |
 | 多平台发布加速与可信产物交接 | 本文 §3.5；`.cargo/release-distribution.toml`；`scripts/ci/release-handoff.py` 与对应单测；`cache-maintenance.yml` / `scripts/ci/prune-caches.py` 删除旧 sccache 整包缓存，并按发布分支清理重复源缓存与精确构建缓存，保留未知缓存及 PR / 功能分支缓存；`compiler-cache-artifact.py` 校验并恢复可信编译快照、保留各发布分支每个工作负载最新两份；发布文档。 |
 | fork 独立版本号与 alpha 通道（取代 `217891d1` 的跟随上游版本线） | 本文 §6；`AGENTS.md` Releases；发布文档；`ForkVersionTests`。 |
 | alpha CI 后仅预热、默认 main 可信调度与精确 SHA 接收 | 本文 §6.2；`alpha-prewarm.yml` / `release-cache.yml`；`dispatch-alpha-warm.py` 与实际 shell guard 测试；`upstream_sync.py::protected`。 |

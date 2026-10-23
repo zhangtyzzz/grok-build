@@ -304,6 +304,406 @@ def apply_fork_version(base: str) -> bool:
     return resolved
 
 
+# This is deliberately a bounded migration, not a Rust formatter or compiler. It
+# recognizes upstream's old version API while keeping comments/literals opaque.
+# Unknown const expressions, ambiguous bindings and module aliases require manual
+# synchronization; unsupported macro expansion/pattern contexts remain CI's job.
+RUNTIME_NAMES = {"VERSION": "version", "IS_DEV_BUILD": "is_dev_build",
+                 "PAGER_CLIENT_VERSION": "pager_client_version",
+                 "CLIENT_LEADER_VERSION": "client_leader_version"}
+RUNTIME_HINT = re.compile(rb"VERSION|IS_DEV_BUILD")
+RUST_RAW = re.compile(r'(?:br|cr|r)(#*)"')
+RUST_QUOTED = re.compile(r'(?:b|c)?"')
+RUST_CHAR = re.compile(r"b?'(?:[^'\\\n]|\\(?:u\{[0-9a-fA-F_]+\}|x[0-9a-fA-F]{2}|.))'")
+RUST_IDENT = re.compile(r"(?:r#)?(?:[A-Za-z_]|[^\x00-\x7f])(?:[A-Za-z_0-9]|[^\x00-\x7f])*")
+
+
+def runtime_source(path: str) -> bool:
+    return (path.startswith("crates/") and path.endswith(".rs")
+            and not path.startswith("crates/codegen/xai-grok-version/"))
+
+
+def rust_tokens(source: str) -> list[tuple[str, int, int, str]]:
+    """Token spans only: skip nested comments; keep Rust literals indivisible."""
+    tokens = []
+    i = 0
+    while i < len(source):
+        start = i
+        if source[i].isspace():
+            i += 1
+            continue
+        if source.startswith("//", i):
+            end = source.find("\n", i)
+            i = len(source) if end < 0 else end + 1
+            continue
+        if source.startswith("/*", i):
+            depth, i = 1, i + 2
+            while depth and i < len(source):
+                if source.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif source.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
+            if depth:
+                raise SyncError("unterminated Rust comment in runtime version migration")
+            continue
+        raw = RUST_RAW.match(source, i)
+        if raw:
+            closing = '"' + raw[1]
+            end = source.find(closing, raw.end())
+            if end < 0:
+                raise SyncError("unterminated Rust raw literal in runtime version migration")
+            i = end + len(closing)
+            tokens.append((source[start:i], start, i, "string"))
+            continue
+        quoted = RUST_QUOTED.match(source, i)
+        # A lifetime is not a char literal. Rust chars contain one character or an
+        # escape; consume a quoted char only when its closing quote is present.
+        char = RUST_CHAR.match(source, i)
+        if char:
+            i = char.end()
+            tokens.append((source[start:i], start, i, "literal"))
+            continue
+        if quoted:
+            i = quoted.end()
+            while i < len(source) and source[i] != '"':
+                i += 2 if source[i] == "\\" else 1
+            if i >= len(source):
+                raise SyncError("unterminated Rust string in runtime version migration")
+            i += 1
+            tokens.append((source[start:i], start, i, "string"))
+            continue
+        ident = RUST_IDENT.match(source, i)
+        if ident:
+            i = ident.end()
+            kind = "ident"
+        else:
+            i += 2 if source.startswith("::", i) else 1
+            kind = "punct"
+        tokens.append((source[start:i], start, i, kind))
+    return tokens
+
+
+def runtime_getter(path: str, names: list[str]) -> str | None:
+    """Resolve only the known legacy API paths, never arbitrary VERSION names."""
+    if len(names) == 2 and names[0] == "xai_grok_version":
+        return {"VERSION": "version", "IS_DEV_BUILD": "is_dev_build"}.get(names[-1])
+    if names == ["xai_grok_tools", "VERSION"]:
+        return "version"
+    if (len(names) >= 2 and names[-2:] == ["client_identity", "PAGER_CLIENT_VERSION"]
+            and names[0] in {"crate", "super", "xai_grok_pager"}):
+        return "pager_client_version"
+    if (names[-1:] == ["CLIENT_LEADER_VERSION"]
+            and path.startswith("crates/codegen/xai-grok-shell/src/leader/")
+            and names[:-1] in (["super"], ["crate", "leader"])):
+        return "client_leader_version"
+    if (names == ["crate", "VERSION"]
+            and path.startswith("crates/codegen/xai-grok-tools/")):
+        return "version"
+    return None
+
+
+def normalize_runtime_version(path: str, content: bytes) -> bytes:
+    """Mechanically migrate known old runtime identities, including AI output.
+
+    No repository code/tools are executed. This same byte transform runs on clean
+    merged files, each original conflict side, and independently accepted output.
+    Names inside comments and ordinary strings are never rewritten. The version
+    library's API implementation/build script remains a manual architecture change.
+    """
+    if not runtime_source(path) or not RUNTIME_HINT.search(content):
+        return content
+    text_bytes(content)
+    source = content.decode()
+    tokens = rust_tokens(source)
+    values = [t[0] for t in tokens]
+    edits = {}
+    covered = set()
+    bindings = {}
+    declarations = set()
+    binding_getters = {}
+    use_bindings = []
+    introduced = set()
+    pairs, stack = {}, []
+    for i, value in enumerate(values):
+        if value in ("(", "[", "{"):
+            stack.append(i)
+        elif value in (")", "]", "}"):
+            if not stack or values[stack[-1]] != {")": "(", "]": "[", "}": "{"}[value]:
+                raise SyncError(f"unbalanced Rust delimiters: {path}")
+            opening = stack.pop()
+            pairs[opening] = i
+    if stack:
+        raise SyncError(f"unbalanced Rust delimiters: {path}")
+
+    def edit(first, last, replacement):
+        span = (tokens[first][1], tokens[last][2])
+        if span in edits and edits[span] != replacement:
+            raise SyncError(f"ambiguous runtime version replacement: {path}")
+        edits[span] = replacement
+
+    def bind(old, new, declaration, getter, existing=False):
+        if old in bindings and (bindings[old] != new or binding_getters[old] != getter):
+            raise SyncError(f"ambiguous runtime version binding {old}: {path}")
+        bindings[old] = new
+        binding_getters[old] = getter
+        declarations.add(declaration)
+        if not existing and old != new:
+            introduced.add(new)
+
+    # Parse use trees, including grouped/nested imports and explicit item aliases.
+    # Module aliases/globs from the version crate are intentionally not guessed.
+    def use_tree(start, end, prefix):
+        if start == end:
+            return
+        names, cursor = list(prefix), start
+        if values[cursor] == "::":
+            cursor += 1
+        while cursor < end:
+            if values[cursor] == "{":
+                closing = pairs[cursor]
+                part, j = cursor + 1, cursor + 1
+                while j <= closing:
+                    if j == closing or values[j] == ",":
+                        use_tree(part, j, names)
+                        part = j + 1
+                    elif values[j] == "{":
+                        j = pairs[j]
+                    j += 1
+                if closing != end - 1:
+                    raise SyncError(f"unsupported use tree in runtime migration: {path}")
+                return
+            name_at = cursor
+            names.append(values[cursor])
+            cursor += 1
+            if cursor < end and values[cursor] == "::":
+                cursor += 1
+                continue
+            alias_at = None
+            if cursor < end and values[cursor] == "as" and cursor + 2 == end:
+                alias_at = cursor + 1
+                cursor = end
+            if cursor != end:
+                raise SyncError(f"unsupported use syntax in runtime migration: {path}")
+            getter = runtime_getter(path, names)
+            local_at = alias_at if alias_at is not None else name_at
+            use_bindings.append((values[local_at], local_at))
+            if getter:
+                old = values[alias_at] if alias_at is not None else names[-1]
+                new = old if alias_at is not None else getter
+                if old == "_":
+                    raise SyncError(f"anonymous legacy version import: {path}")
+                edit(name_at, name_at, getter)
+                bind(old, new, local_at, getter)
+            else:
+                # A clean merge can retain the fork's getter import while adding
+                # upstream references to its old constant. Recover only these
+                # known canonical bindings, not arbitrary similarly named locals.
+                local = values[local_at]
+                for legacy, current in RUNTIME_NAMES.items():
+                    canonical = runtime_getter(path, names[:-1] + [legacy])
+                    if local == current and canonical == names[-1]:
+                        bind(legacy, current, local_at, canonical, existing=True)
+                if names == ["xai_grok_version", "version"]:
+                    for legacy in ("PAGER_CLIENT_VERSION", "CLIENT_LEADER_VERSION"):
+                        if local == RUNTIME_NAMES[legacy]:
+                            bind(legacy, local, local_at, "version", existing=True)
+            if names[0] == "xai_grok_version" and names[-1] in {"xai_grok_version", "self", "*"}:
+                raise SyncError(f"version module alias/glob requires manual migration: {path}")
+            return
+
+    for i, value in enumerate(values):
+        if value != "use" or values[i + 1:i + 2] == ["<"]:
+            # `impl Trait + use<T>` is a precise capture bound, not an import.
+            continue
+        end = i + 1
+        while end < len(tokens) and values[end] != ";":
+            end += 1
+        if end == len(tokens):
+            raise SyncError(f"unterminated Rust use: {path}")
+        use_tree(i + 1, end, [])
+        covered.update(range(i, end + 1))
+
+    # Alias constants whose entire initializer is a known version identity become
+    # imports of the getter. Preserve visibility and the original alias spelling,
+    # except for the two public contracts already migrated in this fork.
+    for i, value in enumerate(values):
+        if value not in {"const", "static"} or i in covered:
+            continue
+        end = i + 1
+        while end < len(tokens) and values[end] not in {";", "{"}:
+            end += 1
+        if end == len(tokens) or values[end] != ";" or "=" not in values[i:end]:
+            continue
+        equal = values.index("=", i, end)
+        rhs = values[equal + 1:end]
+        getter = runtime_getter(path, rhs[::2]) if rhs[1::2] == ["::"] * (len(rhs) // 2) else None
+        imported = len(rhs) == 1 and rhs[0] in bindings
+        if not getter and not imported:
+            if any(name in bindings for name in rhs) or any(
+                    runtime_getter(path, rhs[j:j + 3:2]) for j in range(max(0, len(rhs) - 2))
+                    if rhs[j + 1] == "::"):
+                raise SyncError(f"nontrivial runtime version constant requires manual migration: {path}")
+            continue
+        if imported:
+            # Reexporting directly would orphan the original private import;
+            # reexporting that private alias can also change visibility. This is
+            # outside upstream's known fully-qualified constant declarations.
+            raise SyncError(f"constant through an imported version alias requires manual migration: {path}")
+        if value != "const" or values[i + 2:equal] not in ([":", "&", "str"], [":", "bool"]):
+            raise SyncError(f"nontrivial runtime version constant requires manual migration: {path}")
+        declaration_text = source[tokens[i][1]:tokens[end][2]]
+        if "//" in declaration_text or "/*" in declaration_text:
+            raise SyncError(f"comment inside version constant requires manual migration: {path}")
+        old = values[i + 1]
+        new = RUNTIME_NAMES.get(old, old) if old in {"PAGER_CLIENT_VERSION", "CLIENT_LEADER_VERSION"} else old
+        target = "is_dev_build" if getter == "is_dev_build" else "version"
+        edit(i, end, f"use xai_grok_version::{target} as {new};")
+        covered.update(range(i, end + 1))
+        bind(old, new, i + 1, target)
+
+    for name, declaration in use_bindings:
+        if name in bindings and declaration not in declarations:
+            raise SyncError(f"ambiguous runtime version import {name}: {path}")
+    for i, value in enumerate(values):
+        if value in introduced and i not in covered:
+            if i == 0 or values[i - 1] not in {".", "::"}:
+                raise SyncError(f"runtime getter name already bound {value}: {path}")
+
+    # Refuse lexical shadowing instead of guessing which same-named binding a
+    # reference denotes. Fields/path members and explicitly named format args are
+    # excluded below; other unfamiliar forms must pass the ordinary Rust CI gates.
+    for i, value in enumerate(values):
+        if value not in bindings or i in covered or i in declarations:
+            continue
+        previous = values[i - 1] if i else ""
+        following = values[i + 1] if i + 1 < len(tokens) else ""
+        if previous in {"let", "mut", "fn", "const", "static", "struct", "enum", "type", "mod", "as"} or following == ":":
+            raise SyncError(f"shadowed/ambiguous runtime version binding {value}: {path}")
+
+    # Qualified values and references to recognized imports/constant aliases.
+    i = 0
+    while i < len(tokens):
+        if i in covered or tokens[i][3] != "ident":
+            i += 1
+            continue
+        end, names = i, [values[i]]
+        while end + 2 < len(tokens) and values[end + 1] == "::" and tokens[end + 2][3] == "ident":
+            end += 2
+            names.append(values[end])
+        getter = runtime_getter(path, names)
+        if getter:
+            edit(end, end, getter + "()")
+            i = end + 1
+            continue
+        previous = values[i - 1] if i else ""
+        following = values[i + 1] if i + 1 < len(tokens) else ""
+        if len(names) == 1 and values[i] in bindings and previous not in {".", "::", "$"} and not (following == "=" and values[i + 2:i + 3] != ["="]):
+            edit(i, i, bindings[values[i]] + "()")
+        i = end + 1
+
+    # Only existing shell/pager application metadata is changed; other crates'
+    # independent package versions and the binary's stamp inputs remain intact.
+    application_library = any(path.startswith(f"crates/codegen/{p}/") for p in INTERNAL_PACKAGES[:2])
+    binary = path.startswith("crates/codegen/xai-grok-pager-bin/")
+    for i, value in enumerate(values):
+        if i in covered:
+            continue
+        if (application_library and values[i:i + 5] == ["env", "!", "(", '"CARGO_PKG_VERSION"', ")"]):
+            edit(i, i + 4, "xai_grok_version::version()")
+        if (not binary and values[i:i + 9] in (
+                ["option_env", "!", "(", '"GROK_VERSION"', ")", ".", "is_none", "(", ")"],
+                ["option_env", "!", "(", '"GROK_VERSION"', ")", ".", "is_some", "(", ")"])):
+            prefix = "!" if values[i + 6] == "is_some" else ""
+            edit(i, i + 8, prefix + "xai_grok_version::is_dev_build()")
+
+    # Preserve format strings byte-for-byte. Give known captured old bindings
+    # explicit named arguments in standard formatting/assertion macros only.
+    format_at = {"format": 0, "format_args": 0, "println": 0, "eprintln": 0,
+                 "print": 0, "eprint": 0, "panic": 0, "write": 1, "writeln": 1,
+                 "assert": 1, "debug_assert": 1, "assert_eq": 2, "assert_ne": 2,
+                 "debug_assert_eq": 2, "debug_assert_ne": 2}
+    for opening, closing in pairs.items():
+        if opening < 2 or values[opening - 1] != "!" or values[opening - 2] not in format_at:
+            continue
+        args, j, start = [], opening + 1, opening + 1
+        while j <= closing:
+            if j == closing or values[j] == ",":
+                if start < j:
+                    args.append((start, j))
+                start = j + 1
+            elif j in pairs:
+                j = pairs[j]
+            j += 1
+        index = format_at[values[opening - 2]]
+        if len(args) <= index:
+            continue
+        first, end = args[index]
+        if end != first + 1 or tokens[first][3] != "string":
+            continue
+        literal = values[first]
+        # Escaped braces are literal text, including raw strings.
+        captures = set(re.findall(r"\{([A-Za-z_][A-Za-z_0-9]*)(?=[:}])", literal.replace("{{", "").replace("}}", "")))
+        explicit = {values[a] for a, b in args[index + 1:] if b > a + 1 and values[a + 1] == "="}
+        needed = sorted(captures.intersection(bindings).difference(explicit))
+        if needed:
+            prefix = " " if values[closing - 1] == "," else ", "
+            addition = prefix + ", ".join(f"{name} = {bindings[name]}()" for name in needed)
+            at = tokens[closing][1]
+            edits[(at, at)] = addition
+
+    ordered = sorted(edits.items())
+    for ((_, end), _), ((start, _), _) in zip(ordered, ordered[1:]):
+        if end > start:
+            raise SyncError(f"overlapping runtime migrations require manual review: {path}")
+    for (start, end), replacement in reversed(ordered):
+        source = source[:start] + replacement + source[end:]
+    return source.encode()
+
+
+def apply_runtime_versions() -> bool:
+    """Normalize clean Rust sources and retry genuine three-way text conflicts."""
+    stages = {}
+    for entry in git("ls-files", "--stage", "-z").split(b"\0"):
+        if entry:
+            metadata, name = entry.split(b"\t", 1)
+            mode, object_id, stage = metadata.decode().split()
+            path = path_safe(name.decode("utf-8"))
+            if runtime_source(path) and not protected(path):
+                stages.setdefault(path, {})[stage] = (mode, object_id)
+    resolved = False
+    for path, entries in stages.items():
+        if set(entries) == {"0"}:
+            if entries["0"][0] != "100644":
+                # Never follow symlinks or rewrite executable sources.
+                continue
+            file = safe_file(path)
+            content = file.read_bytes()
+            normalized = normalize_runtime_version(path, content)
+            if normalized != content:
+                file.write_bytes(normalized)
+                git("add", "--", path)
+        elif set(entries) == {"1", "2", "3"} and all(m == "100644" for m, _ in entries.values()):
+            with tempfile.TemporaryDirectory() as temp:
+                sides, changed = [], False
+                for stage in ("2", "1", "3"):
+                    content = git("cat-file", "blob", entries[stage][1])
+                    normalized = normalize_runtime_version(path, content)
+                    changed |= normalized != content
+                    side = Path(temp) / stage
+                    side.write_bytes(normalized)
+                    sides.append(str(side))
+                if not changed:
+                    continue
+                merged = run("git", "merge-file", "-p", "--quiet", *sides, check=False)
+            if merged.returncode == 0:
+                safe_file(path).write_bytes(merged.stdout)
+                git("add", "--", path)
+                resolved = True
+    return resolved
+
+
 def begin(base: str, upstream: str) -> dict:
     for path in changed_paths(base, upstream):
         if protected(path):
@@ -315,8 +715,9 @@ def begin(base: str, upstream: str) -> dict:
     if result.returncode not in (0, 1):
         raise SyncError("merge failed for a reason other than a merge conflict")
     versions_resolved = apply_fork_version(base)
+    runtime_resolved = apply_runtime_versions()
     conflicts = original_conflicts()
-    if result.returncode and not conflicts and not versions_resolved:
+    if result.returncode and not conflicts and not (versions_resolved or runtime_resolved):
         raise SyncError("merge failed without supported conflicts")
     return {"base": base, "upstream": upstream, "noop": False,
             "conflicts": conflicts, "snapshot": snapshot()}
@@ -400,7 +801,8 @@ def reconstruct(args):
     for path, content in validate_resolution(obj, state).items():
         p = safe_file(path)
         # A resolved version file still gets the fork's version, whatever the artifact says.
-        p.write_bytes(set_version(path, content, version) if path in VERSION_FILES else content)
+        p.write_bytes(set_version(path, content, version) if path in VERSION_FILES
+                      else normalize_runtime_version(path, content))
         git("add", "--", path)
     if git("ls-files", "--unmerged", "-z"):
         raise SyncError("unmerged index entries remain")

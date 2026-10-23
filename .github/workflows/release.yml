@@ -508,7 +508,10 @@ jobs:
               exit 1
             }
           done
-          for archive in "${archives[@]}"; do
+          # Bound extraction to two archives at once while retaining every check.
+          # xargs fails the step if any child's signature or payload check fails.
+          printf '%s\0' "${archives[@]}" | xargs -0 -n 1 -P 2 bash -euo pipefail -c '
+            archive="$1"
             bundle="$archive.sigstore.json"
             test -f "$bundle"
             gh attestation verify "$archive" \
@@ -517,7 +520,7 @@ jobs:
               --signer-workflow "$GH_REPO/.github/workflows/release.yml" \
               --source-digest "$RELEASE_COMMIT" >/dev/null
             scripts/dist.sh verify "$archive"
-          done
+          ' verify-release-archive
           cp crates/codegen/xai-grok-pager/scripts/install.sh \
             release-candidate/install.sh
           cp crates/codegen/xai-grok-pager/scripts/install.ps1 \

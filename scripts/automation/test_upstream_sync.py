@@ -146,6 +146,147 @@ class VersionNormalizationTests(unittest.TestCase):
         self.assertEqual(second, first.replace(b'version = "2.0.0"', b'version = "2.0.1"'))
 
 
+class RuntimeVersionNormalizationTests(unittest.TestCase):
+    pager = "crates/codegen/xai-grok-pager/src/client_identity.rs"
+    shell = "crates/codegen/xai-grok-shell/src/leader/mod.rs"
+
+    def normalize(self, source, path=None):
+        actual = sync.normalize_runtime_version(path or self.pager, source.encode()).decode()
+        self.assertEqual(sync.normalize_runtime_version(path or self.pager, actual.encode()).decode(), actual)
+        return actual
+
+    def test_qualified_paths_preserve_unrelated_identifiers_and_literal_bytes(self):
+        untouched = r'''// xai_grok_version::VERSION
+/* VERSION /* xai_grok_version::IS_DEV_BUILD */ VERSION */
+const VERSION: &str = "local";
+const λVERSION: &str = "unrelated unicode identifier";
+const MESSAGE: &str = "xai_grok_version::VERSION {VERSION}";
+const RAW: &str = r###"xai_grok_version::VERSION /* {"###;
+const BYTES: &[u8] = b"xai_grok_version::VERSION";
+const RAW_BYTES: &[u8] = br##"xai_grok_version::VERSION"##;
+fn local<'a>(s: &'a str) { let c = '}'; let escaped = '\''; other::VERSION; s.VERSION; send(λVERSION); }
+'''
+        source = untouched + '''fn identity() {
+    send(xai_grok_version /* keep */ :: VERSION);
+    if !xai_grok_version::IS_DEV_BUILD { emit(xai_grok_tools::VERSION); }
+}
+'''
+        actual = self.normalize(source)
+        self.assertTrue(actual.startswith(untouched))
+        self.assertIn("xai_grok_version /* keep */ :: version()", actual)
+        self.assertIn("!xai_grok_version::is_dev_build()", actual)
+        self.assertIn("xai_grok_tools::version()", actual)
+
+    def test_precise_capture_bounds_are_not_imports(self):
+        source = 'fn f() -> impl Fn() + use<> { || { "OTEL_METRICS_INCLUDE_VERSION"; } }\n'
+        self.assertEqual(self.normalize(source), source)
+
+    def test_import_aliases_grouped_imports_and_comparisons(self):
+        source = '''use xai_grok_version::{VERSION as BUILD, IS_DEV_BUILD, installed};
+fn f() { if BUILD == "1.2.3" && !IS_DEV_BUILD { send(BUILD.to_string(), installed()); } }
+'''
+        self.assertEqual(self.normalize(source), '''use xai_grok_version::{version as BUILD, is_dev_build, installed};
+fn f() { if BUILD() == "1.2.3" && !is_dev_build() { send(BUILD().to_string(), installed()); } }
+''')
+
+    def test_nested_import_tree(self):
+        source = 'use xai_grok_pager::{client_identity::{PAGER_CLIENT_VERSION, PAGER_CLIENT_TYPE}, App};\nfn f() { send(PAGER_CLIENT_VERSION, PAGER_CLIENT_TYPE); }\n'
+        expected = source.replace("PAGER_CLIENT_VERSION,", "pager_client_version,", 1).replace("send(PAGER_CLIENT_VERSION,", "send(pager_client_version(),")
+        self.assertEqual(self.normalize(source), expected)
+
+    def test_real_upstream_alias_and_format_shapes(self):
+        # Shapes from a372cbc6's pager/client_identity.rs and shell/leader/mod.rs.
+        source = '''const CLIENT_LEADER_VERSION: &str = xai_grok_version::VERSION;
+fn test(binary_version: &str) {
+    let client: semver::Version = CLIENT_LEADER_VERSION.parse().expect("CLIENT_LEADER_VERSION parses as semver");
+    assert_eq!(client, binary_version, "leader version {binary_version:?} vs client {CLIENT_LEADER_VERSION}");
+}
+'''
+        actual = self.normalize(source, self.shell)
+        self.assertIn("use xai_grok_version::version as client_leader_version;", actual)
+        self.assertIn("client_leader_version().parse()", actual)
+        self.assertIn('"CLIENT_LEADER_VERSION parses as semver"', actual)
+        self.assertIn('"leader version {binary_version:?} vs client {CLIENT_LEADER_VERSION}", CLIENT_LEADER_VERSION = client_leader_version()', actual)
+        pager = self.normalize('pub const PAGER_CLIENT_VERSION: &str = xai_grok_version::VERSION;\nfn f() { send(PAGER_CLIENT_VERSION); }\n')
+        self.assertIn("pub use xai_grok_version::version as pager_client_version;", pager)
+        self.assertIn("send(pager_client_version())", pager)
+
+    def test_const_alias_through_private_import_requires_manual_migration(self):
+        source = "use xai_grok_version::IS_DEV_BUILD as DEV;\nconst IS_LOCAL: bool = DEV;\nfn f() { send(IS_LOCAL); }\n"
+        with self.assertRaises(sync.SyncError):
+            self.normalize(source)
+
+    def test_tools_reexport_and_leader_child_import(self):
+        self.assertEqual(self.normalize("pub use xai_grok_version::VERSION;\n", "crates/codegen/xai-grok-tools/src/lib.rs"), "pub use xai_grok_version::version;\n")
+        child = "use super::CLIENT_LEADER_VERSION;\nfn f() { send(CLIENT_LEADER_VERSION); }\n"
+        self.assertEqual(self.normalize(child, self.shell.replace("mod.rs", "client.rs")), "use super::client_leader_version;\nfn f() { send(client_leader_version()); }\n")
+
+    def test_format_captures_only_in_known_format_macros(self):
+        source = '''use xai_grok_version::VERSION;
+fn f() {
+    let ordinary = "{VERSION}";
+    let raw = r#"{VERSION}"#;
+    custom!("{VERSION}");
+    format!("{{VERSION}} {VERSION:?}");
+    format!(r#"{VERSION}"#);
+    format!("{VERSION}", VERSION = "explicit");
+    format!("{VERSION}",);
+    assert_eq!(1, 1, "{VERSION}");
+    write!(sink, "{VERSION}");
+}
+'''
+        actual = self.normalize(source)
+        for retained in ('let ordinary = "{VERSION}";', 'let raw = r#"{VERSION}"#;', 'custom!("{VERSION}");', 'format!("{VERSION}", VERSION = "explicit");'):
+            self.assertIn(retained, actual)
+        self.assertIn('format!("{{VERSION}} {VERSION:?}", VERSION = version())', actual)
+        self.assertIn('format!(r#"{VERSION}"#, VERSION = version())', actual)
+        self.assertIn('format!("{VERSION}", VERSION = version())', actual)
+        self.assertIn('write!(sink, "{VERSION}", VERSION = version())', actual)
+
+    def test_clean_merge_can_mix_existing_getter_import_with_new_legacy_reference(self):
+        source = '''use crate::client_identity::{pager_client_version, PAGER_CLIENT_TYPE};
+fn f() { send(pager_client_version(), PAGER_CLIENT_VERSION, PAGER_CLIENT_TYPE); }
+'''
+        self.assertEqual(self.normalize(source), source.replace(", PAGER_CLIENT_VERSION,", ", pager_client_version(),"))
+        source = "pub use xai_grok_version::version as pager_client_version;\nfn f() { send(PAGER_CLIENT_VERSION); }\n"
+        self.assertEqual(self.normalize(source), source.replace("send(PAGER_CLIENT_VERSION)", "send(pager_client_version())"))
+
+    def test_library_stamp_macros_are_scoped_to_application_identity(self):
+        source = '''fn f() { send(env! ( "CARGO_PKG_VERSION" ));
+    send(option_env!("GROK_VERSION").is_none(), option_env!("GROK_VERSION").is_some()); }
+'''
+        actual = self.normalize(source)
+        self.assertIn("send(xai_grok_version::version())", actual)
+        self.assertIn("send(xai_grok_version::is_dev_build(), !xai_grok_version::is_dev_build())", actual)
+        self.assertEqual(self.normalize(source, "crates/codegen/xai-grok-pager-bin/src/main.rs"), source)
+        independent = self.normalize(source, "crates/codegen/xai-grok-workspace/src/lib.rs")
+        self.assertIn('env! ( "CARGO_PKG_VERSION" )', independent)
+        self.assertIn("xai_grok_version::is_dev_build()", independent)
+
+    def test_shadowed_and_unsupported_bindings_fail_closed(self):
+        invalid = (
+            'use xai_grok_version::VERSION; fn f() { let VERSION = "local"; send(VERSION); }',
+            'use xai_grok_version::VERSION; fn f(VERSION: &str) { send(VERSION); }',
+            'use xai_grok_version::VERSION; mod other { use unrelated::VERSION; fn f() { send(VERSION); } }',
+            'use xai_grok_version::VERSION; fn f() { let version = || "wrong"; send(VERSION); }',
+            'use xai_grok_version as metadata; fn f() { send(metadata::VERSION); }',
+            'use xai_grok_version::*; fn f() { send(VERSION); }',
+            'static STAMP: &str = xai_grok_version::VERSION;',
+            'const STAMP: Option<&str> = Some(xai_grok_version::VERSION);',
+            'const STAMP /* keep this comment */: &str = xai_grok_version::VERSION;',
+        )
+        for source in invalid:
+            with self.subTest(source=source), self.assertRaises(sync.SyncError):
+                self.normalize(source)
+
+    def test_unsupported_or_non_rust_paths_are_not_rewritten(self):
+        source = "xai_grok_version::VERSION"
+        for path in ("README.md", "third_party/test.rs", "scripts/automation/test.rs",
+                     "crates/codegen/xai-grok-version/src/lib.rs"):
+            with self.subTest(path=path):
+                self.assertEqual(sync.normalize_runtime_version(path, source.encode()), source.encode())
+
+
 class RepositoryFixture(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -272,6 +413,93 @@ class RepositoryTests(RepositoryFixture):
         with patch.object(sync, "fetch", return_value=(self.base, self.upstream)), self.assertRaises(sync.SyncError):
             sync.reconstruct(args)
         self.assertFalse(Path(".github/workflows/pwn.yml").exists())
+
+
+class RuntimeVersionMergeTests(RepositoryFixture):
+    path = "crates/codegen/xai-grok-pager/src/client_identity.rs"
+
+    def branches(self, ancestor, ours, theirs):
+        sync.git("checkout", "-q", "--detach", self.initial)
+        self.write(self.path, ancestor)
+        initial = self.commit("runtime ancestor")
+        self.write(self.path, theirs)
+        self.upstream = self.commit("upstream runtime change")
+        sync.git("checkout", "-q", "--detach", initial)
+        self.write(self.path, ours)
+        self.write("untouched.txt", "fork\n")
+        self.base = self.commit("fork runtime change")
+
+    def reconstruct_head(self):
+        args = SimpleNamespace(base=self.base, upstream=self.upstream, artifact=str(self.artifact_path))
+        with patch.object(sync, "fetch", return_value=(self.base, self.upstream)), patch.object(sync, "output") as outputs:
+            sync.reconstruct(args)
+        return outputs.call_args.kwargs["head"]
+
+    def test_clean_upstream_additions_are_normalized_and_reconstructed(self):
+        ancestor = "use crate::client_identity::PAGER_CLIENT_VERSION;\n\n\nfn existing() {}\n"
+        ours = ancestor.replace("PAGER_CLIENT_VERSION", "pager_client_version")
+        theirs = ancestor + "fn added() { send(PAGER_CLIENT_VERSION); }\n"
+        self.branches(ancestor, ours, theirs)
+        state = self.start()
+        self.assertEqual(state["conflicts"], {})
+        expected = ours + "fn added() { send(pager_client_version()); }\n"
+        self.assertEqual(Path(self.path).read_text(), expected)
+        self.export()
+        sync.git("merge", "--abort")
+        head = self.reconstruct_head()
+        self.assertEqual(sync.git("show", f"{head}:{self.path}").decode(), expected)
+        self.assertEqual(sync.git("show", f"{head}:untouched.txt"), b"fork\n")
+        self.assertEqual(sync.git("show", "-s", "--format=%P", head).decode().strip().split(), [self.base, self.upstream])
+
+    def test_three_way_version_api_only_conflict_resolves_without_ai(self):
+        ancestor = "fn f() { send(xai_grok_version::VERSION); }\n"
+        ours = ancestor.replace("::VERSION", "::version()")
+        theirs = ancestor.replace("send(", "emit(")
+        self.branches(ancestor, ours, theirs)
+        state = self.start()
+        self.assertEqual(state["conflicts"], {})
+        expected = "fn f() { emit(xai_grok_version::version()); }\n"
+        self.assertEqual(Path(self.path).read_text(), expected)
+        self.export()
+        sync.git("merge", "--abort")
+        head = self.reconstruct_head()
+        self.assertEqual(sync.git("show", f"{head}:{self.path}").decode(), expected)
+
+    def test_three_way_unrelated_semantic_conflict_stays_for_ai(self):
+        ancestor = 'fn f() { send("base", xai_grok_version::VERSION); }\n'
+        ours = ancestor.replace('"base"', '"fork"').replace("::VERSION", "::version()")
+        theirs = ancestor.replace('"base"', '"upstream"')
+        self.branches(ancestor, ours, theirs)
+        state = self.start()
+        self.assertEqual(set(state["conflicts"]), {self.path})
+        # A model may reintroduce the legacy API. The trusted reconstruction
+        # repeats the transform after exact path/SHA validation of the artifact.
+        resolved = ancestor.replace('"base"', '"resolved"')
+        self.write(self.path, resolved)
+        self.export()
+        sync.git("merge", "--abort")
+        head = self.reconstruct_head()
+        self.assertEqual(sync.git("show", f"{head}:{self.path}").decode(), resolved.replace("::VERSION", "::version()"))
+        self.assertEqual(sync.git("show", f"{head}:untouched.txt"), b"fork\n")
+
+    def test_reconstruction_rejects_ambiguous_legacy_binding_before_commit(self):
+        self.branches('fn f() { send("base"); }\n', 'fn f() { send("ours"); }\n', 'fn f() { send("theirs"); }\n')
+        self.start()
+        self.write(self.path, 'use xai_grok_version::VERSION; fn f() { let VERSION = "shadow"; send(VERSION); }\n')
+        self.export()
+        sync.git("merge", "--abort")
+        with self.assertRaises(sync.SyncError):
+            self.reconstruct_head()
+        self.assertEqual(sync.git("rev-parse", "HEAD").decode().strip(), self.base)
+
+    def test_runtime_migration_cannot_enlarge_ai_resolution_paths(self):
+        ancestor = "fn f() { send(xai_grok_version::VERSION); }\n"
+        self.branches(ancestor, ancestor.replace("::VERSION", "::version()"), ancestor.replace("send(", "emit("))
+        state = self.start()
+        self.assertEqual(state["conflicts"], {})
+        self.write(self.path, "fn injected() {}\n")
+        with self.assertRaises(sync.SyncError):
+            self.export()
 
 
 class PublicationTests(unittest.TestCase):

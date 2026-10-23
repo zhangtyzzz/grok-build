@@ -149,6 +149,8 @@ jobs:
         run: |
           cargo test --locked -p xai-grok-shell --lib
           cargo test --locked -p xai-grok-shell --test runtime_version_identity
+          cargo test --locked -p xai-grok-shell --bin chat-history-downgrade standalone_tool_registers_development_identity
+          cargo test --locked -p xai-grok-workspace --bin xai-workspace-server --bin workspace-server-probe standalone_tool_registers_development_identity
         env:
           # Shell turn futures are sized for the production session thread,
           # whose stack budget is 8 MiB. Match it for libtest worker threads.
@@ -370,6 +372,9 @@ jobs:
 
       - name: Test Windows proc-macro reproducibility
         run: pwsh -NoProfile -File scripts/ci/test-windows-repro.ps1
+
+      - name: Test Windows native compiler cache reuse
+        run: pwsh -NoProfile -File scripts/ci/test-windows-native-cache.ps1
 
       - name: Test native Windows release input paths
         run: bash scripts/ci/test-release-inputs.sh

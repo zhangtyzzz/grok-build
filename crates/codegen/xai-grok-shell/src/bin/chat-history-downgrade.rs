@@ -125,7 +125,19 @@ fn extract_reasoning_text(raw: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// This standalone source tool is not shipped in the grok release archives.
+/// Register a development identity explicitly; never inherit the release stamp or
+/// the containing library's package version into shared runtime identity.
+fn initialize_development_identity() -> Result<(), xai_grok_version::AlreadyInitialized> {
+    xai_grok_version::initialize(xai_grok_version::BuildInfo {
+        version: "0.0.0-dev",
+        full_version: "0.0.0-dev",
+        is_dev_build: true,
+    })
+}
+
 fn main() -> anyhow::Result<()> {
+    initialize_development_identity()?;
     let args = Args::parse();
 
     let reader = BufReader::new(File::open(&args.input)?);
@@ -163,6 +175,25 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standalone_tool_registers_development_identity() {
+        initialize_development_identity().unwrap();
+        initialize_development_identity().unwrap();
+        assert_eq!(xai_grok_version::version(), "0.0.0-dev");
+        assert_eq!(xai_grok_version::full_version(), "0.0.0-dev");
+        assert!(xai_grok_version::is_dev_build());
+        // A fallback read would not reject another identity: this proves startup
+        // registered the tool's development identity in the shared runtime state.
+        assert!(
+            xai_grok_version::initialize(xai_grok_version::BuildInfo {
+                version: "1.2.3",
+                full_version: "1.2.3 (abcdef012345)",
+                is_dev_build: false,
+            })
+            .is_err()
+        );
+    }
 
     /// Parse a single v1 JSON line, convert to v0, re-serialize, and re-parse as v0.
     /// Returns the v0 JSON string for further assertions.
