@@ -6,7 +6,8 @@ use xai_grok_version::{
 fn injected_identity_drives_all_public_version_views() {
     assert_eq!(version(), "0.0.0-dev");
     assert_eq!(full_version(), "0.0.0-dev");
-    assert!(is_dev_build());
+    // An uninitialized optimized binary must not relax dev-only safety checks.
+    assert_eq!(is_dev_build(), cfg!(debug_assertions));
     let release = BuildInfo {
         version: "1.2.3-alpha.4",
         full_version: "1.2.3-alpha.4 (abcdef012345)",
