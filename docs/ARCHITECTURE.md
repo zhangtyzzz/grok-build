@@ -61,9 +61,12 @@ it does not replace the shipping identity used in request headers.
 The pager, shell, and version library package versions stay at `0.0.0` across
 both release branches. Only the binary package version changes for a release,
 so the library compiler inputs remain reusable. Uninitialized library harnesses
-and the auxiliary `xai-workspace-server` use `0.0.0-dev` with development status;
-reading this fallback does not latch it before a binary initializes identity.
-The auxiliary workspace server is not a shipped Grok release executable.
+fall back to `0.0.0-dev` with development status; reading this fallback does not
+latch it before a binary initializes identity. The standalone source tools
+`chat-history-downgrade`, `xai-workspace-server`, and `workspace-server-probe`
+explicitly register that development identity before starting work. They are not
+shipped Grok release executables: in particular, the standalone server reports
+`WorkspaceInfo.version = "0.0.0-dev"` rather than claiming a shipping Grok version.
 
 The composition root's `release-dist` feature also enables
 `xai-grok-shell/privacy-hardening`. That compile-time policy forces collection
