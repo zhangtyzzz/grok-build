@@ -266,7 +266,7 @@ PR 必须列出上游 SHA、保留/替代的 fork 行为、每项冲突决策及
 
 发布版本只属于 `xai-grok-pager-bin`。`xai-grok-version`、`xai-grok-shell`、`xai-grok-pager` 的 package version 在 main 和 alpha 均固定为 `0.0.0`，对应 Cargo.lock 条目也固定；它们不是用户看到的应用版本。不能在同步时恢复四包 lockstep，也不能给库重新引入 `env!("CARGO_PKG_VERSION")` 或 `option_env!("GROK_VERSION")` 来表示应用版本。
 
-二进制在 `main` 第一条启动操作中一次性注入版本号、带提交号版本和开发构建状态。库通过 `xai-grok-version` 的运行时 getter 获取；目录信任、更新版本比较、leader 兼容性和请求头必须使用同一身份。`release-dist` 的编译期隐私硬化保持不变。独立库测试和未注入身份的辅助程序使用 `0.0.0-dev`；测试版本覆盖仍按既有范围生效。
+二进制在 `main` 第一条启动操作中一次性注入版本号、带提交号版本和开发构建状态。库通过 `xai-grok-version` 的运行时 getter 获取；目录信任、更新版本比较、leader 兼容性和请求头必须使用同一身份。`release-dist` 的编译期隐私硬化保持不变。独立库测试和未注入身份的辅助程序使用 `0.0.0-dev`；测试版本覆盖仍按既有范围生效。未注入身份时 `is_dev_build()` 只在 debug profile 为真：开发构建会放宽目录信任等安全检查，优化构建若漏掉注入必须按非开发版处理（fail closed），不能静默信任所有目录。
 
 fork 自己维护发布编号：upstream sync 从 fork main 当前稳定版递增一个 patch，不跟随上游编号；这是 alpha 已有的规则，本轮同步到 main。alpha 使用下个稳定 patch 的 `-alpha.N`。同步脚本只递增二进制版本，把三份库 manifest 和 lockfile 中对应条目归一到固定值；版本之外的合并冲突不得自动抹去。`scripts/dist/release-version.mjs` 在预热、协调和发布阶段校验二进制版本、固定库版本及 lockfile，现有 tag 与精确 commit 验证继续保留。
 
@@ -309,7 +309,7 @@ fork 自己维护发布编号：upstream sync 从 fork main 当前稳定版递�
 
 **代码入口。** `.github/workflows/{alpha-prewarm,release-cache}.yml`；`scripts/ci/dispatch-alpha-warm.py`、`test_dispatch_alpha_warm.py`；`scripts/automation/upstream_sync.py::protected` 单独保护这个持写权限的 dispatcher 路径。
 
-**合并方法。** 先让 alpha 具备接收输入与校验，再经审核晋升将调度 workflow/helper 放进默认 main；仅合到 alpha 不会激活 `workflow_run`。后续工作流修改随 alpha → main 晋升，保持两端合同一致。保留已有精确 SHA 的 warm 并发组、运行前去重和 dispatch 后有界可见性确认；已完成的成功协调器只有当前 attempt、同一 SHA 的全部六平台 warm jobs 成功才可去重，tag 已存在导致 warm skipped 不算已预热；API 去重不是原子锁，不能承诺同时人工 dispatch 时绝无重复或 pending run 被替换。旧预热成功也不保证缓存永远未被淘汰，owner 发版协调器仍需独立验证构建与质量证据。
+**合并方法。** 先让 alpha 具备接收输入与校验，再经审核晋升将调度 workflow/helper 放进默认 main；仅合到 alpha 不会激活 `workflow_run`。后续工作流修改随 alpha → main 晋升，保持两端合同一致。保留已有精确 SHA 的 warm 并发组、运行前去重和 dispatch 后有界可见性确认；已完成的成功协调器只有当前 attempt、同一 SHA 的全部六平台 warm jobs 成功才可去重，tag 已存在导致 warm skipped 不算已预热；API 去重不是原子锁，不能承诺同时人工 dispatch 时绝无重复或 pending run 被替换。旧预热成功也不保证缓存永远未被淘汰，owner 发版协调器仍需独立验证构建与质量证据。自动预热由 `GITHUB_TOKEN` dispatch，GitHub 不会为它的完成触发 `workflow_run`，所以 `cache-maintenance.yml` 另有定时运行来清理被取代的每 commit 构建缓存；不要只依赖 `workflow_run` 触发清理。
 
 **验证。** `python3 -B -m unittest discover -s scripts/ci -p 'test_dispatch_alpha_warm.py'` 实际执行接收 workflow 的 shell 校验，覆盖 SHA/分支不符、来源/attempt 不符、tag 已存在时跳过 warm 的成功协调器、重复运行与 API 可见性延迟；`python3 -B -m unittest discover -s scripts/automation -p 'test_*.py'` 检查受保护路径。首次上线观察 alpha CI 通过后自动产生同一 SHA 的六平台预热，确认无新 tag/release；正式发布仍由 owner 调用既有协调器。
 
@@ -322,8 +322,8 @@ fork 自己维护发布编号：upstream sync 从 fork main 当前稳定版递�
 | 采用上游 model_providers 并保留旁路 policy | `ff1b9b32`；RFC §4.2 修订。 |
 | 缓存 placement 跟上游，保留 TTL/off 增量 | `8595f481`、`ec4bda42`；RFC §9；差异审计 §1。 |
 | Plan Mode 撤销 fork 扩展 | `1a6d8517`（PR #97）；RFC §5；差异审计 2026-09-18 更新。 |
-| 二进制独占发布版本、库固定版本与 fork patch 编号 | 本文 §6；`xai-grok-version::BuildInfo`；`scripts/dist/release-version.mjs`；`scripts/automation/upstream_sync.py::normalize_runtime_version` / `apply_runtime_versions` 与对应词法、三方合并、重建单测；`AGENTS.md` Releases。 |
-| 多平台发布加速与可信产物交接 | 本文 §3.5；`.cargo/release-distribution.toml`；`scripts/ci/release-handoff.py` 与对应单测；`cache-maintenance.yml` / `scripts/ci/prune-caches.py` 删除旧 sccache 整包缓存，并按发布分支清理重复源缓存与精确构建缓存，保留未知缓存及 PR / 功能分支缓存；`compiler-cache-artifact.py` 校验并恢复可信编译快照、保留各发布分支每个工作负载最新两份；发布文档。 |
+| 二进制独占发布版本、库固定版本与 fork patch 编号 | 本文 §6；`xai-grok-version::BuildInfo`（未注入时优化构建不是开发版）；`scripts/dist/release-version.mjs`；`scripts/automation/upstream_sync.py::normalize_runtime_version` / `apply_runtime_versions` 与对应词法、三方合并、重建单测；`AGENTS.md` Releases。 |
+| 多平台发布加速与可信产物交接 | 本文 §3.5；`.cargo/release-distribution.toml`；`scripts/ci/release-handoff.py` 与对应单测；`cache-maintenance.yml`（`workflow_run` 加每 2 小时定时，覆盖 bot 触发的自动预热）/ `scripts/ci/prune-caches.py` 删除旧 sccache 整包缓存，并按发布分支清理重复源缓存与精确构建缓存，保留未知缓存及 PR / 功能分支缓存；`compiler-cache-artifact.py` 校验并恢复可信编译快照、保留各发布分支每个工作负载最新两份；发布文档。 |
 | fork 独立版本号与 alpha 通道（取代 `217891d1` 的跟随上游版本线） | 本文 §6；`AGENTS.md` Releases；发布文档；`ForkVersionTests`。 |
 | alpha CI 后仅预热、默认 main 可信调度与精确 SHA 接收 | 本文 §6.2；`alpha-prewarm.yml` / `release-cache.yml`；`dispatch-alpha-warm.py` 与实际 shell guard 测试；`upstream_sync.py::protected`。 |
 | 标准发行入口与精确产物复用 | `6ff1d78f`、`2e09f905`；`docs/release-distribution.md`。 |
