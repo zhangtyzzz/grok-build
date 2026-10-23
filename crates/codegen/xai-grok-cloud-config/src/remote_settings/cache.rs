@@ -88,7 +88,7 @@ where
             read_capped(&self.path, MODELS_CACHE_MAX_BYTES).ok_or(CacheLoadError::NotFound)?;
         let cache: ModelsCache<E> =
             serde_json::from_slice(&data).map_err(|_| CacheLoadError::ParseFailed)?;
-        if cache.grok_version.as_deref() != Some(xai_grok_version::VERSION) {
+        if cache.grok_version.as_deref() != Some(xai_grok_version::version()) {
             return Err(CacheLoadError::VersionMismatch);
         }
         if cache.auth_method.as_ref() != Some(&scope.auth_method) {
@@ -130,7 +130,7 @@ where
         let cache = ModelsCache {
             fetched_at,
             renewed_at: None,
-            grok_version: Some(xai_grok_version::VERSION.to_string()),
+            grok_version: Some(xai_grok_version::version().to_string()),
             auth_method: Some(scope.auth_method.clone()),
             origin: Some(scope.origin.clone()),
             identity: Some(scope.identity.clone()),

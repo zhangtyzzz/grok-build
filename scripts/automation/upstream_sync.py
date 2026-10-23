@@ -23,13 +23,20 @@ MAX_ARTIFACT = 20 * 1024 * 1024
 MAX_FILE = 2 * 1024 * 1024
 SHA = re.compile(r"^[0-9a-f]{40}$")
 MARKER = re.compile(rb"^(?:<{7,}|={7,}|>{7,}|\|{7,})(?:[ \t\r]|$)", re.MULTILINE)
-# The fork numbers its own releases: every sync takes the next patch above main's
-# version, never upstream's value, so tags cannot collide with upstream's line.
-VERSION_PACKAGES = ("xai-grok-pager-bin", "xai-grok-pager", "xai-grok-shell", "xai-grok-version")
+# Only the executable carries the fork release number. Internal crate identities
+# stay identical across main/alpha and upstream imports so release bumps do not
+# invalidate the dependency graph. These are not runtime application versions.
+BINARY_PACKAGE = "xai-grok-pager-bin"
+INTERNAL_PACKAGES = ("xai-grok-pager", "xai-grok-shell", "xai-grok-version")
+INTERNAL_VERSION = "0.0.0"
+VERSION_PACKAGES = (BINARY_PACKAGE, *INTERNAL_PACKAGES)
 VERSION_MANIFESTS = tuple(f"crates/codegen/{p}/Cargo.toml" for p in VERSION_PACKAGES)
 VERSION_FILES = (*VERSION_MANIFESTS, "Cargo.lock")
-MANIFEST_VERSION = re.compile(rb'^version = "[^"\n]+"$', re.MULTILINE)
-STABLE_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+MANIFEST_VERSION = re.compile(rb'^version = "([^"\n]+)"$', re.MULTILINE)
+PACKAGE_NAME = re.compile(rb'^name = "([^"\n]+)"$', re.MULTILINE)
+PACKAGE_SECTION = re.compile(rb'(?ms)^\[package\]\n(.*?)(?=^\[|\Z)')
+LOCK_PACKAGE = re.compile(rb'(?ms)^\[\[package\]\]\n.*?(?=^\[\[package\]\]|\Z)')
+STABLE_VERSION = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
 
 
 class SyncError(RuntimeError):
@@ -197,16 +204,27 @@ def snapshot() -> dict[str, str]:
     return result
 
 
+def manifest_package(path: str, content: bytes) -> tuple[re.Match, re.Match]:
+    """Find only the owning package's version; never rewrite a dependency field."""
+    sections = list(PACKAGE_SECTION.finditer(content))
+    if len(sections) != 1:
+        raise SyncError(f"missing or duplicate package section: {path}")
+    section = sections[0]
+    names = list(PACKAGE_NAME.finditer(section[1]))
+    versions = list(MANIFEST_VERSION.finditer(section[1]))
+    expected = PurePosixPath(path).parent.name.encode()
+    if len(names) != 1 or names[0][1] != expected or len(versions) != 1:
+        raise SyncError(f"missing, duplicate or renamed release package/version: {path}")
+    return section, versions[0]
+
+
 def fork_version(base: str) -> str:
-    versions = set()
-    for path in VERSION_MANIFESTS:
-        match = MANIFEST_VERSION.search(git("show", f"{base}:{path}"))
-        if not match:
-            raise SyncError(f"missing release package version: {path}")
-        versions.add(match[0].decode().split('"')[1])
-    if len(versions) != 1 or not STABLE_VERSION.fullmatch(next(iter(versions))):
-        raise SyncError("main release versions are not one lockstepped stable SemVer")
-    return versions.pop()
+    path = VERSION_MANIFESTS[0]
+    _, match = manifest_package(path, git("show", f"{base}:{path}"))
+    version = match[1].decode()
+    if not STABLE_VERSION.fullmatch(version):
+        raise SyncError("main executable version is not stable SemVer")
+    return version
 
 
 def next_patch(version: str) -> str:
@@ -215,21 +233,42 @@ def next_patch(version: str) -> str:
 
 
 def set_version(path: str, content: bytes, version: str) -> bytes:
+    """Normalize executable and internal identities without resolving other edits."""
     if path == "Cargo.lock":
-        for package in VERSION_PACKAGES:
-            content = re.sub(
-                rb'(\[\[package\]\]\nname = "' + re.escape(package.encode()) + rb'"\nversion = )"[^"\n]+"',
-                lambda m: m[1] + b'"' + version.encode() + b'"', content)
+        seen = set()
+
+        def replace_package(match):
+            block = match[0]
+            names = list(PACKAGE_NAME.finditer(block))
+            if not names or names[0][1].decode() not in VERSION_PACKAGES:
+                return block
+            package = names[0][1].decode()
+            versions = list(MANIFEST_VERSION.finditer(block))
+            if (len(names) != 1 or len(versions) != 1 or package in seen
+                    or re.search(rb"^source\s*=", block, re.MULTILINE)):
+                raise SyncError(f"ambiguous workspace package in Cargo.lock: {package}")
+            seen.add(package)
+            desired = version if package == BINARY_PACKAGE else INTERNAL_VERSION
+            return MANIFEST_VERSION.sub(f'version = "{desired}"'.encode(), block, count=1)
+
+        content = LOCK_PACKAGE.sub(replace_package, content)
+        if seen != set(VERSION_PACKAGES):
+            raise SyncError("Cargo.lock is missing a release workspace package version")
         return content
-    return MANIFEST_VERSION.sub(f'version = "{version}"'.encode(), content, count=1)
+    if path not in VERSION_MANIFESTS:
+        raise SyncError(f"unexpected version file: {path}")
+    section, match = manifest_package(path, content)
+    desired = version if path == VERSION_MANIFESTS[0] else INTERNAL_VERSION
+    start, end = section.start(1) + match.start(), section.start(1) + match.end()
+    return content[:start] + f'version = "{desired}"'.encode() + content[end:]
 
 
 def apply_fork_version(base: str) -> bool:
     """Pin version files to main's next patch; resolve conflicts caused only by versions.
 
-    Every side of a conflicted version file is rewritten to the same version before
-    a three-way merge, so a version-only conflict disappears and any other conflict
-    stays for the normal resolution path. Returns whether a conflict was resolved.
+    Each side receives the same package-specific versions before a three-way merge,
+    so version-only conflicts disappear while dependency/content conflicts remain.
+    Returns whether a conflict was resolved.
     """
     version = next_patch(fork_version(base))
     stages = {}
@@ -242,9 +281,10 @@ def apply_fork_version(base: str) -> bool:
     for path in VERSION_FILES:
         file = safe_file(path)
         if path not in stages:
-            if file.is_file() and not file.is_symlink():
-                file.write_bytes(set_version(path, file.read_bytes(), version))
-                git("add", "--", path)
+            if not file.is_file() or file.is_symlink() or file.stat().st_mode & 0o111:
+                raise SyncError(f"missing or non-regular version file: {path}")
+            file.write_bytes(set_version(path, file.read_bytes(), version))
+            git("add", "--", path)
             continue
         entries = stages[path]
         if set(entries) != {"1", "2", "3"} or any(m != "100644" for m, _ in entries.values()):
@@ -466,24 +506,22 @@ def merge_release(args):
         raise SyncError("merged tree differs from tested tree; no release dispatched")
     if api(f"repos/{args.repo}/commits/main")["sha"] != merged_sha:
         raise SyncError("main advanced after merge; no release dispatched")
-    versions = []
-    for package in ("xai-grok-pager-bin", "xai-grok-pager", "xai-grok-shell", "xai-grok-version"):
-        manifest = api(f"repos/{args.repo}/contents/crates/codegen/{package}/Cargo.toml?ref={merged_sha}")
-        if manifest.get("encoding") != "base64":
-            raise SyncError("unexpected release manifest encoding")
-        content = base64.b64decode(manifest["content"]).decode("utf-8")
-        match = re.search(r'^version = "([^"]+)"$', content, re.MULTILINE)
-        if not match:
-            raise SyncError("missing release package version")
-        versions.append(match[1])
-    if len(set(versions)) != 1 or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-(?:alpha|beta|rc)\.[0-9]+)?", versions[0]):
-        raise SyncError("release versions are not lockstepped SemVer")
-    tags = api(f"repos/{args.repo}/git/matching-refs/tags/v{versions[0]}")
-    if any(ref["ref"] == f"refs/tags/v{versions[0]}" for ref in tags):
+    path = VERSION_MANIFESTS[0]
+    manifest = api(f"repos/{args.repo}/contents/{path}?ref={merged_sha}")
+    if manifest.get("encoding") != "base64":
+        raise SyncError("unexpected release manifest encoding")
+    # GitHub wraps content API base64 with newlines.
+    content = base64.b64decode("".join(manifest["content"].split()), validate=True)
+    _, match = manifest_package(path, content)
+    version = match[1].decode()
+    if not STABLE_VERSION.fullmatch(version):
+        raise SyncError("main executable version is not stable SemVer")
+    tags = api(f"repos/{args.repo}/git/matching-refs/tags/v{version}")
+    if any(ref["ref"] == f"refs/tags/v{version}" for ref in tags):
         print("Version already tagged; sync merged without a duplicate release")
         return
-    # auto-release independently rechecks lockstep versions, tag absence and the
-    # expected commit. A push racing dispatch must fail closed, never publish it.
+    # The coordinator rechecks the executable version, tag absence and expected
+    # commit. A push racing dispatch must fail closed, never publish it.
     api(f"repos/{args.repo}/actions/workflows/auto-release.yml/dispatches", "POST", {
         "ref": "main", "inputs": {"expected_commit": merged_sha}})
     print(f"Merged {merged_sha}; dispatched existing warm/tag/release pipeline")

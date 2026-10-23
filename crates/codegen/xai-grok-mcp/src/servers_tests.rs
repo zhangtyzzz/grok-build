@@ -192,7 +192,7 @@ fn parse_config_headers_skips_invalid_and_keeps_last_duplicate() {
 fn apply_user_agent_policy_sets_versioned_grok_cli() {
     let mut headers = reqwest::header::HeaderMap::new();
     apply_user_agent_policy(&mut headers, "linear", "https://mcp.linear.app/mcp");
-    let expected = format!("grok-cli/{}", xai_grok_version::VERSION);
+    let expected = format!("grok-cli/{}", xai_grok_version::version());
     assert_eq!(
         headers.get(reqwest::header::USER_AGENT).unwrap(),
         expected.as_str()
@@ -2186,7 +2186,7 @@ async fn http_transport_sends_default_user_agent_on_initialize() {
     client.ensure_initialized().await.expect("handshake");
     assert_eq!(
         *handles.init_user_agents.lock(),
-        vec![format!("grok-cli/{}", xai_grok_version::VERSION)]
+        vec![format!("grok-cli/{}", xai_grok_version::version())]
     );
 }
 
@@ -4736,7 +4736,7 @@ async fn anonymous_access_probe_sends_default_user_agent() {
         .expect("probe POST must reach the fake server");
     assert_eq!(
         header_values(&captured, axum::http::header::USER_AGENT),
-        vec![format!("grok-cli/{}", xai_grok_version::VERSION)]
+        vec![format!("grok-cli/{}", xai_grok_version::version())]
     );
     assert_eq!(
         header_values(&captured, axum::http::header::CONTENT_TYPE),

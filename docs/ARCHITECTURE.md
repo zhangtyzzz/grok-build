@@ -50,6 +50,21 @@ The composition root is
 services such as the allocator hooks, crash handling, telemetry, sandbox
 requirements, and Tokio runtime before dispatching the selected mode.
 
+Its first startup operation atomically initializes `xai-grok-version::BuildInfo`
+with the plain release version, version-with-commit, and development-build status.
+Only `xai-grok-pager-bin` reads `GROK_VERSION` at compile time; libraries obtain
+identity through `version()`, `full_version()`, and `is_dev_build()`. Initialization
+precedes worker dispatch, CLI parsing, update-channel caching, and trust decisions.
+`GROK_TEST_VERSION` retains its existing installed-version/test-trust override;
+it does not replace the shipping identity used in request headers.
+
+The pager, shell, and version library package versions stay at `0.0.0` across
+both release branches. Only the binary package version changes for a release,
+so the library compiler inputs remain reusable. Uninitialized library harnesses
+and the auxiliary `xai-workspace-server` use `0.0.0-dev` with development status;
+reading this fallback does not latch it before a binary initializes identity.
+The auxiliary workspace server is not a shipped Grok release executable.
+
 The composition root's `release-dist` feature also enables
 `xai-grok-shell/privacy-hardening`. That compile-time policy forces collection
 and reporting gates closed in the shell and independently leaves all

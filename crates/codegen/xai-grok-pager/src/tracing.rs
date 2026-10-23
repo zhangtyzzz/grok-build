@@ -337,7 +337,7 @@ pub fn init_tracing() -> TracingHandle {
     let otel_layer = xai_grok_telemetry::otel_layer::build_otel_layer(
         xai_grok_telemetry::otel_layer::OtelClientInfo {
             client_name: "grok-pager",
-            client_version: xai_grok_version::VERSION,
+            client_version: xai_grok_version::version(),
             service_version: xai_grok_version::full_version(),
             app_entrypoint: "tui",
         },
@@ -358,7 +358,7 @@ pub fn init_tracing() -> TracingHandle {
         xai_grok_shell::agent::config::resolve_external_otel_config(
             xai_grok_telemetry::external::config::ExternalClientInfo {
                 service_version: xai_grok_version::full_version().to_owned(),
-                client_version: xai_grok_version::VERSION.to_owned(),
+                client_version: xai_grok_version::version().to_owned(),
                 app_entrypoint: "tui".to_owned(),
             },
         ),

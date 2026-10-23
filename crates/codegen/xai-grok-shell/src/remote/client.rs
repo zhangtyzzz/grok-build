@@ -46,7 +46,7 @@ async fn add_bundle_fetch_headers(
 
     let mut builder = credentials
         .apply(builder, url)
-        .header("x-grok-client-version", xai_grok_version::VERSION);
+        .header("x-grok-client-version", xai_grok_version::version());
 
     if deployment_key.is_none()
         && let Some(auth) = &resolved_auth
@@ -160,7 +160,7 @@ async fn fetch_bundle_inner(
     let mut request = client
         .get(&archive_url)
         .timeout(std::time::Duration::from_secs(30))
-        .header("x-grok-client-version", xai_grok_version::VERSION)
+        .header("x-grok-client-version", xai_grok_version::version())
         .header(
             crate::http::CLIENT_MODE_HEADER,
             crate::http::process_client_mode(),
@@ -439,7 +439,7 @@ impl BackendClient {
         );
         headers.insert(
             "x-grok-client-version",
-            HeaderValue::from_static(xai_grok_version::VERSION),
+            HeaderValue::from_static(xai_grok_version::version()),
         );
         Ok(headers)
     }

@@ -39,11 +39,11 @@ rules.
   promotions from `alpha`, and release or automation changes the owner directs
   there. The alpha update channel (`[cli] channel = "alpha"`) installs alpha
   builds; stable users only see `main` releases.
-- The fork numbers its own releases; the four lockstepped package versions no
-  longer track upstream. Each upstream sync sets `main` to its next patch (the
-  sync script does this deterministically; never resolve versions toward
-  upstream). `alpha` carries the next stable patch above `main` with
-  `-alpha.N`, incremented for each alpha publication.
+- Only `xai-grok-pager-bin` tracks the release version. Keep pager, shell, and
+  version library packages at `0.0.0`; never embed release stamps in libraries.
+  The binary initializes runtime identity before any work. Upstream sync uses
+  the fork's next patch and normalizes library versions; preserve this policy
+  and validate with `node scripts/dist/release-version.mjs`.
 - Promote by an owner-approved PR from `alpha` to `main` that sets the next
   stable patch, then dispatch the stable release from `main`. After every
   stable release, merge `main` back into `alpha` by PR and reset `alpha` to the

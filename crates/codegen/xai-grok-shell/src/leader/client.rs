@@ -642,7 +642,7 @@ mod tests {
             FakeLeaderBehavior::Normal {
                 versions: FakeVersions {
                     protocol_version: Some(999),
-                    binary_version: Some(xai_grok_version::VERSION.to_string()),
+                    binary_version: Some(xai_grok_version::version().to_string()),
                 },
                 caps: fake_caps(true, false),
             },
@@ -698,7 +698,7 @@ mod tests {
         );
         assert_eq!(
             client.registration().leader_binary_version.as_deref(),
-            Some(env!("CARGO_PKG_VERSION"))
+            Some(xai_grok_version::version())
         );
         assert!(
             client
@@ -1201,7 +1201,7 @@ mod tests {
             socket_path: sock_path.clone(),
             lock_path: sock_path.with_extension("lock"),
             ws_url_suffix: String::new(),
-            leader_binary_version: env!("CARGO_PKG_VERSION").to_string(),
+            leader_binary_version: xai_grok_version::version().to_string(),
         });
 
         let cancel_clone = cancel.clone();
@@ -1220,7 +1220,7 @@ mod tests {
                 tokio::sync::watch::channel(true).1,  // ready_rx
                 tokio::sync::watch::channel(false).0, // relay_demand_tx
                 tokio::sync::watch::channel(crate::leader::protocol::ShutdownReason::Manual).0, // shutdown_tx
-                None, // use LEADER_VERSION constant
+                None, // use the runtime registration version
                 control_state,
             )
             .await;

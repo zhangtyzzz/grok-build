@@ -230,7 +230,7 @@ pub async fn run_stdio_agent(
              parent — stdin EOF remains the only cleanup"
         );
     }
-    xai_grok_telemetry::unified_log::set_version(xai_grok_version::VERSION);
+    xai_grok_telemetry::unified_log::set_version(xai_grok_version::version());
     xai_file_utils::queue::cleanup_orphaned_uploads(
         &grok_home::grok_home(),
         xai_file_utils::queue::DEFAULT_MAX_AGE,
@@ -317,7 +317,7 @@ pub async fn run_headless(
     memory_config: Option<crate::config::MemoryConfig>,
 ) -> anyhow::Result<()> {
     register_fs_watch_runtime();
-    xai_grok_telemetry::unified_log::set_version(xai_grok_version::VERSION);
+    xai_grok_telemetry::unified_log::set_version(xai_grok_version::version());
     crate::http::set_process_client_mode_headless();
     use crate::agent::relay::spawn_relay_connection_with_callback;
     use tokio_util::sync::CancellationToken;
@@ -714,7 +714,7 @@ pub async fn run_leader(
         cursor_worker: cursor_worker_boot,
     } = options;
     register_fs_watch_runtime();
-    xai_grok_telemetry::unified_log::set_version(xai_grok_version::VERSION);
+    xai_grok_telemetry::unified_log::set_version(xai_grok_version::version());
     let mut agent_config = agent_config.clone();
     agent_config.mode = crate::agent::config::AgentMode::Leader;
     let ws_url = &agent_config.grok_com_config.grok_ws_url;
@@ -796,7 +796,7 @@ pub async fn run_leader(
         socket_path: socket_path.clone(),
         lock_path: lock.lock_path().clone(),
         ws_url_suffix: compute_ws_url_suffix(ws_url),
-        leader_binary_version: xai_grok_version::VERSION.to_string(),
+        leader_binary_version: xai_grok_version::version().to_string(),
     })
     .with_default_hub_url(agent_config.hub.url.clone())
     .with_cursor_worker(

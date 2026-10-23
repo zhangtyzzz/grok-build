@@ -36,7 +36,7 @@ use xai_grok_pager::app::{
     LeaderMode, LeaderTargetArgs, PagerArgs, resolve_use_leader, warn_leader_disabled_by_sandbox,
 };
 use xai_grok_pager::app::{WorkspaceMgmtArgs, WorkspaceMgmtCommand, WorkspaceStartArgs};
-use xai_grok_pager::client_identity::PAGER_CLIENT_VERSION;
+use xai_grok_pager::client_identity::pager_client_version;
 use xai_grok_shell::agent::app::{run_headless, run_leader};
 use xai_grok_shell::agent::config::Config as AgentConfig;
 use xai_grok_shell::leader::{
@@ -245,7 +245,7 @@ fn init_tracing_simple(app_entrypoint: &'static str) {
         .with(xai_grok_telemetry::otel_layer::build_otel_layer(
             xai_grok_telemetry::otel_layer::OtelClientInfo {
                 client_name: "grok-pager",
-                client_version: xai_grok_version::VERSION,
+                client_version: xai_grok_version::version(),
                 service_version: env!("VERSION_WITH_COMMIT"),
                 app_entrypoint,
             },
@@ -256,7 +256,7 @@ fn init_tracing_simple(app_entrypoint: &'static str) {
         xai_grok_shell::agent::config::resolve_external_otel_config(
             xai_grok_telemetry::external::config::ExternalClientInfo {
                 service_version: env!("VERSION_WITH_COMMIT").to_owned(),
-                client_version: xai_grok_version::VERSION.to_owned(),
+                client_version: xai_grok_version::version().to_owned(),
                 app_entrypoint: app_entrypoint.to_owned(),
             },
         ),
@@ -723,7 +723,7 @@ async fn spawn_and_connect_leader(
     .await?;
     let env_urls = LeaderEnvUrls::from(&agent_config.grok_com_config);
     let capabilities = ClientCapabilities {
-        client_version: Some(PAGER_CLIENT_VERSION.to_string()),
+        client_version: Some(pager_client_version().to_string()),
         ..Default::default()
     };
     let conn = connect_or_spawn(door.client_type, ClientMode::Stdio, &env_urls, capabilities)
@@ -1332,7 +1332,7 @@ async fn run_agent_command(
         .agent_profile
         .as_deref()
         .map(resolve_agent_profile_path);
-    agent_config.client_version = Some(PAGER_CLIENT_VERSION.to_string());
+    agent_config.client_version = Some(pager_client_version().to_string());
     if is_leader && !agent_args.plugin_dirs.is_empty() {
         eprintln!("{PLUGIN_DIR_LEADER_WARNING}");
     } else {
@@ -1435,7 +1435,7 @@ async fn run_agent_command(
             yolo_mode: launch_yolo.yolo,
             auto_mode: agent_config.default_auto_mode && !launch_yolo.yolo,
             default_model,
-            client_version: Some(PAGER_CLIENT_VERSION.to_string()),
+            client_version: Some(pager_client_version().to_string()),
             code_nav_enabled: false,
             terminal: false,
             fs_read: false,
@@ -2033,7 +2033,16 @@ fn dispatch_doctor_if_requested(args: &PagerArgs) -> bool {
     }
     true
 }
+fn initialize_build_info() {
+    xai_grok_version::initialize(xai_grok_version::BuildInfo {
+        version: env!("GROK_BINARY_VERSION"),
+        full_version: env!("VERSION_WITH_COMMIT"),
+        is_dev_build: option_env!("GROK_VERSION").is_none(),
+    })
+    .expect("the executable must have one consistent build identity");
+}
 fn main() {
+    initialize_build_info();
     // Internal compute worker must not load configuration, credentials, or telemetry.
     if std::env::args_os()
         .nth(1)
@@ -2045,7 +2054,6 @@ fn main() {
             1
         });
     }
-    xai_grok_version::set_full_version(env!("VERSION_WITH_COMMIT"));
     xai_grok_telemetry::startup::mark_process_start();
     if let Some(code) = xai_grok_pager::app::mermaid_worker::maybe_run_render_subprocess() {
         std::process::exit(code);
@@ -2092,7 +2100,7 @@ fn main() {
     }
     let _sentry_guard = xai_grok_telemetry::sentry::init(xai_grok_telemetry::sentry::Config {
         client: "grok-pager",
-        client_version: PAGER_CLIENT_VERSION,
+        client_version: pager_client_version(),
         release: env!("VERSION_WITH_COMMIT"),
         disabled: xai_grok_shell::agent::config::is_error_reporting_disabled_sync(),
     });
@@ -2934,7 +2942,7 @@ mod tests {
     }
     #[test]
     fn version_output_writer_preserves_channel_aware_contract() {
-        xai_grok_version::set_full_version(env!("VERSION_WITH_COMMIT"));
+        initialize_build_info();
         for (label, expected_suffix) in [
             (" [alpha]", " [alpha]\n"),
             (" [stable]", " [stable]\n"),

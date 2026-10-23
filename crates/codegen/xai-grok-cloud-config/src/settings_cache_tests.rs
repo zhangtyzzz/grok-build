@@ -122,7 +122,7 @@ fn misses_on_identity_origin_or_ttl_mismatch() {
 fn cache_file(fetched_at: DateTime<Utc>) -> SettingsCache {
     SettingsCache {
         fetched_at,
-        grok_version: xai_grok_version::VERSION.to_string(),
+        grok_version: xai_grok_version::version().to_string(),
         identity: "id".to_string(),
         origin: ORIGIN.to_string(),
         client: CLIENT.to_owned(),
@@ -144,7 +144,7 @@ fn hand_written_file_with_stale_version_or_client_misses() {
     let write = |c: &SettingsCache| std::fs::write(&path, signed_cache_bytes(c)).unwrap();
 
     write(&SettingsCache {
-        grok_version: format!("{}-stale", xai_grok_version::VERSION),
+        grok_version: format!("{}-stale", xai_grok_version::version()),
         ..base()
     });
     assert!(manager.load_fresh(&scope("id")).is_none());
@@ -192,7 +192,7 @@ fn persist_replaces_a_newer_entry_this_process_cannot_read() {
         (
             "another grok version",
             SettingsCache {
-                grok_version: format!("{}-other", xai_grok_version::VERSION),
+                grok_version: format!("{}-other", xai_grok_version::version()),
                 ..unreadable()
             },
         ),

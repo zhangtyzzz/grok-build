@@ -458,7 +458,7 @@ fn init_process(cfg: &AgentConfig, auth_manager: &AuthManager) {
     use std::sync::Once;
     static INIT: Once = Once::new();
     INIT.call_once(|| {
-        xai_grok_telemetry::unified_log::set_version(xai_grok_version::VERSION);
+        xai_grok_telemetry::unified_log::set_version(xai_grok_version::version());
         let limits = crate::util::limits::ProcessLimits::read();
         limits.log();
         let grok_home = crate::util::grok_home::grok_home();
@@ -522,7 +522,7 @@ pub fn update_telemetry_config(config: &AgentConfig, auth_manager: &AuthManager)
         team_id,
         config.endpoints.deployment_key.clone(),
         crate::http::origin_client_info_from_env(),
-        xai_grok_version::VERSION.to_owned(),
+        xai_grok_version::version().to_owned(),
         subscription_tier,
         crate::http::shared_client(),
     );

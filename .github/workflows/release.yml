@@ -82,17 +82,7 @@ jobs:
             exit 1
           fi
 
-          for manifest in \
-            crates/codegen/xai-grok-pager-bin/Cargo.toml \
-            crates/codegen/xai-grok-pager/Cargo.toml \
-            crates/codegen/xai-grok-shell/Cargo.toml \
-            crates/codegen/xai-grok-version/Cargo.toml; do
-            package_version="$(awk -F '"' '/^version = / { print $2; exit }' "$manifest")"
-            test "$version" = "$package_version" || {
-              echo "release version $version does not match $manifest version $package_version" >&2
-              exit 1
-            }
-          done
+          node scripts/dist/release-version.mjs "$version"
 
           if [[ "$publish" == true ]]; then
             test "$REF_TYPE" = tag && test "$REF_NAME" = "$tag" || {

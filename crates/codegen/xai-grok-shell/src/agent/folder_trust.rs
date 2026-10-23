@@ -784,11 +784,11 @@ mod tests {
     #[serial_test::serial]
     fn project_scope_allowed_allows_inert_local_build() {
         // On a local/dev build the whole feature is inert (auto-trust): a folder with repo-local configs and an empty store is still ALLOWED
-        // Assert only when compiled unstamped (mirrors the inert tests elsewhere)
+        // Assert only for an unstamped runtime identity (mirrors the inert tests elsewhere)
         // GROK_TEST_VERSION is unset so `is_local_build()` is genuinely true
         let _unset_ver = EnvGuard::unset(xai_grok_version::TEST_VERSION_ENV);
-        if option_env!("GROK_VERSION").is_some() {
-            return; // a release-stamped test binary is not a local build
+        if !xai_grok_version::is_dev_build() {
+            return; // a release identity is not a local build
         }
         let home = tempfile::tempdir().unwrap();
         let _env = EnvGuard::set("GROK_HOME", home.path());
@@ -1420,10 +1420,10 @@ mod tests {
     fn local_build_is_inert_launch_trust_auto_trusts() {
         // On a local/dev build the whole folder-trust system is inert
         // An untrusted repo that HAS repo-local configs (here an `.envrc`) with an EMPTY store still resolves trusted `resolve_launch_dir_trust` returns true, and the `.envrc` loads without any grant
-        // Assert the local branch ONLY when compiled unstamped (mirrors the workspace `is_local_build_honors_test_version_override`) GROK_TEST_VERSION is unset so `is_local_build()` is genuinely true; GROK_HOME-isolated so the real store is never touched
+        // Assert the local branch ONLY for an unstamped runtime identity (mirrors the workspace `is_local_build_honors_test_version_override`) GROK_TEST_VERSION is unset so `is_local_build()` is genuinely true; GROK_HOME-isolated so the real store is never touched
         let _sim = EnvGuard::unset(xai_grok_version::TEST_VERSION_ENV);
-        if option_env!("GROK_VERSION").is_some() {
-            return; // a release-stamped test binary is not a local build
+        if !xai_grok_version::is_dev_build() {
+            return; // a release identity is not a local build
         }
         let home = tempfile::tempdir().unwrap();
         let _env = EnvGuard::set("GROK_HOME", home.path());
