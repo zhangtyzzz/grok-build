@@ -69,23 +69,7 @@ jobs:
             exit 1
           }
 
-          version=""
-          for manifest in \
-            crates/codegen/xai-grok-pager-bin/Cargo.toml \
-            crates/codegen/xai-grok-pager/Cargo.toml \
-            crates/codegen/xai-grok-shell/Cargo.toml \
-            crates/codegen/xai-grok-version/Cargo.toml; do
-            package_version="$(awk -F '"' '/^version = / { print $2; exit }' "$manifest")"
-            test -n "$package_version"
-            if [[ -z "$version" ]]; then
-              version="$package_version"
-            else
-              test "$version" = "$package_version" || {
-                echo "release versions are not lockstepped: $manifest has $package_version, expected $version" >&2
-                exit 1
-              }
-            fi
-          done
+          version="$(node scripts/dist/release-version.mjs)"
           tag="v$version"
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || \
              "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)\.[0-9]+$ ]] || {

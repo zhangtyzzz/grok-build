@@ -102,7 +102,7 @@ async fn manual_auth_posts_to_events_endpoint_as_grok_shell_manual_auth() {
         ("release_channel", serde_json::json!("alpha")),
         (
             "dev_build",
-            serde_json::json!(xai_grok_version::IS_DEV_BUILD),
+            serde_json::json!(xai_grok_version::is_dev_build()),
         ),
     ] {
         assert_eq!(

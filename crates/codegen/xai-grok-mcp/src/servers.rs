@@ -4113,7 +4113,7 @@ impl McpClient {
             capabilities,
             Implementation::new(
                 format!("grok-shell-{server_name}"),
-                xai_grok_version::VERSION.to_string(),
+                xai_grok_version::version().to_string(),
             ),
         )
         // The newest initialize-era revision — the single pin `serve_legacy`'s handshake names. Never pin 2026-07-28 here: that revision removed the initialize handshake, and version-strict servers reject an `initialize` that names it. 2026-07-28 is only negotiated via `server/discover` (see `probe_modern`). The explicit setter must remain so a future rmcp bump cannot silently move the wire.
@@ -4715,7 +4715,7 @@ fn ensure_figma_user_agent(headers: &mut reqwest::header::HeaderMap, server_name
 }
 
 static DEFAULT_USER_AGENT: LazyLock<reqwest::header::HeaderValue> = LazyLock::new(|| {
-    format!("grok-cli/{}", xai_grok_version::VERSION)
+    format!("grok-cli/{}", xai_grok_version::version())
         .parse()
         .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("grok-cli"))
 });

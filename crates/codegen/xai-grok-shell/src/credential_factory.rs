@@ -42,7 +42,7 @@ pub fn build_storage_client_for_proxy(
             http_client,
             provider,
         )
-        .with_client_identity(xai_grok_version::VERSION, client_identifier)
+        .with_client_identity(xai_grok_version::version(), client_identifier)
         .with_client_mode(xai_grok_http::process_client_mode())
         .with_attribution(bridge)
     } else {
@@ -61,7 +61,7 @@ pub fn build_storage_client_for_proxy(
             http_client,
             provider,
         )
-        .with_client_identity(xai_grok_version::VERSION, client_identifier)
+        .with_client_identity(xai_grok_version::version(), client_identifier)
         .with_client_mode(xai_grok_http::process_client_mode())
     }
 }

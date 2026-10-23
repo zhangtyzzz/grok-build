@@ -105,7 +105,7 @@ pub(crate) async fn upload_to_auth_diagnostics(
     }
     let user_id = user_id.replace('/', "_");
     let ts = chrono::Utc::now().timestamp_millis();
-    let version = xai_grok_version::VERSION;
+    let version = xai_grok_version::version();
     let object_path = format!("auth-diagnostics/{version}/{user_id}/{ts}.jsonl");
     let config = crate::session::repo_changes::TraceExportConfig {
         bucket_url: None,

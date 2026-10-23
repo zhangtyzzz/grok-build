@@ -143,7 +143,7 @@ async fn write_version_cache_idempotent_for_same_version() {
 // not re-exported from `lib.rs`, but it's `pub` from `version` module and accessible via `version::`
 #[tokio::test]
 #[serial]
-async fn get_installed_version_falls_back_to_cargo_pkg_version_when_env_unset() {
+async fn get_installed_version_falls_back_to_runtime_version_when_env_unset() {
     let _ = test_home();
     reset();
 
@@ -153,7 +153,7 @@ async fn get_installed_version_falls_back_to_cargo_pkg_version_when_env_unset() 
     let v = xai_grok_update::version::get_installed_grok_version();
     let _: semver::Version = v
         .parse()
-        .unwrap_or_else(|e| panic!("CARGO_PKG_VERSION is not a valid semver: '{v}': {e}"));
+        .unwrap_or_else(|e| panic!("runtime version is not a valid semver: '{v}': {e}"));
 }
 
 #[tokio::test]

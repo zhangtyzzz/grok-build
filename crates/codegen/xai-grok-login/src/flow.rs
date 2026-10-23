@@ -984,7 +984,7 @@ async fn fetch_login_device_flow(cli_chat_proxy_base_url: &str) -> Option<bool> 
         .get(&url)
         .timeout(std::time::Duration::from_millis(1500))
         .header("x-grok-agent-id", agent_id)
-        .header("x-grok-client-version", xai_grok_version::VERSION)
+        .header("x-grok-client-version", xai_grok_version::version())
         .header(
             "x-grok-client-identifier",
             xai_grok_http::process_client_identifier(),

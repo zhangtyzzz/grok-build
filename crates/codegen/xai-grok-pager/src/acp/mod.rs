@@ -19,7 +19,7 @@ pub(crate) use version_mismatch::{is_version_mismatch_banner, version_mismatch_b
 pub(crate) fn is_session_update_ext_method(method: &str) -> bool {
     matches!(method, "x.ai/session_notification" | "x.ai/session/update")
 }
-use crate::client_identity::{HEADLESS_CLIENT_TYPE, PAGER_CLIENT_TYPE, PAGER_CLIENT_VERSION};
+use crate::client_identity::{HEADLESS_CLIENT_TYPE, PAGER_CLIENT_TYPE, pager_client_version};
 use agent_client_protocol as acp;
 use anyhow::Result;
 pub use model_state::ModelState;
@@ -307,7 +307,7 @@ pub async fn connect_via_leader(
         yolo_mode: flags.default_yolo_mode,
         auto_mode: flags.default_auto_mode && !flags.default_yolo_mode,
         default_model: agent_config.models.default.clone(),
-        client_version: Some(PAGER_CLIENT_VERSION.to_string()),
+        client_version: Some(pager_client_version().to_string()),
         code_nav_enabled: false,
         terminal: flags.terminal,
         fs_read: flags.fs_read,
@@ -425,7 +425,7 @@ fn build_initialize_meta(flags: &ConnectFlags) -> serde_json::Value {
         .unwrap_or(PAGER_CLIENT_TYPE);
     let mut meta = serde_json::json!({
         "clientType": client_type,
-        "clientVersion": PAGER_CLIENT_VERSION,
+        "clientVersion": pager_client_version(),
     });
     if let Some(obj) = meta.as_object_mut() {
         if let Some(spo) = &flags.system_prompt_override {

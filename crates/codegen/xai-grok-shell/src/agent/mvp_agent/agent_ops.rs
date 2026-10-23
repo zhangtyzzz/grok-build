@@ -640,7 +640,7 @@ impl MvpAgent {
                 team_id,
                 cfg.endpoints.deployment_key.clone(),
                 self.origin_client_info_from_meta(None),
-                xai_grok_version::VERSION.to_owned(),
+                xai_grok_version::version().to_owned(),
                 subscription_tier,
                 crate::http::shared_client(),
             );
@@ -1760,7 +1760,7 @@ impl MvpAgent {
             grok_team_id,
             deployment_key,
             self.origin_client_info_from_meta(None),
-            xai_grok_version::VERSION.to_owned(),
+            xai_grok_version::version().to_owned(),
             subscription_tier,
             crate::http::shared_client(),
         );
@@ -3292,7 +3292,7 @@ impl MvpAgent {
         (method, reason)
     }
     /// Resolve client version: prefer the value from the initialize request _meta.
-    /// Fall back to the agent's own version (VERSION_WITH_COMMIT set by the TUI launcher).
+    /// Fall back to the configured client identity when initialization metadata omits it.
     pub(crate) fn client_version(&self) -> Option<String> {
         self.initialize_request
             .get()
@@ -3838,7 +3838,7 @@ impl MvpAgent {
                 prompt_was_truncated: Some(false),
                 prompt_verbatim: Some(true),
                 cwd: Some(info.cwd.clone()),
-                shell_version: Some(xai_grok_version::VERSION.to_string()),
+                shell_version: Some(xai_grok_version::version().to_string()),
                 sandbox: local_sandbox_telemetry(),
                 ..Default::default()
             });
@@ -3931,7 +3931,7 @@ impl MvpAgent {
                 let queue = crate::upload::trace::spawn_upload_queue(
                     &grok_home,
                     &gcs_config,
-                    Some(xai_grok_version::VERSION),
+                    Some(xai_grok_version::version()),
                     self.auth_manager.clone(),
                 );
                 crate::upload::trace::spawn_startup_spill_reconcile(

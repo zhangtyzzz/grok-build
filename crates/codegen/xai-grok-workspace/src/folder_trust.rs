@@ -1010,13 +1010,13 @@ mod tests {
     #[test]
     fn store_io_is_noop_on_local_build() {
         // On a local/dev build the feature is inert. Guards use a unique per-repo key so they hold under single-process `cargo test`
-        // Assert only when compiled unstamped. `GROK_HOME` isolated and `ENV_LOCK` held so toggling `GROK_TEST_VERSION` is race-safe
+        // Assert only for an unstamped runtime identity. `GROK_HOME` isolated and `ENV_LOCK` held so toggling `GROK_TEST_VERSION` is race-safe
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
         let _home = EnvVarGuard::set("GROK_HOME", home.path());
         let _unset = EnvVarGuard::unset(xai_grok_version::TEST_VERSION_ENV);
-        if option_env!("GROK_VERSION").is_some() {
-            return; // a release-stamped test binary is not a local build
+        if !xai_grok_version::is_dev_build() {
+            return; // a release identity is not a local build
         }
         let tmp = repo_tmp();
         let key = workspace_key(tmp.path());

@@ -1,7 +1,7 @@
 pub const PAGER_CLIENT_TYPE: &str = "grok-pager";
 pub const HEADLESS_CLIENT_TYPE: &str = "grok-shell";
 
-pub const PAGER_CLIENT_VERSION: &str = xai_grok_version::VERSION;
+pub use xai_grok_version::version as pager_client_version;
 
 /// `User-Agent` for the pager's own HTTP clients that call `api.x.ai` directly (voice STT).
 ///
@@ -10,7 +10,7 @@ pub fn client_user_agent() -> String {
     format!(
         "{}/{} ({}; {})",
         HEADLESS_CLIENT_TYPE,
-        PAGER_CLIENT_VERSION,
+        pager_client_version(),
         std::env::consts::OS,
         std::env::consts::ARCH,
     )
@@ -29,7 +29,7 @@ mod tests {
             ua,
             format!(
                 "grok-shell/{} ({}; {})",
-                PAGER_CLIENT_VERSION,
+                pager_client_version(),
                 std::env::consts::OS,
                 std::env::consts::ARCH
             )

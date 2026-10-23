@@ -57,7 +57,7 @@ impl std::fmt::Debug for TelemetryClient {
             .finish()
     }
 }
-/// Opts a dev build (no `GROK_VERSION` at compile time) back into the baked production sinks.
+/// Opts a dev build (an unstamped executable identity) back into the baked production sinks.
 const ALLOW_DEV_BUILD_ENV: &str = "GROK_TELEMETRY_ALLOW_DEV_BUILD";
 /// `from_config` runs on every (re-)init, up to three times per process; the disarm is logged once.
 static DEV_BUILD_DISARM_LOGGED: Once = Once::new();
@@ -73,7 +73,7 @@ impl TelemetryClient {
         subscription_tier: Option<String>,
         http_client: reqwest::Client,
     ) -> Self {
-        if xai_grok_version::IS_DEV_BUILD
+        if xai_grok_version::is_dev_build()
             && env_bool(ALLOW_DEV_BUILD_ENV) != Some(true)
             && config.disarm_baked_sinks()
         {
@@ -222,7 +222,7 @@ impl EventEnrichment {
             is_interactive: identity.map(|i| i.interactivity == Interactivity::Interactive),
             is_ci: *IS_CI.get_or_init(is_ci_env),
             release_channel: crate::process_info::release_channel().map(|c| c.into()),
-            dev_build: xai_grok_version::IS_DEV_BUILD,
+            dev_build: xai_grok_version::is_dev_build(),
             os: std::env::consts::OS,
             arch: std::env::consts::ARCH,
             cpu_cores: process.cpu_cores,
@@ -414,7 +414,7 @@ pub fn sync_profile() {
 }
 /// Safe to call multiple times. `Disabled`: no client; `SessionMetrics`: client active (only `session_metrics::*` events
 /// fire); `Enabled`: client active (all events fire). `shell_version` is stamped into every event payload (legacy field
-/// name kept for analytics continuity); shell passes its `CARGO_PKG_VERSION`.
+/// name kept for analytics continuity); shell passes the running executable's version.
 pub fn init(
     config: TelemetryConfig,
     mode: TelemetryMode,

@@ -370,7 +370,7 @@ impl PagerLeaderCluster {
             ws_url_suffix: String::new(),
             // MUST be the client-side comparison source (xai_grok_version), not this crate's version
             // A reconnecting client evicts strictly-older leaders, and "evict" here would signal THIS test process
-            leader_binary_version: xai_grok_version::VERSION.to_string(),
+            leader_binary_version: xai_grok_version::version().to_string(),
         });
         let sock_for_server = self.sock_path.clone();
         let cancel_for_server = cancel.clone();

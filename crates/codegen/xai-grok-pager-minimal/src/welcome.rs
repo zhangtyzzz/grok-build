@@ -56,7 +56,7 @@ pub(crate) fn print_welcome_card(
     terminal.clear()?;
 
     let theme = Theme::current();
-    let version = xai_grok_version::VERSION;
+    let version = xai_grok_version::version();
     let (cwd, model) = match &app.active_view {
         ActiveView::Agent(id) => {
             let agent = app.agents.get(id);

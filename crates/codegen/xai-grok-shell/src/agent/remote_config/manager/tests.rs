@@ -1350,7 +1350,7 @@ fn reload_from_disk_cache_ignores_stale_cache() {
     let stale = ModelsCache {
         fetched_at: Utc::now() - ChronoDuration::seconds(3600),
         renewed_at: None,
-        grok_version: Some(xai_grok_version::VERSION.to_string()),
+        grok_version: Some(xai_grok_version::version().to_string()),
         auth_method: Some(scope.auth_method.clone()),
         origin: Some(scope.origin.clone()),
         identity: Some(scope.identity.clone()),
@@ -1677,7 +1677,7 @@ fn reload_from_disk_cache_ignores_legacy_cache_without_origin() {
     let legacy = ModelsCache {
         fetched_at: Utc::now(),
         renewed_at: None,
-        grok_version: Some(xai_grok_version::VERSION.to_string()),
+        grok_version: Some(xai_grok_version::version().to_string()),
         auth_method: Some(scope.auth_method.clone()),
         origin: None,
         identity: Some(scope.identity.clone()),
