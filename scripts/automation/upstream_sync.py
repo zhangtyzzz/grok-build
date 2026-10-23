@@ -78,7 +78,8 @@ def protected(path: str) -> bool:
     name = p.name.casefold()
     return (parts[0] in {".github", ".claude", ".codex", ".agents"}
             or parts[:2] in {("scripts", "automation"), ("scripts", "dist")}
-            or path.casefold() in {"scripts/dist.sh", "rust-toolchain.toml", "rust-toolchain"}
+            or path.casefold() in {"scripts/dist.sh", "scripts/ci/dispatch-alpha-warm.py",
+                                   "rust-toolchain.toml", "rust-toolchain"}
             or name in {"agents.md", "claude.md", "fork_changes.md", ".gitmodules", ".gitattributes"}
             or name.startswith(".env") or name.endswith((".pem", ".key", ".p12", ".pfx"))
             or any(x in {".ssh", ".aws", ".gnupg"} for x in parts)
