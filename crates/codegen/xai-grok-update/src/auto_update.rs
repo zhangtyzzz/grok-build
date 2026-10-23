@@ -34,27 +34,64 @@ const PROMPT_UPDATE_NOW: &str = "Update now? [Y/n/d]";
 const MSG_AUTO_UPDATE_BACKGROUND: &str = "Auto-update running in background.";
 const MSG_RUN_UPDATE_MANUAL: &str = "Run `grok update` to get the latest version.";
 /// Manual-install one-liner for this platform's bootstrap installer. The fork
-/// publishes installers from its own GitHub Releases; channel routing is
-/// intentionally not supported here.
-fn manual_install_cmd(_channel: &str) -> String {
-    if cfg!(windows) {
-        "irm https://github.com/zhangtyzzz/grok-build/releases/latest/download/install.ps1 | iex"
-            .to_string()
-    } else {
-        "curl -fsSL https://github.com/zhangtyzzz/grok-build/releases/latest/download/install.sh | bash"
-            .to_string()
+/// publishes installers from its own GitHub Releases. The installers cannot
+/// resolve a prerelease channel on their own, so alpha/enterprise route only
+/// when the exact version is known; otherwise the stable one-liner stands.
+fn manual_install_cmd(channel: &str, version: Option<&str>) -> String {
+    let routed = matches!(channel, "alpha" | "enterprise")
+        .then_some(version)
+        .flatten()
+        .filter(|v| is_installer_version(v));
+    match (cfg!(windows), routed) {
+        (true, None) => {
+            "irm https://github.com/zhangtyzzz/grok-build/releases/latest/download/install.ps1 | iex"
+                .to_string()
+        }
+        (true, Some(v)) => format!(
+            "$env:GROK_CHANNEL='{channel}'; & ([scriptblock]::Create((irm https://github.com/zhangtyzzz/grok-build/releases/latest/download/install.ps1))) -Version {v}"
+        ),
+        (false, None) => {
+            "curl -fsSL https://github.com/zhangtyzzz/grok-build/releases/latest/download/install.sh | bash"
+                .to_string()
+        }
+        (false, Some(v)) => format!(
+            "curl -fsSL https://github.com/zhangtyzzz/grok-build/releases/latest/download/install.sh | GROK_CHANNEL={channel} bash -s {v}"
+        ),
     }
 }
 
-fn reinstall_hint(installer: &str, channel: &str) -> String {
+/// Mirrors the installers' `X.Y.Z[-suffix]` check, so only shell-safe tokens reach the one-liner.
+fn is_installer_version(v: &str) -> bool {
+    let (core, suffix) = match v.split_once('-') {
+        Some((core, suffix)) => (core, Some(suffix)),
+        None => (v, None),
+    };
+    let mut parts = core.split('.');
+    let core_ok = (0..3).all(|_| {
+        parts
+            .next()
+            .is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    }) && parts.next().is_none();
+    core_ok
+        && suffix.is_none_or(|s| {
+            !s.is_empty()
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_')
+        })
+}
+
+fn reinstall_hint(installer: &str, channel: &str, version: Option<&str>) -> String {
     match installer {
         "npm" => "Please reinstall via npm:\n  npm i -g @xai-official/grok".to_string(),
         "gh-release" => format!(
             "Please reinstall from the custom GitHub Release:\n  {}",
-            manual_install_cmd(channel)
+            manual_install_cmd(channel, version)
         ),
         WINGET => format!("Update with WinGet:\n  {UPGRADE_COMMAND}"),
-        _ => format!("Please reinstall via:\n  {}", manual_install_cmd(channel)),
+        _ => format!(
+            "Please reinstall via:\n  {}",
+            manual_install_cmd(channel, version)
+        ),
     }
 }
 
@@ -991,7 +1028,7 @@ pub async fn run_install_script(
         anyhow::anyhow!(
             "Auto-update failed: {:#}\n\n{}",
             e,
-            reinstall_hint(installer, &update_config.channel)
+            reinstall_hint(installer, &update_config.channel, target)
         )
     })
 }

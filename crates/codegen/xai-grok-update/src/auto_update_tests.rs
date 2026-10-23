@@ -918,7 +918,7 @@ async fn test_cleanup_old_downloads_mixed_stable_and_alpha() {
 
 #[test]
 fn test_reinstall_hint_npm_mentions_npm_command() {
-    let hint = reinstall_hint("npm", "stable");
+    let hint = reinstall_hint("npm", "stable", None);
     assert!(hint.contains("npm i -g"), "should suggest npm i -g: {hint}");
     assert!(
         hint.contains("@xai-official/grok"),
@@ -928,7 +928,7 @@ fn test_reinstall_hint_npm_mentions_npm_command() {
 
 #[test]
 fn test_reinstall_hint_gh_release_mentions_custom_installer() {
-    let hint = reinstall_hint("gh-release", "stable");
+    let hint = reinstall_hint("gh-release", "stable", None);
     assert!(
         hint.contains("releases/latest/download"),
         "should suggest the custom release installer: {hint}"
@@ -941,7 +941,7 @@ fn test_reinstall_hint_gh_release_mentions_custom_installer() {
 
 #[test]
 fn test_reinstall_hint_internal_mentions_platform_installer() {
-    let hint = reinstall_hint("internal", "stable");
+    let hint = reinstall_hint("internal", "stable", None);
     if cfg!(windows) {
         assert!(hint.contains("irm"), "should suggest irm install: {hint}");
         assert!(
@@ -967,23 +967,60 @@ fn test_reinstall_hint_internal_mentions_platform_installer() {
 
 #[test]
 fn test_reinstall_hint_internal_alpha_uses_custom_installer() {
-    let hint = reinstall_hint("internal", "alpha");
+    let hint = reinstall_hint("internal", "alpha", None);
     assert!(hint.contains("zhangtyzzz/grok-build"), "{hint}");
     assert!(!hint.contains("GROK_CHANNEL"), "{hint}");
 }
 
 #[test]
 fn test_reinstall_hint_enterprise_uses_custom_installer() {
-    let hint = reinstall_hint("internal", "enterprise");
+    let hint = reinstall_hint("internal", "enterprise", None);
     assert!(hint.contains("zhangtyzzz/grok-build"), "{hint}");
     assert!(!hint.contains("GROK_CHANNEL"), "{hint}");
+}
+
+#[test]
+fn test_reinstall_hint_alpha_with_version_pins_channel_and_version() {
+    let hint = reinstall_hint("internal", "alpha", Some("1.0.47-alpha.3"));
+    assert!(hint.contains("GROK_CHANNEL"), "{hint}");
+    assert!(hint.contains("alpha"), "{hint}");
+    if cfg!(windows) {
+        assert!(hint.contains("-Version 1.0.47-alpha.3"), "{hint}");
+    } else {
+        assert!(
+            hint.ends_with("| GROK_CHANNEL=alpha bash -s 1.0.47-alpha.3"),
+            "{hint}"
+        );
+    }
+}
+
+#[test]
+fn test_reinstall_hint_stable_with_version_stays_unpinned() {
+    let hint = reinstall_hint("internal", "stable", Some("1.0.46"));
+    assert_eq!(hint, reinstall_hint("internal", "stable", None));
+}
+
+#[test]
+fn test_reinstall_hint_alpha_rejects_unsafe_version() {
+    for bad in [
+        "1.0",
+        "1.0.47-",
+        "1.0.47-alpha;rm",
+        "1.0.47 -s",
+        "v1.0.47",
+        "1.0.x",
+    ] {
+        let hint = reinstall_hint("internal", "alpha", Some(bad));
+        assert!(!hint.contains("GROK_CHANNEL"), "{bad:?}: {hint}");
+        assert!(!hint.contains(bad), "{bad:?}: {hint}");
+    }
 }
 
 #[test]
 fn test_reinstall_hint_malformed_channel_falls_back_to_stable() {
     // Free-text config channels never reach the shell one-liner unless they are plain [A-Za-z0-9._-] tokens
     for bad in ["al pha", "x'; rm -rf ~;'", "a\"b", ""] {
-        let hint = reinstall_hint("internal", bad);
+        let hint = reinstall_hint("internal", bad, None);
         assert!(
             !hint.contains("GROK_CHANNEL"),
             "malformed channel {bad:?} must fall back to stable: {hint}"
@@ -994,15 +1031,15 @@ fn test_reinstall_hint_malformed_channel_falls_back_to_stable() {
 #[test]
 fn test_reinstall_hint_unknown_falls_back_to_internal() {
     // Unknown installer falls back to the same hint as "internal".
-    let unknown = reinstall_hint("homebrew", "stable");
-    let internal = reinstall_hint("internal", "stable");
+    let unknown = reinstall_hint("homebrew", "stable", None);
+    let internal = reinstall_hint("internal", "stable", None);
     assert_eq!(unknown, internal);
 }
 
 #[test]
 fn test_reinstall_hint_empty_falls_back_to_internal() {
-    let hint = reinstall_hint("", "stable");
-    assert_eq!(hint, reinstall_hint("internal", "stable"));
+    let hint = reinstall_hint("", "stable", None);
+    assert_eq!(hint, reinstall_hint("internal", "stable", None));
 }
 
 #[test]

@@ -279,6 +279,7 @@ fork 自己维护发布编号：upstream sync 从 fork main 当前稳定版递�
   - `main` 只发稳定版 `X.Y.Z`；`alpha` 只发 `X.Y.Z-alpha.N`（`auto-release.yml` 按分支校验）。alpha 版号为 `main` 下一个稳定 patch 加 `-alpha.N`。alpha tag 由 `release.yml` 标为 prerelease、走 `release-testing` environment；只有 `[cli] channel = "alpha"` 的客户端会安装。
   - 功能与修复 PR（含 `codex/*`）默认提到 `alpha`；`main` 只接收上游同步、维护者批准的 alpha → main 晋升，以及维护者指定的发布/自动化修改。
   - 晋升 PR 把版本设为下一个稳定 patch，再从 `main` 发稳定版。每次稳定版发布后把 `main` 合回 `alpha`，并把 `alpha` 重置为再下一个 patch 的 `-alpha.1`，因为稳定版 `X.Y.Z` 高于所有 `X.Y.Z-alpha.N`。
+  - 手动重装提示：安装脚本不能自动解析 alpha/enterprise 的最新版本，`grok update` 失败时 `reinstall_hint` 在通道为 alpha/enterprise 且已知目标版本时输出 `GROK_CHANNEL=<channel> bash -s <version>`（Windows 为 `$env:GROK_CHANNEL` + `-Version`），版本须符合安装脚本的 `X.Y.Z[-suffix]` 格式；未知版本或稳定通道仍给稳定版一行命令。入口 `xai-grok-update/src/auto_update.rs` 的 `manual_install_cmd`、`is_installer_version`，测试 `test_reinstall_hint_*`。
 
 普通 PR 合并不是发布成功。发布须在目标 main 的 CI 通过后，按 [`docs/release-distribution.md`](docs/release-distribution.md) 从 main 调用 `Publish release (warm, tag, Release)`：
 
