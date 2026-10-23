@@ -124,7 +124,7 @@ helper 回归覆盖同 slug 不同 provider、缺失 ref 不降级、legacy alia
 
 **Windows 缓存确定性。** 排查 Windows ARM 同提交热构建的 113 次 Rust 缓存未命中时，确认 MSVC 默认重复链接的 proc-macro DLL 哈希会变化。缓存初始化通过 `LINK=/Brepro` 固定链接输出，覆盖显式 `--target` 构建中的 host 宏；保留现有 LINK 参数、优化与调试信息。Windows ARM/x64 小实验验证默认重复链接哈希不同，启用后相同；原生 Windows CI 持续验证 DLL 一致且宏能执行。不要只设置 target rustflags，否则会漏掉 host 宏。
 
-**原生依赖缓存。** fallback 包装器放在独立目录并命名为 `sccache`，使 `cc-rs` 能通过 `RUSTC_WRAPPER` 识别并缓存支持的 C/C++ 编译；真实 sccache 路径独立保存，避免递归。包装器失败时回退到传入的原始编译器。保留该名称约定，不要恢复为 `cc-rs` 无法识别的自定义文件名。
+**原生依赖缓存。** fallback 包装器放在独立目录并命名为 `sccache`，使 `cc-rs` 能通过 `RUSTC_WRAPPER` 识别并缓存支持的 C/C++ 编译；真实 sccache 路径独立保存，避免递归。包装器失败时回退到传入的原始编译器。保留该名称约定，不要恢复为 `cc-rs` 无法识别的自定义文件名。 Windows x64 发布另外显式选择相同的 MSVC 编译器与 SDK 头文件/库路径，绕开固定版本 cc-rs 的注册表发现分支遗漏 wrapper 的问题；保留用户编译器覆盖，不导入会改变 Rust 链接器发现的完整开发者环境。CI 通过真实 C/C++ 编译验证命中和编译器路径一致性。发行 tar 使用确定性的 gzip 6 级压缩，包内容与调试信息不变；最终资产检查并发上限为 2，任一 provenance 或 payload 校验失败仍阻断发布。
 
 **代码入口。** `scripts/dist/**`、`.github/workflows/{ci,release-cache,auto-release,release}.yml`、`.github/actions/*compiler-cache/`、`packaging/profile/starter/**`；pager 的 `scripts/install.sh` / `install.ps1`；`crates/codegen/xai-grok-update/src/{auto_update,version}.rs`；`xai-grok-tools` 的 `build.rs`、`embedded_search_tools.rs`、`util/vendor.rs`；`crates/build/xai-proto-build/src/lib.rs`。
 
