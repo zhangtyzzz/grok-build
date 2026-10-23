@@ -113,3 +113,9 @@ runs:
           echo "SCCACHE_IDLE_TIMEOUT=0"
         } >> "$GITHUB_ENV"
         echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+    - name: Enable Windows x64 native compiler cache
+      if: steps.enable.outputs.enabled == 'true' && runner.os == 'Windows' && runner.arch == 'X64' && inputs.namespace == 'release-x86_64-pc-windows-msvc'
+      continue-on-error: true
+      shell: pwsh
+      run: ./scripts/ci/enable-windows-native-cache.ps1
