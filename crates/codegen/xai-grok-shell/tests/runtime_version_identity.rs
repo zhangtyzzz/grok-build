@@ -6,6 +6,8 @@ use xai_grok_shell::leader::{ClientCapabilities, ClientMode, LeaderClient, spawn
 
 #[tokio::test]
 async fn release_registration_compares_plain_runtime_versions() {
+    // This separate current-thread test process must not inherit the trust bypass.
+    unsafe { std::env::remove_var(xai_grok_version::TEST_VERSION_ENV) };
     xai_grok_telemetry::unified_log::redirect_to_temp_for_tests();
     const VERSION: &str = "1.2.3-alpha.4";
     xai_grok_version::initialize(xai_grok_version::BuildInfo {
@@ -14,6 +16,7 @@ async fn release_registration_compares_plain_runtime_versions() {
         is_dev_build: false,
     })
     .unwrap();
+    assert!(!xai_grok_version::is_dev_build());
     assert!(
         !xai_grok_workspace::folder_trust::folder_trust_inert(),
         "a runtime release identity must retain the folder-trust gate"

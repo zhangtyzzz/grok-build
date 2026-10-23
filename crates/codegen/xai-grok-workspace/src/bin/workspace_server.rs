@@ -256,7 +256,20 @@ struct Capabilities {
     diag: bool,
 }
 const CAPABILITIES: Capabilities = Capabilities { diag: true };
+/// This standalone source tool is not shipped in the grok release archives.
+/// WorkspaceInfo.version and diagnostics therefore report `0.0.0-dev`, identifying
+/// this independent development server rather than claiming a grok release version.
+/// Neither the release stamp nor the containing library's version is a build input.
+fn initialize_development_identity() -> Result<(), xai_grok_version::AlreadyInitialized> {
+    xai_grok_version::initialize(xai_grok_version::BuildInfo {
+        version: "0.0.0-dev",
+        full_version: "0.0.0-dev",
+        is_dev_build: true,
+    })
+}
+
 fn main() -> anyhow::Result<()> {
+    initialize_development_identity()?;
     let mut args = Args::parse();
     if args.capabilities {
         println!("{}", serde_json::to_string(&CAPABILITIES)?);
@@ -654,6 +667,26 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standalone_tool_registers_development_identity() {
+        initialize_development_identity().unwrap();
+        initialize_development_identity().unwrap();
+        assert_eq!(xai_grok_version::version(), "0.0.0-dev");
+        assert_eq!(xai_grok_version::full_version(), "0.0.0-dev");
+        assert!(xai_grok_version::is_dev_build());
+        // A fallback read would not reject another identity: this proves startup
+        // registered the tool's development identity in the shared runtime state.
+        assert!(
+            xai_grok_version::initialize(xai_grok_version::BuildInfo {
+                version: "1.2.3",
+                full_version: "1.2.3 (abcdef012345)",
+                is_dev_build: false,
+            })
+            .is_err()
+        );
+    }
+
     /// Only the launcher's `sandbox_id` opts in; a session id alone (which a hook- or MCP-spawned
     /// server inherits from its environment) or no metadata at all is a daemon.
     #[test]

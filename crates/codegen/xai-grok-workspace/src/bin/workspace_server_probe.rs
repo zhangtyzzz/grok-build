@@ -90,8 +90,24 @@ async fn call_tool(
     }
 }
 
+/// This standalone source tool is not shipped in the grok release archives.
+/// Register a development identity explicitly; never inherit the release stamp or
+/// the containing library's package version into shared runtime identity.
+fn initialize_development_identity() -> Result<(), xai_grok_version::AlreadyInitialized> {
+    xai_grok_version::initialize(xai_grok_version::BuildInfo {
+        version: "0.0.0-dev",
+        full_version: "0.0.0-dev",
+        is_dev_build: true,
+    })
+}
+
+fn main() -> anyhow::Result<()> {
+    initialize_development_identity()?;
+    run()
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn run() -> anyhow::Result<()> {
     xai_grok_extra_ca::ensure_default_crypto_provider();
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -204,4 +220,28 @@ async fn run_checks(
 
     println!("PROBE_OK");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standalone_tool_registers_development_identity() {
+        initialize_development_identity().unwrap();
+        initialize_development_identity().unwrap();
+        assert_eq!(xai_grok_version::version(), "0.0.0-dev");
+        assert_eq!(xai_grok_version::full_version(), "0.0.0-dev");
+        assert!(xai_grok_version::is_dev_build());
+        // A fallback read would not reject another identity: this proves startup
+        // registered the tool's development identity in the shared runtime state.
+        assert!(
+            xai_grok_version::initialize(xai_grok_version::BuildInfo {
+                version: "1.2.3",
+                full_version: "1.2.3 (abcdef012345)",
+                is_dev_build: false,
+            })
+            .is_err()
+        );
+    }
 }

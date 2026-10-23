@@ -143,6 +143,8 @@ jobs:
         run: |
           cargo test --locked -p xai-grok-shell --lib
           cargo test --locked -p xai-grok-shell --test runtime_version_identity
+          cargo test --locked -p xai-grok-shell --bin chat-history-downgrade standalone_tool_registers_development_identity
+          cargo test --locked -p xai-grok-workspace --bin xai-workspace-server --bin workspace-server-probe standalone_tool_registers_development_identity
         env:
           # Shell turn futures are sized for the production session thread,
           # whose stack budget is 8 MiB. Match it for libtest worker threads.
