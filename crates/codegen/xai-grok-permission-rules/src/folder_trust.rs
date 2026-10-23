@@ -116,13 +116,13 @@ fn is_durably_trusted(feature_enabled: bool, inputs: &DecideInputs) -> bool {
     !feature_enabled || inputs.store_trusted
 }
 
-/// True for a binary built without a `GROK_VERSION` stamp.
+/// True for an unstamped binary identity or a standalone development harness.
 /// That binary trusts every folder without reading the trust store.
 pub fn folder_trust_inert() -> bool {
     if std::env::var(xai_grok_version::TEST_VERSION_ENV).is_ok() {
         return false;
     }
-    option_env!("GROK_VERSION").is_none()
+    xai_grok_version::is_dev_build()
 }
 
 pub fn feature_enabled(remote: Option<&RemoteSettings>) -> bool {
@@ -369,7 +369,7 @@ mod tests {
             assert!(!folder_trust_inert());
         }
         let _unset = EnvVar::unset(xai_grok_version::TEST_VERSION_ENV);
-        if option_env!("GROK_VERSION").is_none() {
+        if xai_grok_version::is_dev_build() {
             assert!(folder_trust_inert());
         }
     }

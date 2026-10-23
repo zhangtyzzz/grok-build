@@ -221,7 +221,7 @@ impl SettingsCacheManager {
     }
 
     fn check_version(cache: &SettingsCache) -> Result<(), CacheLoadError> {
-        if cache.grok_version != xai_grok_version::VERSION {
+        if cache.grok_version != xai_grok_version::version() {
             return Err(CacheLoadError::VersionMismatch);
         }
         Ok(())
@@ -274,7 +274,7 @@ impl SettingsCacheManager {
 
         let cache = SettingsCache {
             fetched_at,
-            grok_version: xai_grok_version::VERSION.to_string(),
+            grok_version: xai_grok_version::version().to_string(),
             identity: scope.account.identity.clone(),
             origin: scope.account.origin.clone(),
             client: scope.client.clone(),

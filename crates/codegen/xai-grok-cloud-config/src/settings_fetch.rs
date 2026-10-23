@@ -70,7 +70,7 @@ fn add_cli_chat_proxy_headers_blocking(
         .header("Authorization", format!("Bearer {}", &auth.key))
         .header("X-XAI-Token-Auth", GrokComConfig::default().token_header)
         .header("x-userid", &auth.user_id)
-        .header("x-grok-client-version", xai_grok_version::VERSION);
+        .header("x-grok-client-version", xai_grok_version::version());
     if let Some(email) = &auth.email {
         builder = builder.header("x-email", email);
     }

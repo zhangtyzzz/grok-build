@@ -1852,7 +1852,7 @@ impl SessionActor {
             .map(|a| a.auth_mode)
             .unwrap_or(xai_grok_login::AuthMode::ApiKey);
         let auth_mode_str = format!("{auth_mode:?}");
-        let client_version = xai_grok_version::VERSION;
+        let client_version = xai_grok_version::version();
 
         // 5c. Legacy WebLogin auth: always show a deprecation message regardless of error type.
         if auth_mode == xai_grok_login::AuthMode::WebLogin {

@@ -470,7 +470,7 @@ async fn upload_harness_trace_turns_numbers_siblings_and_persists_counter() {
     let queue = crate::upload::trace::spawn_upload_queue(
         queue_home.path(),
         &queue_cfg,
-        Some(xai_grok_version::VERSION),
+        Some(xai_grok_version::version()),
         agent.auth_manager.clone(),
     );
     let _ = handle.upload_queue.set(queue);
@@ -586,7 +586,7 @@ async fn upload_harness_trace_turns_build_per_turn_manifest() {
     let queue = crate::upload::trace::spawn_upload_queue(
         queue_home.path(),
         &queue_cfg,
-        Some(xai_grok_version::VERSION),
+        Some(xai_grok_version::version()),
         agent.auth_manager.clone(),
     );
     let _ = handle.upload_queue.set(queue);
@@ -9046,7 +9046,7 @@ mod direct_hub_cloud_removed {
                 })
                 .as_object()
             )
-                .is_ok()
+            .is_ok()
         );
         assert!(
             reject_direct_hub_cloud_meta(

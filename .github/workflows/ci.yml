@@ -132,13 +132,19 @@ jobs:
       - name: Run core tests
         run: |
           cargo test --locked \
+            -p xai-grok-version \
+            -p xai-grok-permission-rules \
             -p xai-grok-sampling-types \
             -p xai-chat-state \
             -p xai-grok-sampler \
             -p xai-grok-update
 
       - name: Run shell tests
-        run: cargo test --locked -p xai-grok-shell --lib
+        run: |
+          cargo test --locked -p xai-grok-shell --lib
+          cargo test --locked -p xai-grok-shell --test runtime_version_identity
+          cargo test --locked -p xai-grok-shell --bin chat-history-downgrade standalone_tool_registers_development_identity
+          cargo test --locked -p xai-grok-workspace --bin xai-workspace-server --bin workspace-server-probe standalone_tool_registers_development_identity
         env:
           # Shell turn futures are sized for the production session thread,
           # whose stack budget is 8 MiB. Match it for libtest worker threads.
@@ -147,6 +153,8 @@ jobs:
       - name: Run focused clippy
         run: |
           cargo clippy --locked --all-targets \
+            -p xai-grok-version \
+            -p xai-grok-permission-rules \
             -p xai-grok-sampling-types \
             -p xai-chat-state \
             -p xai-grok-sampler \
@@ -203,7 +211,7 @@ jobs:
         run: bash scripts/dist/test.sh
 
       - name: Test bounded upstream synchronization
-        run: python3 -m unittest discover -s scripts/automation -p 'test_*.py'
+        run: python3 -B -m unittest discover -s scripts/automation -p 'test_*.py'
 
   terminal:
     needs: previous

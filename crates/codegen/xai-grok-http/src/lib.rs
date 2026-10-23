@@ -165,7 +165,7 @@ impl UserAgent {
 }
 
 fn agent_version() -> String {
-    xai_grok_version::VERSION.to_string()
+    xai_grok_version::version().to_string()
 }
 
 pub fn set_client_name(client_type: ClientType) {

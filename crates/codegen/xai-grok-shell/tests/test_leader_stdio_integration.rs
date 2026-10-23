@@ -1621,7 +1621,7 @@ async fn test_session_ownership_cleanup_on_disconnect() {
             socket_path: sock_clone.clone(),
             lock_path: sock_clone.with_extension("lock"),
             ws_url_suffix: String::new(),
-            leader_binary_version: env!("CARGO_PKG_VERSION").to_string(),
+            leader_binary_version: xai_grok_version::version().to_string(),
         });
         let _ = run_leader_server(
             sock_clone,
@@ -1961,7 +1961,7 @@ async fn test_raw_registration_handshake_not_ready_then_ready() {
             socket_path: sock_clone.clone(),
             lock_path: sock_clone.with_extension("lock"),
             ws_url_suffix: String::new(),
-            leader_binary_version: env!("CARGO_PKG_VERSION").to_string(),
+            leader_binary_version: xai_grok_version::version().to_string(),
         });
         let _ = run_leader_server(
             sock_clone,
@@ -2108,7 +2108,7 @@ async fn test_connect_waits_for_leader_ready() {
             socket_path: sock_clone.clone(),
             lock_path: sock_clone.with_extension("lock"),
             ws_url_suffix: String::new(),
-            leader_binary_version: env!("CARGO_PKG_VERSION").to_string(),
+            leader_binary_version: xai_grok_version::version().to_string(),
         });
         let _ = run_leader_server(
             sock_clone,
@@ -2195,7 +2195,7 @@ async fn test_connect_waits_for_leader_ready() {
 // ── Version mismatch notification ────────────────────────────────────
 
 /// A connected client receives `x.ai/leader/version_mismatch` when its `client_version` differs from the leader's version.
-/// Uses `leader_version_override` so the test bypasses the `"unknown"` constant that appears in dev builds where `VERSION_WITH_COMMIT` is not set.
+/// Uses `leader_version_override` so the test bypasses the `"unknown"` runtime registration version of a development harness.
 #[tokio::test]
 async fn test_version_mismatch_notification_sent_to_client() {
     use std::sync::Arc;
@@ -2219,7 +2219,7 @@ async fn test_version_mismatch_notification_sent_to_client() {
             socket_path: sock_clone.clone(),
             lock_path: sock_clone.with_extension("lock"),
             ws_url_suffix: String::new(),
-            leader_binary_version: env!("CARGO_PKG_VERSION").to_string(),
+            leader_binary_version: xai_grok_version::version().to_string(),
         });
         let _ = run_leader_server(
             sock_clone,
@@ -2292,7 +2292,7 @@ async fn test_no_version_mismatch_notification_when_versions_match() {
             socket_path: sock_clone.clone(),
             lock_path: sock_clone.with_extension("lock"),
             ws_url_suffix: String::new(),
-            leader_binary_version: env!("CARGO_PKG_VERSION").to_string(),
+            leader_binary_version: xai_grok_version::version().to_string(),
         });
         let _ = run_leader_server(
             sock_clone,
@@ -2716,7 +2716,7 @@ async fn test_lock_released_before_connect_prevents_deadlock() {
             socket_path: sock_clone.clone(),
             lock_path: sock_clone.with_extension("lock"),
             ws_url_suffix: String::new(),
-            leader_binary_version: env!("CARGO_PKG_VERSION").to_string(),
+            leader_binary_version: xai_grok_version::version().to_string(),
         });
         let _ = run_leader_server(
             sock_clone,
@@ -2796,7 +2796,7 @@ async fn setup_persistent_test_server(
             socket_path: sock_clone.clone(),
             lock_path: sock_clone.with_extension("lock"),
             ws_url_suffix: String::new(),
-            leader_binary_version: env!("CARGO_PKG_VERSION").to_string(),
+            leader_binary_version: xai_grok_version::version().to_string(),
         });
         let _ = run_leader_server(
             sock_clone,

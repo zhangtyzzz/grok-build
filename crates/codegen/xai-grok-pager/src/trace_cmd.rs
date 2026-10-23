@@ -525,7 +525,7 @@ async fn run_upload(
                 upload_config: &upload_config,
                 canary_object_path: &object_path,
                 bundle_archive: archive.as_slice(),
-                client_version: xai_grok_version::VERSION.to_owned(),
+                client_version: xai_grok_version::version().to_owned(),
             })
             .await;
             // The prefix only means something once at least one per-turn object is known to be there

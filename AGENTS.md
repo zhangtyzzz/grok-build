@@ -33,10 +33,11 @@ rules.
   requested and `main` is ready, manually dispatch
   `Publish release (warm, tag, Release)` from `main`; it warms the exact release
   inputs before creating the version tag and starting `Release`.
-- The four lockstepped package versions track upstream's version line verbatim;
-  do not fork-bump them in separate PRs. A release is dispatched after a sync
-  carries a new upstream version. A fork-only hotfix takes the next patch
-  number above upstream's.
+- Only `xai-grok-pager-bin` tracks the release version. Keep pager, shell, and
+  version library packages at `0.0.0`; never embed release stamps in libraries.
+  The binary initializes runtime identity before any work. Upstream sync uses
+  the fork's next patch and normalizes library versions; preserve this policy
+  and validate with `node scripts/dist/release-version.mjs`.
 - Ordinary pushes and pull-request merges must not publish a release. See
   `docs/release-distribution.md` for recovery and verification details.
 - The owner-authorized upstream-sync workflow may merge its own exact tested

@@ -201,7 +201,7 @@ impl SessionActor {
                 git_worktree: worktree.as_ref().and_then(|w| w.name.clone()),
                 repo: repo_state.repo,
             },
-            version: xai_grok_version::VERSION.to_string(),
+            version: xai_grok_version::version().to_string(),
             cost: StatusLineCost {
                 total_cost_usd: totals.and_then(|t| t.cost_usd_ticks).map(ticks_to_usd),
                 total_duration_ms: self.session_start.elapsed().as_millis() as u64,

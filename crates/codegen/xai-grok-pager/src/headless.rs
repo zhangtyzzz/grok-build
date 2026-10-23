@@ -14,7 +14,7 @@ use crate::app::worktree_session::{
     resume_session_into_worktree,
 };
 use crate::best_effort_stderr::eprint_line;
-use crate::client_identity::{HEADLESS_CLIENT_TYPE, PAGER_CLIENT_VERSION};
+use crate::client_identity::{HEADLESS_CLIENT_TYPE, pager_client_version};
 use crate::headless::reducer::{
     Lifecycle, Reducer, SessionContext, StreamEvent, TurnEnd, map_session_update, reducer_for,
 };
@@ -469,7 +469,7 @@ fn build_headless_init_request(
 ) -> acp::InitializeRequest {
     let mut meta = serde_json::json!({
         "clientType": HEADLESS_CLIENT_TYPE,
-        "clientVersion": PAGER_CLIENT_VERSION,
+        "clientVersion": pager_client_version(),
     });
     if let Some(obj) = meta.as_object_mut() {
         if let Some(rules) = rules {

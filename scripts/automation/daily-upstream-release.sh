@@ -108,9 +108,11 @@ Required behavior:
    ready pull request. Preserve fork-specific behavior, resolve merge conflicts
    carefully, run proportionate local validation, wait for the PR CI with one
    session-managed watcher, and merge only when CI succeeds.
-4. From the resulting `origin/main`, increment the lockstepped patch version in
-   the four release manifests and their matching workspace lockfile entries.
-   Validate it, open a second ready pull request, wait for CI, and merge it.
+4. Ensure synchronization advances only `xai-grok-pager-bin` and its lockfile
+   entry to the next patch above the pre-sync fork main. The deterministic sync
+   helper already does this; do not bump it twice. Keep pager, shell, and version
+   libraries at `0.0.0`. Validate with `node scripts/dist/release-version.mjs`;
+   if using a manual sync, include the version change in the tested sync PR.
 5. Wait for CI on the exact resulting `main` commit. Recheck `upstream/main`
    immediately before publication; if it advanced, synchronize the additional
    commits through the same guarded PR process before releasing.

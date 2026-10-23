@@ -2150,7 +2150,7 @@ async fn handle_synthetic_turn_trace(
         prompt_was_truncated: Some(false),
         prompt_verbatim: Some(true),
         cwd: Some(info.cwd.clone()),
-        shell_version: Some(xai_grok_version::VERSION.to_string()),
+        shell_version: Some(xai_grok_version::version().to_string()),
         sandbox: local_sandbox_telemetry(),
         ..Default::default()
     });

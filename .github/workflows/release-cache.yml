@@ -54,7 +54,7 @@ jobs:
             echo "warmup checkout $checkout_sha does not match requested commit $REQUESTED_COMMIT" >&2
             exit 1
           }
-          version="$(awk -F '"' '/^version = / { print $2; exit }' crates/codegen/xai-grok-pager-bin/Cargo.toml)"
+          version="$(node scripts/dist/release-version.mjs)"
           test -n "$version"
           test -z "$(git status --porcelain --untracked-files=normal)"
           {

@@ -309,7 +309,7 @@ pub struct WorkspaceInfo {
     /// Shell basename (e.g. `"bash"`); `"sh"` when `$SHELL` is unset.
     pub shell: String,
     pub cwd: String,
-    /// Server binary version (`xai_grok_version::VERSION`); `None` on servers predating the field.
+    /// Server binary version (`xai_grok_version::version()`); `None` on servers predating the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 }

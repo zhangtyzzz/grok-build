@@ -608,11 +608,11 @@ pub fn channel_name() -> Option<&'static str> {
     static NAME: OnceLock<Option<&'static str>> = OnceLock::new();
     *NAME.get_or_init(|| {
         let stable = cached_stable_version()?;
-        derive_channel(xai_grok_version::VERSION, &stable)
+        derive_channel(xai_grok_version::version(), &stable)
     })
 }
 
-/// Compares the compiled-in `VERSION` against the stable pointer stored in `~/.grok/version.json` (written by the
+/// Compares the running executable's version against the stable pointer stored in `~/.grok/version.json` (written by the
 /// auto-updater): `" [alpha]"` when the current version is ahead of stable,; `" [stable]"` when at or behind stable,;
 /// `""` when no cached pointer is available (first launch, old cache format).
 pub fn channel_label() -> &'static str {
@@ -623,7 +623,7 @@ pub fn channel_label() -> &'static str {
             Some(s) => s,
             None => return "",
         };
-        match derive_channel(xai_grok_version::VERSION, &stable) {
+        match derive_channel(xai_grok_version::version(), &stable) {
             Some("alpha") => " [alpha]",
             Some(_) => " [stable]",
             None => "",
