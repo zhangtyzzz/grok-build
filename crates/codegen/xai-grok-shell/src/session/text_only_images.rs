@@ -3,8 +3,8 @@
 //! A model whose catalog entry says `supports_images = false`, or whose provider rejected image input earlier in the session,
 //! never receives image parts. [`TextOnlyImages::adapt_request`] saves each image under the session's `assets/` directory and
 //! swaps it for a text placeholder naming that file. The model inspects the file with the `view_image` tool, which asks the
-//! `[models] image_description` vision model ([`VisionViewer`]). Images the user attaches also get a short description up front,
-//! cached by content so every later request renders the same placeholder text (the prompt cache stays warm).
+//! `[models] image_description` vision model ([`VisionViewer`]). The placeholder depends only on the image's content, so every
+//! request renders the same text and the prompt cache stays warm.
 //!
 //! The conversation history keeps the real image parts: switching to a vision model later sends the pixels again.
 
@@ -19,18 +19,13 @@ use xai_grok_tools::implementations::grok_build::VIEW_IMAGE_TOOL_NAME;
 
 use crate::session::image_describe::{DescribeError, content_fingerprint, describe_user_images};
 
-/// User attachments described up front per turn; later ones get only the placeholder.
-pub(crate) const BRIEF_DESCRIPTION_LIMIT: usize = 4;
-
-/// Session-scoped state: models learned to be text-only, saved image files, and up-front descriptions.
+/// Session-scoped state: models learned to be text-only and saved image files.
 #[derive(Debug, Default)]
 pub(crate) struct TextOnlyImages {
     /// Catalog keys (model ref, else slug) whose provider rejected image input this session.
     learned_text_only: Mutex<HashSet<String>>,
-    /// Image URL -> (content fingerprint, saved file). Keyed by URL so a request does not re-decode images it already saved.
-    saved: Mutex<HashMap<Arc<str>, (String, PathBuf)>>,
-    /// Content fingerprint -> short description of a user attachment.
-    briefs: Mutex<HashMap<String, String>>,
+    /// Image URL -> saved file. Keyed by URL so a request does not re-decode images it already saved.
+    saved: Mutex<HashMap<Arc<str>, PathBuf>>,
 }
 
 impl TextOnlyImages {
@@ -46,14 +41,6 @@ impl TextOnlyImages {
         self.learned_text_only.lock().contains(model_key)
     }
 
-    pub(crate) fn has_brief(&self, fingerprint: &str) -> bool {
-        self.briefs.lock().contains_key(fingerprint)
-    }
-
-    pub(crate) fn record_brief(&self, fingerprint: String, description: String) {
-        self.briefs.lock().insert(fingerprint, description);
-    }
-
     /// Replace every image in `request` with a placeholder pointing at a saved copy under `assets_dir`.
     /// Returns how many images were replaced.
     pub(crate) fn adapt_request(
@@ -62,20 +49,12 @@ impl TextOnlyImages {
         assets_dir: &Path,
     ) -> usize {
         xai_grok_sampling_types::replace_images_with_text(&mut request.items, |url| {
-            let saved = self.save(url, assets_dir);
-            let brief = saved
-                .as_ref()
-                .and_then(|(fp, _)| self.briefs.lock().get(fp).cloned());
-            render_placeholder(
-                saved.as_ref().map(|(_, path)| path.as_path()),
-                url,
-                brief.as_deref(),
-            )
+            render_placeholder(self.save(url, assets_dir).as_deref(), url)
         })
     }
 
     /// The saved file for a `data:` image URL, written once per distinct content.
-    fn save(&self, url: &Arc<str>, assets_dir: &Path) -> Option<(String, PathBuf)> {
+    fn save(&self, url: &Arc<str>, assets_dir: &Path) -> Option<PathBuf> {
         if let Some(hit) = self.saved.lock().get(url) {
             return Some(hit.clone());
         }
@@ -95,9 +74,8 @@ impl TextOnlyImages {
                 return None;
             }
         }
-        let entry = (fingerprint, path);
-        self.saved.lock().insert(Arc::clone(url), entry.clone());
-        Some(entry)
+        self.saved.lock().insert(Arc::clone(url), path.clone());
+        Some(path)
     }
 }
 
@@ -123,21 +101,15 @@ fn extension_for(mime: &str) -> &'static str {
 }
 
 /// The text a text-only model sees in place of an image.
-pub(crate) fn render_placeholder(path: Option<&Path>, url: &str, brief: Option<&str>) -> String {
+pub(crate) fn render_placeholder(path: Option<&Path>, url: &str) -> String {
     let location = match path {
         Some(path) => format!("saved at {}", path.display()),
         None if url.starts_with("data:") => "could not be saved".to_owned(),
         None => format!("at {url}"),
     };
-    let mut text = format!(
-        "[Image {location}. You cannot see images directly; call {VIEW_IMAGE_TOOL_NAME} with this path and a specific question to inspect it."
-    );
-    if let Some(brief) = brief {
-        text.push_str("\nBrief description from a vision model: ");
-        text.push_str(&crate::session::image_describe::scrub_envelope_body(brief));
-    }
-    text.push(']');
-    text
+    format!(
+        "[Image {location}. You cannot see images directly; call {VIEW_IMAGE_TOOL_NAME} with this path and a specific question to inspect it.]"
+    )
 }
 
 /// Whether a provider error says the model does not take image input at all (as opposed to one bad image).
@@ -174,16 +146,6 @@ fn view_prompt(question: &str) -> String {
          accurately and completely. Transcribe any text, code, error messages, or numbers that matter verbatim. \
          Describe layout and visual details when they are relevant. If the image cannot answer the question, say so.\n\n\
          <question>\n{question}\n</question>"
-    )
-}
-
-/// Prompt for the short up-front description of a user attachment.
-pub(crate) fn brief_prompt(user_query: &str) -> String {
-    let query = xai_grok_tools::util::truncate::truncate_middle(user_query, 4_000);
-    format!(
-        "A coding assistant that cannot see images received this image from the user. In at most 120 words, say what the image \
-         shows and transcribe the key text (titles, error messages, labels). It can ask you follow-up questions later, so keep \
-         it short.\n\n<user_query>\n{query}\n</user_query>"
     )
 }
 
@@ -282,22 +244,6 @@ mod tests {
         let mut second = request_with(&url);
         state.adapt_request(&mut second, &assets);
         assert_eq!(user_text(&second), text, "same image, same placeholder");
-    }
-
-    #[test]
-    fn brief_is_rendered_once_recorded() {
-        let dir = tempfile::tempdir().unwrap();
-        let state = TextOnlyImages::new();
-        let url = png_url();
-        let (_, bytes) = decode_data_url(&url).unwrap();
-        state.record_brief(content_fingerprint(&bytes), "A <tiny> swatch.".into());
-        let mut request = request_with(&url);
-        state.adapt_request(&mut request, dir.path());
-        let text = user_text(&request);
-        assert!(
-            text.contains("Brief description from a vision model: A ‹tiny› swatch."),
-            "{text}"
-        );
     }
 
     #[test]

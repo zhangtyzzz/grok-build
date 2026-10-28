@@ -2119,7 +2119,7 @@ impl SessionActor {
                 let Some(request) = resend else {
                     return Err(info);
                 };
-                self.prepare_text_only_images("", &[]).await;
+                self.install_image_viewer().await;
                 self.submit_turn_request(request).await
             }
             result => result,

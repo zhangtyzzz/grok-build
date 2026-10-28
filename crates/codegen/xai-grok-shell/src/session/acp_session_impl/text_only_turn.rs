@@ -1,5 +1,5 @@
 //! Session wiring for [`crate::session::text_only_images`]: deciding when the active model is text-only, adapting its requests,
-//! providing the `view_image` vision backend, and describing user attachments up front.
+//! and providing the `view_image` vision backend.
 
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use xai_grok_sampling_types::conversation::{ContentPart, ConversationItem};
 use xai_grok_tools::implementations::grok_build::VIEW_IMAGE_TOOL_NAME;
 
 use crate::session::acp_session::SessionActor;
-use crate::session::text_only_images::{BRIEF_DESCRIPTION_LIMIT, VisionViewer, brief_prompt};
+use crate::session::text_only_images::VisionViewer;
 
 pub(super) fn request_has_images(request: &ConversationRequest) -> bool {
     request.items.iter().any(|item| match item {
@@ -121,23 +121,17 @@ impl SessionActor {
         }
     }
 
-    /// Before a turn of a text-only model: install the `view_image` backend and describe new user attachments briefly.
-    /// Failures only cost the up-front description; the placeholder and tool still work.
-    pub(crate) async fn prepare_text_only_images(
-        &self,
-        user_query: &str,
-        images: &[agent_client_protocol::ImageContent],
-    ) {
+    /// Before a turn of a text-only model, install the `view_image` backend (or remove a stale one when no vision model resolves).
+    pub(crate) async fn install_image_viewer(&self) {
         if !self.active_model_is_text_only().await {
             return;
         }
-        let viewer = self.resolve_vision_viewer().await;
         let bridge = self.tool_bridge_handle();
-        match &viewer {
+        match self.resolve_vision_viewer().await {
             Some(viewer) => {
                 bridge
                     .update_resource(xai_grok_tools::types::resources::ImageViewer(Arc::new(
-                        viewer.clone(),
+                        viewer,
                     )))
                     .await;
             }
@@ -147,29 +141,6 @@ impl SessionActor {
                         res.remove::<xai_grok_tools::types::resources::ImageViewer>();
                     })
                     .await;
-            }
-        }
-        let Some(viewer) = viewer else {
-            return;
-        };
-        let query = xai_chat_state::compaction_utils::extract_user_query(user_query);
-        for image in images.iter().take(BRIEF_DESCRIPTION_LIMIT) {
-            use base64::Engine as _;
-            let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&image.data) else {
-                continue;
-            };
-            let fingerprint = crate::session::image_describe::content_fingerprint(&bytes);
-            if self.text_only_images.has_brief(&fingerprint) {
-                continue;
-            }
-            match viewer
-                .ask(&bytes, &image.mime_type, brief_prompt(&query))
-                .await
-            {
-                Ok(brief) => self.text_only_images.record_brief(fingerprint, brief),
-                Err(error) => {
-                    tracing::warn!(%error, "brief image description failed; the model can still use view_image");
-                }
             }
         }
     }
