@@ -1,6 +1,6 @@
 //! Image input for text-only models.
 //!
-//! A model whose catalog entry says `supports_images = false`, or whose provider rejected image input earlier in the session,
+//! A model whose catalog entry declares `input_modalities` without `"image"`, or whose provider rejected image input earlier in the session,
 //! never receives image parts. [`TextOnlyImages::adapt_request`] saves each image under the session's `assets/` directory and
 //! swaps it for a text placeholder naming that file. The model inspects the file with the `view_image` tool, which asks the
 //! `[models] image_description` vision model ([`VisionViewer`]). The placeholder depends only on the image's content, so every
@@ -244,6 +244,20 @@ mod tests {
         let mut second = request_with(&url);
         state.adapt_request(&mut second, &assets);
         assert_eq!(user_text(&second), text, "same image, same placeholder");
+    }
+
+    #[test]
+    fn declared_modalities_decide_image_support() {
+        use crate::agent::config::supports_images_from_modalities;
+        assert_eq!(supports_images_from_modalities(None), None);
+        assert_eq!(
+            supports_images_from_modalities(Some(&["text".to_owned()])),
+            Some(false)
+        );
+        assert_eq!(
+            supports_images_from_modalities(Some(&["text".to_owned(), "Image".to_owned()])),
+            Some(true)
+        );
     }
 
     #[test]

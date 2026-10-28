@@ -28,7 +28,7 @@ impl SessionActor {
         Some((config.model_ref, config.model, config.base_url))
     }
 
-    /// Whether the active model cannot take image input: declared `supports_images = false`, or learned this session.
+    /// Whether the active model cannot take image input: declared `input_modalities` without `"image"`, or learned this session.
     pub(crate) async fn active_model_is_text_only(&self) -> bool {
         let Some((model_ref, model, base_url)) = self.active_model_locator().await else {
             return false;
@@ -102,7 +102,7 @@ impl SessionActor {
         )
         .is_some_and(|entry| entry.info.supports_images == Some(false));
         if vision_is_text_only {
-            tracing::warn!(model = %self.image_description_model, "image_description model is marked supports_images = false; view_image disabled");
+            tracing::warn!(model = %self.image_description_model, "image_description model declares no image input; view_image disabled");
             return None;
         }
         let active_session_config = self.reconstruct_full_config().await;

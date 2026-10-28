@@ -773,10 +773,19 @@ pub(crate) fn parse_remote_model_value(
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
         supports_images: obj
-            .get("supportsImages")
-            .or_else(|| obj.get("supports_images"))
-            .or_else(|| meta.and_then(|m| m.get("supportsImages")))
-            .and_then(|v| v.as_bool()),
+            .get("inputModalities")
+            .or_else(|| obj.get("input_modalities"))
+            .or_else(|| meta.and_then(|m| m.get("inputModalities")))
+            .and_then(|v| v.as_array())
+            .map(|kinds| {
+                kinds
+                    .iter()
+                    .any(|k| k.as_str().is_some_and(|k| k.eq_ignore_ascii_case("image")))
+            })
+            .or_else(|| {
+                meta.and_then(|m| m.get("supportsImages"))
+                    .and_then(|v| v.as_bool())
+            }),
         compactions_remaining: obj
             .get("compactionsRemaining")
             .or_else(|| obj.get("compactions_remaining"))

@@ -2111,7 +2111,7 @@ impl SessionActor {
                     notes: vec![
                         "This model does not accept images. Images are now passed to it as file paths it can inspect \
                          with the view_image tool (vision model: [models] image_description). Set \
-                         supports_images = false on the model in config.toml to skip this failed attempt."
+                         input_modalities = [\"text\"] on the model in config.toml to skip this failed attempt."
                             .to_owned(),
                     ],
                 })
