@@ -687,7 +687,7 @@ pub const IMAGE_STRIP_PLACEHOLDER: &str = "[image removed — the server could n
 /// Returns how many images were replaced.
 pub fn replace_images_with_text(
     items: &mut [ConversationItem],
-    mut placeholder: impl FnMut(&str) -> String,
+    mut placeholder: impl FnMut(&Arc<str>) -> String,
 ) -> usize {
     let mut replaced = 0;
     for item in items {
