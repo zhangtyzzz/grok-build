@@ -1,14 +1,13 @@
 //! Image input for text-only models.
 //!
-//! A model whose catalog entry declares `input_modalities` without `"image"`, or whose provider rejected image input earlier in the session,
-//! never receives image parts. [`TextOnlyImages::adapt_request`] saves each image under the session's `assets/` directory and
+//! A model whose catalog entry declares `input_modalities` without `"image"` never receives image parts. [`TextOnlyImages::adapt_request`] saves each image under the session's `assets/` directory and
 //! swaps it for a text placeholder naming that file. The model inspects the file with the `view_image` tool, which asks the
 //! `[models] image_description` vision model ([`VisionViewer`]). The placeholder depends only on the image's content, so every
 //! request renders the same text and the prompt cache stays warm.
 //!
 //! The conversation history keeps the real image parts: switching to a vision model later sends the pixels again.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -19,11 +18,9 @@ use xai_grok_tools::implementations::grok_build::VIEW_IMAGE_TOOL_NAME;
 
 use crate::session::image_describe::{DescribeError, content_fingerprint, describe_user_images};
 
-/// Session-scoped state: models learned to be text-only and saved image files.
+/// Session-scoped state: image files saved for text-only models.
 #[derive(Debug, Default)]
 pub(crate) struct TextOnlyImages {
-    /// Catalog keys (model ref, else slug) whose provider rejected image input this session.
-    learned_text_only: Mutex<HashSet<String>>,
     /// Image URL -> saved file. Keyed by URL so a request does not re-decode images it already saved.
     saved: Mutex<HashMap<Arc<str>, PathBuf>>,
 }
@@ -31,14 +28,6 @@ pub(crate) struct TextOnlyImages {
 impl TextOnlyImages {
     pub(crate) fn new() -> Self {
         Self::default()
-    }
-
-    pub(crate) fn mark_text_only(&self, model_key: &str) -> bool {
-        self.learned_text_only.lock().insert(model_key.to_owned())
-    }
-
-    pub(crate) fn learned_text_only(&self, model_key: &str) -> bool {
-        self.learned_text_only.lock().contains(model_key)
     }
 
     /// Replace every image in `request` with a placeholder pointing at a saved copy under `assets_dir`.
@@ -109,33 +98,6 @@ pub(crate) fn render_placeholder(path: Option<&Path>, url: &str) -> String {
     format!(
         "[Image {location}. You cannot see images directly; call {VIEW_IMAGE_TOOL_NAME} with this path and a specific question to inspect it.]"
     )
-}
-
-/// Whether a provider error says the model does not take image input at all (as opposed to one bad image).
-/// Matched on the message because providers have no common code for it.
-pub(crate) fn is_image_input_unsupported(status: Option<u16>, message: &str) -> bool {
-    if !matches!(status, Some(400 | 404 | 415 | 422)) {
-        return false;
-    }
-    let m = message.to_ascii_lowercase();
-    const PHRASES: &[&str] = &[
-        "unknown variant `image_url`",
-        "unknown variant \"image_url\"",
-        "support image input",
-        "image input is not supported",
-        "image input not supported",
-        "does not support image",
-        "doesn't support image",
-        "not support image",
-        "images are not supported",
-        "image is not supported",
-        "vision is not supported",
-        "does not support vision",
-        "not a multimodal model",
-        "does not support multimodal",
-    ];
-    PHRASES.iter().any(|p| m.contains(p))
-        || (m.contains("image_url") && (m.contains("not supported") || m.contains("unsupported")))
 }
 
 /// Prompt for one `view_image` question.
@@ -257,25 +219,5 @@ mod tests {
             supports_images_from_modalities(Some(&["text".to_owned(), "Image".to_owned()])),
             Some(true)
         );
-    }
-
-    #[test]
-    fn unsupported_image_errors_are_recognized() {
-        assert!(is_image_input_unsupported(
-            Some(400),
-            "Failed to deserialize the JSON body into the target type: messages[1]: unknown variant `image_url`, expected `text`"
-        ));
-        assert!(is_image_input_unsupported(
-            Some(404),
-            "No endpoints found that support image input"
-        ));
-        assert!(!is_image_input_unsupported(
-            Some(400),
-            "Could not process image"
-        ));
-        assert!(!is_image_input_unsupported(
-            Some(500),
-            "does not support image input"
-        ));
     }
 }

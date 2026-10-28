@@ -345,7 +345,7 @@ input_modalities = ["text"]
 image_description = "grok-4.6"   # or any catalog model that accepts images
 ```
 
-Models that can see images do not get the `view_image` tool. If a model without `input_modalities` set rejects images with an explicit "image input not supported" error, Grok treats it as text-only for the rest of the session and resends that request once with file paths in place of the images. Setting the flag avoids that failed first attempt. The conversation keeps the original images, so switching to a vision model later sends them as images again.
+Models that can see images do not get the `view_image` tool. Only the declaration decides: a model without `input_modalities` keeps receiving images inline, even if its provider rejects them. The conversation keeps the original images, so switching to a vision model later sends them as images again.
 
 ---
 

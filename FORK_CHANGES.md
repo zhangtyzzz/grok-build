@@ -163,16 +163,16 @@ helper 回归覆盖同 slug 不同 provider、缺失 ref 不降级、legacy alia
 
 **必须保留的约束。**
 
-- 判定：模型配置 `input_modalities` 不含 `"image"`（如 `["text"]`；`[model.<id>]` 条目，远端/自定义模型目录的 `input_modalities` / `inputModalities` 同样读取）即为纯文本；内部派生为 `ModelInfo::supports_images`；未声明的模型维持上游内联发送。provider 明确返回"不支持图片"（`text_only_images::is_image_input_unsupported`，仅匹配 400/404/415/422 且消息含 `unknown variant \`image_url\``、`support image input` 等短语）时，本会话把该模型记为纯文本，通知用户并用占位重发该请求一次；单张坏图（`invalid_image`）仍走上游剥图重试，不能据此学习。
+- 判定：模型配置 `input_modalities` 不含 `"image"`（如 `["text"]`；`[model.<id>]` 条目，远端/自定义模型目录的 `input_modalities` / `inputModalities` 同样读取）即为纯文本；内部派生为 `ModelInfo::supports_images`；未声明的模型维持上游内联发送。是否纯文本只看声明，不根据 provider 报错推断或自动重试（维护者 2026-10-28 决定去掉报错兜底）。
 - 唯一切入点：`submit_turn_request` 发送前调用 `adapt_request_for_image_input`。纯文本模型：用户、工具结果（`read_file`、MCP）及历史里的所有 `ContentPart::Image` 替换为 `[Image saved at <assets 路径> … call view_image …]`；其他模型：从请求中移除 `view_image` 定义。聊天历史保留原图，切回多模态模型后照常发送像素。
 - 占位只由图片内容决定（`assets/image-<sha256 前 16 位>.<ext>`，同一内容只写一次），保证每轮请求文本一致、前缀缓存不失效。
 - `view_image` 的视觉后端（`ImageViewer` 资源）只在纯文本模型的回合开始时安装；解析不到视觉模型、或视觉模型本身声明不含 image 时移除资源，工具报错提示配置 `[models] image_description`。绝不回退到当前（纯文本）模型。视觉辅助 sampler 走 `resolve_aux_sampler_config` + `finalize_image_describe_sampler_config`，遵守 §3.2 的凭据边界。
 - shell 发出的 ACP meta 用 `supportsImages` 传递该能力，不用 `acceptsImages`/`inputModalities`：后者会让 pager 隐藏贴图提示，而纯文本模型仍可贴图。
 - cursor harness 的整图转述路径（`transcribe_user_images`）保持上游原样，不叠加本功能。
 
-**代码入口。** `crates/codegen/xai-grok-tools/src/implementations/grok_build/view_image/mod.rs`、`types/resources.rs` 的 `ImageViewer`/`ImageViewerBackend`；`xai-grok-agent/src/builder.rs` 默认注入；`xai-grok-sampling-types/src/conversation.rs` 的 `replace_images_with_text`；shell 的 `session/text_only_images.rs`、`session/acp_session_impl/text_only_turn.rs`、`sampler_turn.rs` 的 `submit_turn_request_learning_image_input`、`turn.rs` 的 `install_image_viewer` 调用；`agent/config.rs` 的 `input_modalities` / `supports_images_from_modalities` 与 `remote/client.rs` 的解析。
+**代码入口。** `crates/codegen/xai-grok-tools/src/implementations/grok_build/view_image/mod.rs`、`types/resources.rs` 的 `ImageViewer`/`ImageViewerBackend`；`xai-grok-agent/src/builder.rs` 默认注入；`xai-grok-sampling-types/src/conversation.rs` 的 `replace_images_with_text`；shell 的 `session/text_only_images.rs`、`session/acp_session_impl/text_only_turn.rs`、`sampler_turn.rs` 的 `submit_turn_request` 调用 `adapt_request_for_image_input`、`turn.rs` 的 `install_image_viewer` 调用；`agent/config.rs` 的 `input_modalities` / `supports_images_from_modalities` 与 `remote/client.rs` 的解析。
 
-**合并方法。** 上游若原生支持模型输入模态声明或类似看图工具，评估迁移，但保留：配置驱动 + 明确错误时学习、单一请求切入点、内容稳定的占位路径、非纯文本模型不暴露工具、不回退到当前模型。上游重构 `submit_turn_request` 或 `ModelInfo` 时，把这两处钩子移植到新接口。
+**合并方法。** 上游若原生支持模型输入模态声明或类似看图工具，评估迁移，但保留：仅由 `input_modalities` 声明驱动、单一请求切入点、内容稳定的占位路径、非纯文本模型不暴露工具、不回退到当前模型。上游重构 `submit_turn_request` 或 `ModelInfo` 时，把这两处钩子移植到新接口。
 
 **验证。** `cargo test -p xai-grok-tools --lib view_image`；`cargo test -p xai-grok-sampling-types --lib replace_images_with_text`；`cargo test -p xai-grok-shell --lib text_only_images`；`cargo check -p xai-grok-shell --tests`。
 

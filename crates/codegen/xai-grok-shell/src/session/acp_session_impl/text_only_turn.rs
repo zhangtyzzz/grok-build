@@ -10,7 +10,7 @@ use xai_grok_tools::implementations::grok_build::VIEW_IMAGE_TOOL_NAME;
 use crate::session::acp_session::SessionActor;
 use crate::session::text_only_images::VisionViewer;
 
-pub(super) fn request_has_images(request: &ConversationRequest) -> bool {
+fn request_has_images(request: &ConversationRequest) -> bool {
     request.items.iter().any(|item| match item {
         ConversationItem::User(user) => user
             .content
@@ -28,15 +28,11 @@ impl SessionActor {
         Some((config.model_ref, config.model, config.base_url))
     }
 
-    /// Whether the active model cannot take image input: declared `input_modalities` without `"image"`, or learned this session.
+    /// Whether the active model cannot take image input: declared `input_modalities` without `"image"`.
     pub(crate) async fn active_model_is_text_only(&self) -> bool {
         let Some((model_ref, model, base_url)) = self.active_model_locator().await else {
             return false;
         };
-        let key = model_ref.clone().unwrap_or_else(|| model.clone());
-        if self.text_only_images.learned_text_only(&key) {
-            return true;
-        }
         let models = self.models_manager.models();
         crate::agent::config::find_model_by_locator(
             &models,
@@ -45,19 +41,6 @@ impl SessionActor {
             &base_url,
         )
         .is_some_and(|entry| entry.info.supports_images == Some(false))
-    }
-
-    /// Remember that the active model rejected image input. Returns `true` the first time.
-    pub(crate) async fn learn_active_model_text_only(&self) -> bool {
-        let Some((model_ref, model, _)) = self.active_model_locator().await else {
-            return false;
-        };
-        let key = model_ref.unwrap_or(model);
-        let first = self.text_only_images.mark_text_only(&key);
-        if first {
-            tracing::info!(model = %key, "provider rejected image input; routing images through view_image for this session");
-        }
-        first
     }
 
     /// Shape `request` for the active model: a text-only model gets image placeholders; any other model loses `view_image`.
