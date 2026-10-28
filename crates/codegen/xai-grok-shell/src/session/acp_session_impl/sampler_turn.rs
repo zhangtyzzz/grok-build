@@ -2090,6 +2090,7 @@ impl SessionActor {
         self: &Arc<Self>,
         mut request: ConversationRequest,
     ) -> Result<SamplerTurnOutcome, xai_grok_sampler::SamplingErrorInfo> {
+        self.adapt_request_for_image_input(&mut request).await;
         let request_id = xai_grok_sampler::RequestId::random();
         self.turn_phases.record_sampling_request();
         let _sampling_phase = self.turn_phases.begin_sampling();

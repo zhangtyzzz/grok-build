@@ -682,6 +682,62 @@ pub fn strip_images_by_url(items: &mut [ConversationItem], urls: &[Arc<str>]) ->
 pub const IMAGE_STRIP_PLACEHOLDER: &str = "[image removed — the server could not process it; \
      its contents are unavailable. Ask the user to re-attach the image if it is still needed.]";
 
+/// Replace every image with the text `placeholder(url)` returns, for a model that cannot take image input.
+/// User images become text parts in place; tool-result images move into the result's text, since conversion layers only render text there.
+/// Returns how many images were replaced.
+pub fn replace_images_with_text(
+    items: &mut [ConversationItem],
+    mut placeholder: impl FnMut(&Arc<str>) -> String,
+) -> usize {
+    let mut replaced = 0;
+    for item in items {
+        match item {
+            ConversationItem::User(user) => {
+                for part in &mut user.content {
+                    match part {
+                        ContentPart::Image { url } => {
+                            replaced += 1;
+                            *part = ContentPart::Text {
+                                text: Arc::<str>::from(placeholder(url)),
+                            };
+                        }
+                        ContentPart::Text { .. } => {}
+                    }
+                }
+            }
+            ConversationItem::ToolResult(t) => {
+                if t.images.is_empty() {
+                    continue;
+                }
+                let mut text = String::from(t.content.as_ref());
+                for part in std::mem::take(&mut t.images) {
+                    match part {
+                        ContentPart::Image { url } => {
+                            replaced += 1;
+                            if !text.is_empty() {
+                                text.push_str("\n\n");
+                            }
+                            text.push_str(&placeholder(&url));
+                        }
+                        ContentPart::Text { text: extra } => {
+                            if !text.is_empty() {
+                                text.push_str("\n\n");
+                            }
+                            text.push_str(&extra);
+                        }
+                    }
+                }
+                t.content = Arc::from(text);
+            }
+            ConversationItem::System(_)
+            | ConversationItem::Assistant(_)
+            | ConversationItem::BackendToolCall(_)
+            | ConversationItem::Reasoning(_) => {}
+        }
+    }
+    replaced
+}
+
 /// User images become [`IMAGE_STRIP_PLACEHOLDER`]; tool-result images are dropped (a placeholder there is invisible to the conversion layers).
 fn strip_images_where(
     items: &mut [ConversationItem],
@@ -3866,6 +3922,40 @@ mod tests {
         // Second run should be a no-op.
         assert_eq!(dedup_duplicate_tool_results(&mut conv), 0);
         assert_eq!(conv.len(), 2);
+    }
+
+    #[test]
+    fn replace_images_with_text_covers_user_and_tool_results() {
+        let mut items = vec![
+            ConversationItem::user_with_parts(vec![
+                ContentPart::Text {
+                    text: Arc::from("look"),
+                },
+                ContentPart::Image {
+                    url: Arc::from("data:image/png;base64,AAAA"),
+                },
+            ]),
+            ConversationItem::ToolResult(ToolResultItem {
+                tool_call_id: "c1".into(),
+                content: Arc::from("read ok"),
+                images: vec![ContentPart::Image {
+                    url: Arc::from("data:image/png;base64,BBBB"),
+                }],
+            }),
+        ];
+        let n = replace_images_with_text(&mut items, |url| format!("[img {}]", &url[22..]));
+        assert_eq!(n, 2);
+        let ConversationItem::User(u) = &items[0] else {
+            panic!()
+        };
+        assert!(
+            matches!(&u.content[1], ContentPart::Text { text } if text.as_ref() == "[img AAAA]")
+        );
+        let ConversationItem::ToolResult(t) = &items[1] else {
+            panic!()
+        };
+        assert!(t.images.is_empty());
+        assert_eq!(t.content.as_ref(), "read ok\n\n[img BBBB]");
     }
 
     // ========== strip_images tests ==========

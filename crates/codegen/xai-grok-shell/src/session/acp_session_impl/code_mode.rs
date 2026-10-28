@@ -812,8 +812,15 @@ impl SessionActor {
         let mcp_reachable = declared
             .iter()
             .any(|d| kind_of(&d.function.name) == Some(ToolKind::UseTool));
+        // Same rule as the request: only a text-only model gets `view_image`.
+        let text_only = self.active_model_is_text_only().await;
         let mut inventory: BTreeMap<_, _> = declared
             .into_iter()
+            .filter(|d| {
+                text_only
+                    || d.function.name
+                        != xai_grok_tools::implementations::grok_build::VIEW_IMAGE_TOOL_NAME
+            })
             .filter(|d| composable(&d.function.name, kind_of(&d.function.name)))
             .map(|d| (d.function.name.clone(), d))
             .collect();

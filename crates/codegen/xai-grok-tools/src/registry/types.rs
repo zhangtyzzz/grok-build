@@ -728,6 +728,7 @@ impl ToolRegistryBuilder {
         b.register::<grok_build::SendSubagentMessageTool>();
         b.register::<grok_build::SendFeedbackTool>();
         b.register::<grok_build::WebSearchTool>();
+        b.register::<grok_build::ViewImageTool>();
         b.register_with_params::<grok_build::WebFetchTool, grok_build::web_fetch::WebFetchParams>();
         b.register::<grok_build::LspTool>();
         b.register::<grok_build::ImageGenTool>();

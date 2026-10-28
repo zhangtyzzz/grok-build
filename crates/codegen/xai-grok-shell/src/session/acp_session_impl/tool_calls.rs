@@ -2522,6 +2522,12 @@ impl SessionActor {
                 vec![],
                 vec![],
             ),
+            ToolInput::ViewImage(v) => (
+                format!("View image {}", v.path),
+                acp::ToolKind::Read,
+                vec![],
+                vec![],
+            ),
             ToolInput::SendFeedback(_) => (
                 "Feedback drafted".to_string(),
                 acp::ToolKind::Other,

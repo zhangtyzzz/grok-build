@@ -684,6 +684,19 @@ impl AttachedImages {
             .map(|(_, reference)| reference.as_str())
     }
 }
+/// Answers questions about an image for a model that cannot see images (`view_image`).
+/// The session implements it with its auxiliary vision model; the error string is shown to the model.
+pub trait ImageViewerBackend: Send + Sync + std::fmt::Debug {
+    fn view(
+        &self,
+        bytes: Vec<u8>,
+        mime_type: String,
+        question: String,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>;
+}
+/// Present only while the session's model is text-only and a vision model resolved. Ephemeral — not persisted, not serde-registered.
+#[derive(Debug, Clone)]
+pub struct ImageViewer(pub std::sync::Arc<dyn ImageViewerBackend>);
 /// Notification handle for streaming tool output.
 #[derive(Clone)]
 pub struct NotificationHandle(pub ToolNotificationHandle);

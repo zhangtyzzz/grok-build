@@ -1174,6 +1174,9 @@ impl SessionActor {
                     attached_image_refs,
                 ))
                 .await;
+            if !self.is_cursor_harness() {
+                self.install_image_viewer().await;
+            }
             if trace_gcs_config.is_some() {
                 self.chat_state_handle.begin_turn_capture();
             }

@@ -803,6 +803,10 @@ impl AgentBuilder {
                     .tools
                     .push((&xai_grok_tools::implementations::grok_build::LspTool).into());
             }
+            // The session drops it from requests whose model can see images itself.
+            tool_config
+                .tools
+                .push((&xai_grok_tools::implementations::grok_build::ViewImageTool).into());
             if self.image_gen_config.image_gen_enabled() {
                 tool_config
                     .tools
