@@ -157,6 +157,25 @@ helper 回归覆盖同 slug 不同 provider、缺失 ref 不降级、legacy alia
 
 **验证。** `cargo test -p xai-grok-tools --lib code_mode`；`cargo build -p xai-grok-tools --example code_mode_worker` 后设 `GROK_TEST_CODE_MODE_WORKER=<绝对路径>` 运行 `cargo test -p xai-grok-shell --lib code_mode -- --include-ignored`（含 MCP 进入 catalog 并经 `use_tool` 到达网关、真实 worker 往返/取消回收/8 路并发、混合批次插话、超时配置）；`cargo check -p xai-grok-pager-bin`。
 
+### 3.7 纯文本模型的看图工具（`view_image`）
+
+**背景与目标。** 很多自定义 provider 模型（DeepSeek、GLM 文本版等）不接受图片输入。上游总是把图片按 `image_url` 内联发送，这类服务直接返回 400，用户只能看到报错。参照智谱 zCode 的思路，fork 让纯文本模型通过工具"看图"：图片不再原样发送，而是保存成文件并替换为路径占位；模型调用 `view_image(path, question)`，由 `[models] image_description` 指定的视觉模型读图并回答文字。维护者 2026-10-28 确认采用"只给路径 + 工具"的最简逻辑，不做首轮自动描述。
+
+**必须保留的约束。**
+
+- 判定：模型配置 `supports_images = false`（`[model.<id>]` / provider 模型条目，远端目录同名字段）即为纯文本；未声明的模型维持上游内联发送。provider 明确返回"不支持图片"（`text_only_images::is_image_input_unsupported`，仅匹配 400/404/415/422 且消息含 `unknown variant \`image_url\``、`support image input` 等短语）时，本会话把该模型记为纯文本，通知用户并用占位重发该请求一次；单张坏图（`invalid_image`）仍走上游剥图重试，不能据此学习。
+- 唯一切入点：`submit_turn_request` 发送前调用 `adapt_request_for_image_input`。纯文本模型：用户、工具结果（`read_file`、MCP）及历史里的所有 `ContentPart::Image` 替换为 `[Image saved at <assets 路径> … call view_image …]`；其他模型：从请求中移除 `view_image` 定义。聊天历史保留原图，切回多模态模型后照常发送像素。
+- 占位只由图片内容决定（`assets/image-<sha256 前 16 位>.<ext>`，同一内容只写一次），保证每轮请求文本一致、前缀缓存不失效。
+- `view_image` 的视觉后端（`ImageViewer` 资源）只在纯文本模型的回合开始时安装；解析不到视觉模型、或视觉模型本身标为 `supports_images = false` 时移除资源，工具报错提示配置 `[models] image_description`。绝不回退到当前（纯文本）模型。视觉辅助 sampler 走 `resolve_aux_sampler_config` + `finalize_image_describe_sampler_config`，遵守 §3.2 的凭据边界。
+- ACP meta 用 `supportsImages` 传递该能力，不用 `acceptsImages`：后者会让 pager 隐藏贴图提示，而纯文本模型仍可贴图。
+- cursor harness 的整图转述路径（`transcribe_user_images`）保持上游原样，不叠加本功能。
+
+**代码入口。** `crates/codegen/xai-grok-tools/src/implementations/grok_build/view_image/mod.rs`、`types/resources.rs` 的 `ImageViewer`/`ImageViewerBackend`；`xai-grok-agent/src/builder.rs` 默认注入；`xai-grok-sampling-types/src/conversation.rs` 的 `replace_images_with_text`；shell 的 `session/text_only_images.rs`、`session/acp_session_impl/text_only_turn.rs`、`sampler_turn.rs` 的 `submit_turn_request_learning_image_input`、`turn.rs` 的 `install_image_viewer` 调用；`agent/config.rs` 与 `remote/client.rs` 的 `supports_images`。
+
+**合并方法。** 上游若原生支持模型输入模态声明或类似看图工具，评估迁移，但保留：配置驱动 + 明确错误时学习、单一请求切入点、内容稳定的占位路径、非纯文本模型不暴露工具、不回退到当前模型。上游重构 `submit_turn_request` 或 `ModelInfo` 时，把这两处钩子移植到新接口。
+
+**验证。** `cargo test -p xai-grok-tools --lib view_image`；`cargo test -p xai-grok-sampling-types --lib replace_images_with_text`；`cargo test -p xai-grok-shell --lib text_only_images`；`cargo check -p xai-grok-shell --tests`。
+
 ## 4. 跟随上游或允许等价替代的区域
 
 ### 4.1 Plan Mode、结构化输出和工具观测的来源
@@ -328,5 +347,6 @@ fork 自己维护发布编号：upstream sync 从 fork main 当前稳定版递�
 | alpha CI 后仅预热、默认 main 可信调度与精确 SHA 接收 | 本文 §6.2；`alpha-prewarm.yml` / `release-cache.yml`；`dispatch-alpha-warm.py` 与实际 shell guard 测试；`upstream_sync.py::protected`。 |
 | 标准发行入口与精确产物复用 | `6ff1d78f`、`2e09f905`；`docs/release-distribution.md`。 |
 | JavaScript Code Mode（默认开启，全工具含 MCP） | PR #104、#106（MCP 提示双路径）、嵌套结果完整性修复；`docs/code-mode.md`；本文 §3.6。 |
+| 纯文本模型的 `view_image` 看图回退 | 本文 §3.7；`supports_images` 配置；`text_only_images` 单测。 |
 
 新上游若使这些文件或符号消失，先核实行为迁移或等价替代，再更新入口；不要仅为维持本文的旧路径把已删除代码恢复。

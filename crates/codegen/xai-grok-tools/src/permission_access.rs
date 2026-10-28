@@ -44,6 +44,7 @@ impl From<&crate::types::ToolInput> for AccessKind {
                 subagent_id: message.subagent_id.clone(),
             },
             ToolInput::SendFeedback(_) => AccessKind::Tool("send_feedback".to_owned()),
+            ToolInput::ViewImage(v) => AccessKind::Read(Some(v.path.clone())),
             ToolInput::WebSearch(ws) => AccessKind::WebSearch(ws.query.clone()),
             ToolInput::SearchReplace(search_replace) => {
                 AccessKind::Edit(search_replace.file_path.to_string())

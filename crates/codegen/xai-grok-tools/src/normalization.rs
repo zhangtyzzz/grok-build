@@ -113,6 +113,7 @@ pub fn canonical_input(input: &ToolInput) -> Option<serde_json::Value> {
         | ToolInput::AskUserQuestion(_)
         | ToolInput::SendSubagentMessage(_)
         | ToolInput::SendFeedback(_)
+        | ToolInput::ViewImage(_)
         | ToolInput::Lsp(_)
         | ToolInput::Monitor(_)
         | ToolInput::SchedulerCreate(_)

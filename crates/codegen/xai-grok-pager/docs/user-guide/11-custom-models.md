@@ -199,6 +199,7 @@ temperature = 0.7                         # Sampling temperature
 top_p = 0.95                              # Nucleus sampling parameter
 max_completion_tokens = 8192              # Maximum tokens per response
 context_window = 128000                   # Total context window in tokens
+supports_images = false                   # Text-only model: images go through view_image (optional)
 extra_headers = { "x-api-key" = "sk-..." } # Extra request headers, sent verbatim (optional)
 query_params = { api-version = "2026-07-22" } # Query params appended to every request URL (optional)
 env_http_headers = { "X-Tenant" = "TENANT_TOKEN" }    # Headers from env vars, resolved at client build (optional)
@@ -325,6 +326,26 @@ notice = { severity = "warning", text = "This model is deprecated on Oct 15. Swi
 ```
 
 `severity` sets the banner color and is `info`, `warning`, or `critical`. It defaults to `info`. `text` is required, and long text wraps. `label` is an optional short tag shown before the text. A custom models endpoint can send the same object as `notice` or `_meta.notice` on a model entry. To remove a notice a built-in or remote model carries, set `notice = { text = "" }`.
+
+### Text-only Models and Images
+
+Set `supports_images = false` on a model that cannot take image input. Grok then never sends it image data. Each image in the conversation (an attachment, a screenshot read with `read_file`, an MCP image result) is saved under the session's `assets/` folder and replaced with a short note giving the file path. The model looks at an image by calling the `view_image` tool with that path and a question. A vision model answers in text.
+
+The vision model is the one set by `[models] image_description` (or `GROK_IMAGE_DESCRIPTION_MODEL`). Point it at any model in your catalog that accepts images:
+
+```toml
+[model.deepseek-chat]
+model = "deepseek-chat"
+base_url = "https://api.deepseek.com/v1"
+env_key = "DEEPSEEK_API_KEY"
+context_window = 128000
+supports_images = false
+
+[models]
+image_description = "grok-4.6"   # or any catalog model that accepts images
+```
+
+Models that can see images do not get the `view_image` tool. If a model without `supports_images` set rejects images with an explicit "image input not supported" error, Grok treats it as text-only for the rest of the session and resends that request once with file paths in place of the images. Setting the flag avoids that failed first attempt. The conversation keeps the original images, so switching to a vision model later sends them as images again.
 
 ---
 
