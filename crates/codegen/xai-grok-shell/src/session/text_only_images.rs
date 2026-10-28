@@ -66,13 +66,12 @@ impl TextOnlyImages {
             extension_for(&mime)
         );
         let path = assets_dir.join(name);
-        if !path.exists() {
-            if let Err(error) = crate::util::grok_home::create_dir_all_owner_only(assets_dir)
+        if !path.exists()
+            && let Err(error) = crate::util::grok_home::create_dir_all_owner_only(assets_dir)
                 .and_then(|()| std::fs::write(&path, &bytes))
-            {
-                tracing::warn!(%error, path = %path.display(), "could not save image for a text-only model");
-                return None;
-            }
+        {
+            tracing::warn!(%error, path = %path.display(), "could not save image for a text-only model");
+            return None;
         }
         self.saved.lock().insert(Arc::clone(url), path.clone());
         Some(path)

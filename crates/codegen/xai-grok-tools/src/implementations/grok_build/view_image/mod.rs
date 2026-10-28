@@ -65,6 +65,14 @@ impl crate::types::tool_metadata::ToolMetadata for ViewImageTool {
         ToolNamespace::GrokBuild
     }
 
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
+    fn lock_path_param(&self) -> Option<&'static str> {
+        Some("path")
+    }
+
     fn description_template(&self) -> &str {
         "Look at an image file. You cannot see images directly: an image in the conversation appears as a placeholder with its file path. Call this tool with that path (or the path of any image file, such as a screenshot or a PNG in the repository) and a specific question; a vision model looks at the image and answers in text. Ask focused questions and call it again with a new question when you need more detail; the answer only covers what you asked."
     }
