@@ -3523,7 +3523,7 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
                 reasoning_effort_server_default: false,
                 variants: m.variants,
                 supports_backend_search: m.supports_backend_search,
-                supports_images: supports_images_from_modalities(m.input_modalities.as_deref()),
+                input_modalities: m.input_modalities,
                 compactions_remaining: m.compactions_remaining,
                 compaction_at_tokens: m.compaction_at_tokens,
                 show_model_fingerprint: m.show_model_fingerprint,

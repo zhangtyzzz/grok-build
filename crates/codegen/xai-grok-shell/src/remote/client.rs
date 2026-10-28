@@ -772,7 +772,7 @@ pub(crate) fn parse_remote_model_value(
             .or_else(|| meta.and_then(|m| m.get("supportsBackendSearch")))
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
-        supports_images: obj
+        input_modalities: obj
             .get("inputModalities")
             .or_else(|| obj.get("input_modalities"))
             .or_else(|| meta.and_then(|m| m.get("inputModalities")))
@@ -780,11 +780,19 @@ pub(crate) fn parse_remote_model_value(
             .map(|kinds| {
                 kinds
                     .iter()
-                    .any(|k| k.as_str().is_some_and(|k| k.eq_ignore_ascii_case("image")))
+                    .filter_map(|k| k.as_str().map(str::to_owned))
+                    .collect()
             })
             .or_else(|| {
-                meta.and_then(|m| m.get("supportsImages"))
-                    .and_then(|v| v.as_bool())
+                // A shell peer sends the derived flag as `_meta.supportsImages`.
+                let supports = meta
+                    .and_then(|m| m.get("supportsImages"))
+                    .and_then(|v| v.as_bool())?;
+                let mut kinds = vec!["text".to_owned()];
+                if supports {
+                    kinds.push("image".to_owned());
+                }
+                Some(kinds)
             }),
         compactions_remaining: obj
             .get("compactionsRemaining")
