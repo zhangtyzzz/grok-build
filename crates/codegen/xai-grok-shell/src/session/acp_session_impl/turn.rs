@@ -1174,6 +1174,10 @@ impl SessionActor {
                     attached_image_refs,
                 ))
                 .await;
+            if !self.is_cursor_harness() {
+                self.prepare_text_only_images(&user_message, &user_images)
+                    .await;
+            }
             if trace_gcs_config.is_some() {
                 self.chat_state_handle.begin_turn_capture();
             }

@@ -37,6 +37,7 @@ pub mod task_output;
 pub mod todo;
 pub mod update_goal;
 pub mod video_gen;
+pub mod view_image;
 pub mod web_fetch;
 pub mod web_search;
 pub mod workflow;
@@ -77,6 +78,7 @@ pub use video_gen::{
     REFERENCE_TO_VIDEO_TOOL_NAME, ReferenceToVideoTool, imagine_video_instruction,
     imagine_video_usage_message,
 };
+pub use view_image::{VIEW_IMAGE_TOOL_NAME, ViewImageTool};
 pub use web_fetch::{WebFetchClient, WebFetchConfig, WebFetchParams, WebFetchTool};
 pub use web_search::WebSearchTool;
 pub use workflow::{

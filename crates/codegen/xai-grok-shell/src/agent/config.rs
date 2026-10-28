@@ -3441,6 +3441,8 @@ struct DefaultModelJson {
     #[serde(default)]
     supports_backend_search: bool,
     #[serde(default)]
+    supports_images: Option<bool>,
+    #[serde(default)]
     compactions_remaining: Option<CompactionsRemaining>,
     #[serde(default)]
     compaction_at_tokens: Option<CompactionAtTokens>,
@@ -3521,6 +3523,7 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
                 reasoning_effort_server_default: false,
                 variants: m.variants,
                 supports_backend_search: m.supports_backend_search,
+                supports_images: m.supports_images,
                 compactions_remaining: m.compactions_remaining,
                 compaction_at_tokens: m.compaction_at_tokens,
                 show_model_fingerprint: m.show_model_fingerprint,
@@ -3646,6 +3649,10 @@ pub struct ModelEntryConfig {
     pub supported_in_api: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub supports_backend_search: bool,
+    /// Whether the model accepts image input. `false` routes images through the `view_image` tool and the
+    /// `[models] image_description` vision model; unset means images are sent inline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_images: Option<bool>,
     /// Per-model config for the `x-compactions-remaining` header; `None` disables it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compactions_remaining: Option<CompactionsRemaining>,
@@ -3710,6 +3717,7 @@ impl Default for ModelEntryConfig {
             hidden: false,
             supported_in_api: true,
             supports_backend_search: false,
+            supports_images: None,
             compactions_remaining: None,
             compaction_at_tokens: None,
             show_model_fingerprint: false,
@@ -3781,6 +3789,7 @@ pub struct ConfigModelOverride {
     pub supports_reasoning_effort: Option<bool>,
     pub reasoning_efforts: Vec<ReasoningEffortOption>,
     pub supports_backend_search: Option<bool>,
+    pub supports_images: Option<bool>,
     /// Aliases must be registered in `config_model_override_parse::ALIASES`; serde rejects a table that contains both spellings otherwise.
     #[serde(alias = "send_compactions_remaining")]
     pub compactions_remaining: Option<CompactionsRemaining>,
@@ -3904,6 +3913,9 @@ impl ConfigModelOverride {
         if let Some(v) = self.supports_backend_search {
             entry.info.supports_backend_search = v;
         }
+        if self.supports_images.is_some() {
+            entry.info.supports_images = self.supports_images;
+        }
         if self.compactions_remaining.is_some() {
             entry.info.compactions_remaining = self.compactions_remaining;
         }
@@ -4025,6 +4037,9 @@ pub struct ModelInfo {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<ModelVariant>,
     pub supports_backend_search: bool,
+    /// `Some(false)`: the model is text-only; see [`ModelEntryConfig::supports_images`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_images: Option<bool>,
     /// Per-model config for the `x-compactions-remaining` header; `None` disables it.
     pub compactions_remaining: Option<CompactionsRemaining>,
     /// Per-model config for the `x-compaction-at` header; `None` disables it.
@@ -4090,6 +4105,7 @@ impl ModelInfo {
             reasoning_effort_server_default: false,
             variants: Vec::new(),
             supports_backend_search: false,
+            supports_images: None,
             compactions_remaining: None,
             compaction_at_tokens: None,
             show_model_fingerprint: false,
@@ -4137,6 +4153,7 @@ impl ModelInfo {
             reasoning_effort_server_default: entry.reasoning_effort_server_default,
             variants: entry.variants.clone(),
             supports_backend_search: entry.supports_backend_search,
+            supports_images: entry.supports_images,
             compactions_remaining: entry.compactions_remaining,
             compaction_at_tokens: entry.compaction_at_tokens,
             show_model_fingerprint: entry.show_model_fingerprint,
@@ -5004,6 +5021,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 reasoning_effort_server_default: false,
                 variants: Vec::new(),
                 supports_backend_search: false,
+                supports_images: None,
                 compactions_remaining: None,
                 compaction_at_tokens: None,
                 show_model_fingerprint: false,
@@ -5266,6 +5284,7 @@ fn resolve_hidden_default_web_search_sampling_config(
             reasoning_effort_server_default: false,
             variants: Vec::new(),
             supports_backend_search: false,
+            supports_images: None,
             compactions_remaining: None,
             compaction_at_tokens: None,
             show_model_fingerprint: false,
@@ -5394,6 +5413,13 @@ fn acp_model_meta(info: &ModelInfo) -> serde_json::Map<String, serde_json::Value
     }
     if let Some(notice) = &info.notice {
         map.insert(MODEL_NOTICE_META_KEY.to_owned(), notice.to_meta_value());
+    }
+    // Not `acceptsImages`: the pager reads that key to hide image hints, and text-only models still take images through `view_image`.
+    if let Some(supports) = info.supports_images {
+        map.insert(
+            "supportsImages".to_owned(),
+            serde_json::Value::Bool(supports),
+        );
     }
     map
 }

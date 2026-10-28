@@ -543,6 +543,7 @@ pub(crate) mod image_describe;
 pub(crate) mod image_normalize;
 pub(crate) mod inference_metrics;
 pub(crate) mod long_reasoning_reminder;
+pub(crate) mod text_only_images;
 pub use xai_grok_shared::session::info;
 pub mod interrupted_turn;
 pub mod managed_mcp;

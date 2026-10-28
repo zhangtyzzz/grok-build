@@ -184,6 +184,8 @@ mod child_tool_projection;
 mod length_salvage;
 #[path = "acp_session_impl/sampler_turn.rs"]
 mod sampler_turn;
+#[path = "acp_session_impl/text_only_turn.rs"]
+mod text_only_turn;
 use sampler_turn::*;
 #[path = "acp_session_impl/mcp_file_input.rs"]
 mod mcp_file_input;
@@ -1170,6 +1172,8 @@ pub(crate) struct SessionActor {
     pub(crate) image_description_model: String,
     /// Cache auxiliary image outputs by content and prompt fingerprint.
     pub(crate) image_describe_cache: Arc<crate::session::image_describe::ImageDescribeCache>,
+    /// Image placeholders, saved files, and learned text-only models for models without image input.
+    pub(crate) text_only_images: Arc<crate::session::text_only_images::TextOnlyImages>,
     /// Per-subagent token state keyed by `subagent_id`; sums into goal totals via [`Self::goal_tokens`].
     pub(crate) subagent_token_records: parking_lot::Mutex<HashMap<String, SubagentTokenRecord>>,
     pub(crate) workspace_ops: xai_grok_workspace::WorkspaceOps,

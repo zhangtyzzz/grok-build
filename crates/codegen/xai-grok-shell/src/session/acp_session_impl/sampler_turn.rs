@@ -2040,7 +2040,7 @@ impl SessionActor {
     ) -> Result<SamplerTurnOutcome, acp::Error> {
         if !budget.can_wait() {
             // Nothing will send this request a second time, so move it into the sampler instead of deep-cloning the whole message history on every main-session turn
-            return match self.submit_turn_request(request).await {
+            return match self.submit_turn_request_learning_image_input(request).await {
                 Ok(outcome) => Ok(outcome),
                 Err(info) => {
                     self.recover_from_sampling_failure(
@@ -2056,7 +2056,10 @@ impl SessionActor {
         }
 
         loop {
-            match self.submit_turn_request(request.clone()).await {
+            match self
+                .submit_turn_request_learning_image_input(request.clone())
+                .await
+            {
                 Ok(outcome) => {
                     budget.record_submission_accepted();
                     return Ok(outcome);
@@ -2086,10 +2089,48 @@ impl SessionActor {
         }
     }
 
+    /// [`Self::submit_turn_request`], resent once with image placeholders when the provider says the model takes no image input.
+    /// The model is then text-only for the rest of the session. Only a request carrying images keeps a copy for the resend.
+    async fn submit_turn_request_learning_image_input(
+        self: &Arc<Self>,
+        request: ConversationRequest,
+    ) -> Result<SamplerTurnOutcome, xai_grok_sampler::SamplingErrorInfo> {
+        let resend = (super::text_only_turn::request_has_images(&request)
+            && !self.active_model_is_text_only().await)
+            .then(|| request.clone());
+        match self.submit_turn_request(request).await {
+            Err(info)
+                if resend.is_some()
+                    && crate::session::text_only_images::is_image_input_unsupported(
+                        info.status_code,
+                        &info.message,
+                    )
+                    && self.learn_active_model_text_only().await =>
+            {
+                self.send_xai_notification(XaiSessionUpdate::ImageDropped {
+                    notes: vec![
+                        "This model does not accept images. Images are now passed to it as file paths it can inspect \
+                         with the view_image tool (vision model: [models] image_description). Set \
+                         supports_images = false on the model in config.toml to skip this failed attempt."
+                            .to_owned(),
+                    ],
+                })
+                .await;
+                let Some(request) = resend else {
+                    return Err(info);
+                };
+                self.prepare_text_only_images("", &[]).await;
+                self.submit_turn_request(request).await
+            }
+            result => result,
+        }
+    }
+
     async fn submit_turn_request(
         self: &Arc<Self>,
         mut request: ConversationRequest,
     ) -> Result<SamplerTurnOutcome, xai_grok_sampler::SamplingErrorInfo> {
+        self.adapt_request_for_image_input(&mut request).await;
         let request_id = xai_grok_sampler::RequestId::random();
         self.turn_phases.record_sampling_request();
         let _sampling_phase = self.turn_phases.begin_sampling();
