@@ -85,8 +85,8 @@ pub(crate) fn init_metrics() {
 }
 
 pub use grants::{
-    always_allow_scope_persists, default_always_allow_scope, default_always_deny_scope,
-    minimum_always_allow_scope,
+    always_allow_scope_persists, bash_is_read_only_query, default_always_allow_scope,
+    default_always_deny_scope, minimum_always_allow_scope,
 };
 pub use manager::{
     AUTO_DENY_CONSECUTIVE_LIMIT, AUTO_DENY_TOTAL_LIMIT, PROMPT_POLICY_DENY_REASON,

@@ -1116,6 +1116,7 @@ impl SessionActor {
             self.maybe_inject_mcp_reminder().await;
             self.maybe_inject_date_rollover_reminder().await;
             self.inject_plan_mode_reminders().await;
+            self.inject_team_mode_reminders().await;
             self.inject_fork_reminder().await;
             self.inject_resumed_tasks_reminder();
             if policy.authority.is_human_intent() {

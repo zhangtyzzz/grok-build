@@ -1,7 +1,7 @@
 //! Outbound updates for `SessionActor`: `send_update` and its buffered/transient/direct variants.
 //! Also xAI-notification handling and the gateway-bridge dispatch shims.
 use super::*;
-/// Hook / image-intake diagnostics and background_tasks snapshots leave the no-output rewind window open; every other variant closes it.
+/// Hook / image-intake diagnostics, background_tasks snapshots, and team mode indicator updates leave the no-output rewind window open; every other variant closes it.
 /// `HookRunStarted` fires for the prompt gate before any output, so a Ctrl+C during a slow gate must still rewind the prompt.
 pub(super) fn closes_cancel_rewind_window(update: &XaiSessionUpdate) -> bool {
     !matches!(
@@ -11,6 +11,7 @@ pub(super) fn closes_cancel_rewind_window(update: &XaiSessionUpdate) -> bool {
             | XaiSessionUpdate::ImageCompressed { .. }
             | XaiSessionUpdate::ImageDropped { .. }
             | XaiSessionUpdate::BackgroundTasks { .. }
+            | XaiSessionUpdate::TeamModeChanged { .. }
     )
 }
 fn scrub_inbound_session_summary(

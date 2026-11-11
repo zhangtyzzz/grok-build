@@ -331,6 +331,10 @@ impl MvpAgent {
             parent_max_turns,
             available_models,
             subagent_model_overrides,
+            team_worker_model: crate::session::team_mode::spawn_worker_model(
+                parent_handle.as_ref().map(|h| &*h.plan_mode),
+                &self.cfg.borrow().team,
+            ),
             subagent_toggle,
             subagent_roles,
             subagent_personas,

@@ -577,6 +577,7 @@ pub(crate) mod repo_status_prefix;
 pub mod storage;
 pub(crate) mod streaming_capture;
 pub mod summary;
+pub mod team_mode;
 pub(crate) mod telemetry;
 #[cfg(feature = "test-support")]
 pub use telemetry::{complete_projected_call, grep_output, tool_execution_span};

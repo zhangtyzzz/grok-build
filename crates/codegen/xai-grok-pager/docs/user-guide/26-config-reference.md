@@ -557,6 +557,13 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | `subagents.models.<name>` | `string` | `yes` | `user` | Per-subagent model id override. |
 | `subagents.toggle.<name>` | `boolean` | `yes` | `user` | Enable or disable an individual subagent type. Omitted agents default on. |
 
+### `team`
+
+| Key | Type / Values | Requirements | Managed | Details |
+| --- | --- | --- | --- | --- |
+| `team.enabled` | `boolean` | `yes` | `user` | Start new sessions in Team Leader mode (default false); `/team on` and `/team off` still toggle per session. Also `GROK_TEAM_MODE`. |
+| `team.worker_model` | `string` | `yes` | `user` | Model for subagents spawned while Team Leader mode is on, when no `[subagents.models]` pin, agent definition, or explicit `model` argument picks one. Also `GROK_TEAM_WORKER_MODEL`. |
+
 ### `telemetry`
 
 | Key | Type / Values | Requirements | Managed | Details |

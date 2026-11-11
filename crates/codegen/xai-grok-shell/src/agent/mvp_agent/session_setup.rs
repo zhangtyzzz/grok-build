@@ -688,7 +688,9 @@ impl MvpAgent {
                     client_fs_write,
                     envrc: None,
                     persisted_signals: None,
-                    persisted_plan_mode: None,
+                    persisted_plan_mode: crate::session::team_mode::new_session_plan_snapshot(
+                        &self.cfg.borrow().team,
+                    ),
                     persisted_goal_mode: None,
                     persisted_workflow_runs: Vec::new(),
                     persisted_announcement_state: None,

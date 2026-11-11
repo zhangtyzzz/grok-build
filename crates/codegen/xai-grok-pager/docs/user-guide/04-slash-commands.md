@@ -290,6 +290,18 @@ Set, manage, or check an autonomous goal. Grok works across rounds and only mark
 
 Arguments are `<objective> [--budget <tokens>]`, or one of `status`, `pause`, `resume`, `clear`. The `--budget` here is a **token** budget for the goal run, separate from the agent-count budgets that workflows use. `/goal` appears when goal mode is enabled for the session. Which driver runs it depends on background workflows: with them on, the host evaluates each model round and runs adversarial verification on completion candidates; with them off, the legacy model-facing `update_goal` path reports progress and triggers verification.
 
+### `/team`
+
+Toggle Team Leader mode for the session. In this mode Grok plans, delegates the work to subagents, and reviews their results instead of doing it itself: file edits and shell commands other than read-only inspection are rejected for the lead and handed to subagents.
+
+```
+/team on
+/team off
+/team status
+```
+
+With no argument it reports the current state. While the mode is on, the prompt line shows a `team` flag. See [Team Leader Mode](16-subagents.md#team-leader-mode) for what is allowed and how to put subagents on a cheaper model.
+
 ### `/deep-research <query>`
 
 Kick off a background research workflow. It plans a bounded set of questions, gathers structured claims with source evidence, cross-checks each claim on an independent verifier shard, and renders only the claims that survive, with their verified source locators. Failed shards, dropped claims, and researcher uncertainties are reported as coverage limitations, and the report is marked **Partial** whenever any remain.

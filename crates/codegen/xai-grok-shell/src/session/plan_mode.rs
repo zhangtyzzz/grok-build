@@ -43,6 +43,8 @@ pub struct PlanModeTracker {
     /// Lives inside the session directory:
     /// `~/.grok/sessions/<cwd>/<session_id>/plan.md`
     plan_file_path: PathBuf,
+    /// Fork: Team Leader mode state. Lives here so it shares `plan_mode.json` persistence, resume, and session fork.
+    pub(crate) team: crate::session::team_mode::TeamModeState,
 }
 /// A buffered mid-turn activation reminder plus the state needed to roll the activation back if it is withdrawn before delivery.
 struct PendingActivation {
@@ -63,6 +65,9 @@ pub struct PlanModeSnapshot {
     /// Survives process restart so the pager can restore approval chrome without treating every Active session that has a plan.md as pending.
     #[serde(default)]
     pub awaiting_plan_approval: bool,
+    /// Fork: Team Leader mode state; absent in files written before the mode existed.
+    #[serde(default)]
+    pub team: crate::session::team_mode::TeamModeState,
 }
 impl PlanModeTracker {
     /// Create a new tracker. `session_dir` is the session's storage
@@ -76,6 +81,7 @@ impl PlanModeTracker {
             awaiting_plan_approval: false,
             pending_activation: None,
             plan_file_path: session_dir.join("plan.md"),
+            team: Default::default(),
         }
     }
     /// `session_dir` is used to recompute `plan_file_path`.
@@ -100,6 +106,7 @@ impl PlanModeTracker {
             awaiting_plan_approval: snapshot.awaiting_plan_approval,
             pending_activation: None,
             plan_file_path: session_dir.join("plan.md"),
+            team: snapshot.team,
         }
     }
     /// Mark that the client is waiting on plan approval (`exit_plan_mode` parked).
@@ -117,6 +124,7 @@ impl PlanModeTracker {
             awaiting_plan_approval: self.awaiting_plan_approval,
             reminder_count: self.reminder_count,
             pending_exit_reminder: self.pending_exit_reminder,
+            team: self.team,
         }
     }
     pub fn state(&self) -> PlanModeState {
@@ -285,6 +293,7 @@ impl PlanModeTracker {
             self.reminder_count = 0;
             self.pending_activation = None;
         }
+        self.team.reset_after_compaction();
     }
 }
 /// Returns a MiniJinja template string with `${{ tools.by_kind.X }}` and `${{ plan_path }}` / `${{ plan_has_content }}` placeholders.
