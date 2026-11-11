@@ -1762,6 +1762,10 @@ pub(super) async fn run_session(
                                 if let Some(def) = tool_def {
                                     let meta = mcp_state.mcp_tool_meta.get(&qualified).cloned();
                                     let schema = def.function.parameters.clone();
+                                    let output_schema = bridge
+                                        .script_output_schema(&qualified)
+                                        .as_ref()
+                                        .and_then(xai_grok_tools::script_value::mcp_output_schema);
                                     let mcp_tool = crate::session::mcp_servers::McpTool::new(
                                         tool_name.clone(),
                                         def.function.description.clone().unwrap_or_default(),
@@ -1769,7 +1773,8 @@ pub(super) async fn run_session(
                                         session.mcp_state.clone(),
                                         schema,
                                         meta,
-                                    );
+                                    )
+                                    .with_output_schema(output_schema);
                                     if let Ok(reg) = mcp_tool.into_registration() {
                                         mcp_state
                                             .disabled_tool_registrations

@@ -1461,6 +1461,8 @@ pub struct McpTool {
     mcp_state: Arc<Mutex<McpState>>,
     schema: serde_json::Value,
     meta: Option<serde_json::Value>,
+    /// The server's `outputSchema`: the shape of `structuredContent`.
+    output_schema: Option<serde_json::Value>,
 }
 
 /// Data needed to register an MCP tool via `register_erased()`.
@@ -1493,7 +1495,15 @@ impl McpTool {
             mcp_state,
             schema,
             meta,
+            output_schema: None,
         }
+    }
+
+    /// Record the server's `outputSchema` so Code Mode scripts see the `data` shape.
+    #[must_use]
+    pub fn with_output_schema(mut self, output_schema: Option<serde_json::Value>) -> Self {
+        self.output_schema = output_schema;
+        self
     }
 
     /// Convert into the data needed for `ToolBridge::register_erased()`.
@@ -1561,6 +1571,12 @@ impl ToolMetadata for McpErasedTool {
 
     fn description_template(&self) -> &str {
         &self.tool.description
+    }
+
+    fn script_output_schema(&self) -> Option<serde_json::Value> {
+        Some(xai_grok_tools::script_value::mcp_value_schema(
+            self.tool.output_schema.as_ref(),
+        ))
     }
 }
 
@@ -4497,6 +4513,10 @@ impl McpClient {
                 }
 
                 let icons = McpIcon::from_rmcp_list(tool.icons);
+                let output_schema = tool
+                    .output_schema
+                    .as_ref()
+                    .and_then(|s| serde_json::to_value(s.as_ref()).ok());
                 let mcp_tool = McpTool {
                     name: name.clone(),
                     description,
@@ -4504,6 +4524,7 @@ impl McpClient {
                     mcp_state: Arc::clone(&mcp_state),
                     schema,
                     meta,
+                    output_schema,
                 };
                 match mcp_tool.into_registration() {
                     Ok(mut reg) => {

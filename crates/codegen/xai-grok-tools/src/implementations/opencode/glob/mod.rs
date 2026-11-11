@@ -95,7 +95,17 @@ impl xai_tool_runtime::ToolOutput for GlobOutput {}
 
 impl From<GlobOutput> for ToolOutput {
     fn from(output: GlobOutput) -> Self {
-        ToolOutput::Text(output.tool_output_for_prompt.into())
+        let data = serde_json::to_value(crate::script_value::GlobValue {
+            paths: output.entries,
+            total_count: output.total_count,
+            truncated: output.truncated,
+        })
+        .ok();
+        ToolOutput::Text(crate::types::output::TextOutput {
+            text: output.tool_output_for_prompt,
+            data,
+            ..Default::default()
+        })
     }
 }
 

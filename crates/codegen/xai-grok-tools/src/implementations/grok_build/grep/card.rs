@@ -9,7 +9,7 @@
 use std::io;
 
 use crate::implementations::grok_build::grep::OutputMode;
-use crate::types::output::{GrepFileMatch, GrepLineMatch, GrepSearchOutput};
+use crate::types::output::{GrepFileMatch, GrepFileSummary, GrepLineMatch, GrepSearchOutput};
 use crate::util::truncate::truncate_line;
 
 /// Formatting/projection knobs resolved once in `prepare_grep` and consumed by
@@ -43,6 +43,7 @@ pub(crate) fn grep_timeout_output(secs: u64) -> GrepSearchOutput {
         exit_code: -1,
         match_count: 0,
         file_matches: Vec::new(),
+        ..Default::default()
     }
 }
 
@@ -67,6 +68,7 @@ pub(crate) fn grep_partial_timeout_output(
         .as_bytes(),
     );
     output.exit_code = -1;
+    output.truncated = true;
     output
 }
 
@@ -78,6 +80,7 @@ pub(crate) fn spawn_failure_output(error: &io::Error) -> GrepSearchOutput {
         exit_code: -1,
         match_count: 0,
         file_matches: Vec::new(),
+        ..Default::default()
     }
 }
 
@@ -107,6 +110,7 @@ pub(crate) fn finalize_grep(
             exit_code,
             match_count: 0,
             file_matches: Vec::new(),
+            ..Default::default()
         };
     }
 
@@ -121,6 +125,7 @@ pub(crate) fn finalize_grep(
             exit_code,
             match_count: 0,
             file_matches: Vec::new(),
+            ..Default::default()
         };
     }
 
@@ -135,10 +140,11 @@ pub(crate) fn finalize_grep(
             exit_code,
             match_count: 0,
             file_matches: Vec::new(),
+            ..Default::default()
         };
     }
 
-    let (formatted_output, match_count, file_matches) = {
+    let (formatted_output, match_count, file_matches, files, truncated) = {
         let mut output_lines: Vec<String> = stdout.lines().map(|s| s.to_string()).collect();
         let mut is_truncated = stdout_truncated;
         if output_lines.len() > config.effective_head_limit {
@@ -151,6 +157,7 @@ pub(crate) fn finalize_grep(
         } else {
             Vec::new()
         };
+        let files = parse_file_summaries(&output_lines, &config.output_mode);
 
         let match_count_value = match config.output_mode {
             OutputMode::Content => count_matches(&output_lines),
@@ -188,7 +195,13 @@ pub(crate) fn finalize_grep(
                 config.max_output_bytes,
             ),
         };
-        (formatted, match_count_value, file_matches)
+        (
+            formatted,
+            match_count_value,
+            file_matches,
+            files,
+            is_truncated,
+        )
     };
 
     GrepSearchOutput {
@@ -201,6 +214,35 @@ pub(crate) fn finalize_grep(
         exit_code,
         match_count,
         file_matches,
+        files,
+        truncated,
+    }
+}
+
+/// Matching files for `files_with_matches` (one path per line) and `count`
+/// (`path:count`) output; empty for `content`, whose files are in `file_matches`.
+fn parse_file_summaries(output_lines: &[String], mode: &OutputMode) -> Vec<GrepFileSummary> {
+    let lines = output_lines
+        .iter()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty());
+    match mode {
+        OutputMode::Content => Vec::new(),
+        OutputMode::FilesWithMatches => lines
+            .map(|path| GrepFileSummary {
+                path: path.to_owned(),
+                count: None,
+            })
+            .collect(),
+        OutputMode::Count => lines
+            .filter_map(|line| {
+                let (path, count) = line.rsplit_once(':')?;
+                Some(GrepFileSummary {
+                    path: path.to_owned(),
+                    count: Some(count.parse().ok()?),
+                })
+            })
+            .collect(),
     }
 }
 

@@ -1095,7 +1095,9 @@ impl SessionActor {
                 }
                 Err(_) => true,
             };
-            if tool_failed {
+            // A completed call's Code Mode outcome comes from its typed value (a
+            // nonzero exit code still resolves); only dispatch errors fail it here.
+            if result.is_err() {
                 super::code_mode::mark_failed();
             }
             let (ext_tool_output, ext_error_message) = if xai_grok_telemetry::external::is_active()
@@ -3091,6 +3093,11 @@ impl SessionActor {
                 .await;
         }
         let output_replaced = model_output_override.is_some();
+        // A hook-replaced output gives a script no typed value to trust.
+        super::code_mode::record_script_value(|| match &model_output_override {
+            Some(replacement) => Err(format!("A hook replaced this tool's output: {replacement}")),
+            None => result.output.script_value(),
+        });
         if let Some(replacement) = model_output_override {
             result.prompt_text =
                 substitute_rendered_output(&result.prompt_text, &result.output, replacement);

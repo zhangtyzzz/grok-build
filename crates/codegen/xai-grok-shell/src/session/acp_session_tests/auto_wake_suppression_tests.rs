@@ -1038,6 +1038,7 @@ async fn await_text_completed_drops_matching_pending_input() {
             let output = ToolOutput::Text(TextOutput {
                 text: "Task completed in 100ms with exit code: 0.".into(),
                 consumed_completion_task_id: Some("bg-target".into()),
+                ..Default::default()
             });
             let consumed = consumed_completion_ids(&output);
             assert_eq!(consumed, vec!["bg-target"]);

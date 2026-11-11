@@ -259,6 +259,11 @@ fn log_background_spawn_after_start(
 }
 
 impl crate::types::tool_metadata::ToolMetadata for TaskTool {
+    fn script_output_schema(&self) -> Option<serde_json::Value> {
+        Some(crate::script_value::schema_of::<
+            crate::script_value::SubagentValue,
+        >())
+    }
     fn kind(&self) -> ToolKind {
         ToolKind::Task
     }
@@ -701,15 +706,16 @@ impl xai_tool_runtime::Tool for TaskTool {
 
             let continue_parent =
                 detect_continue_parent_work(&resources, &input.description, &input.prompt).await;
-            return Ok(ToolOutput::Text(
+            return Ok(ToolOutput::Text(background_subagent_text(
                 xai_tool_types::format_subagent_started_background(
                     &id,
                     &input.description,
                     &naming,
                     continue_parent,
-                )
-                .into(),
-            ));
+                ),
+                &id,
+                false,
+            )));
         }
 
         // 5. Blocking mode (default): spawn via backend and await result
@@ -741,7 +747,7 @@ impl xai_tool_runtime::Tool for TaskTool {
                 notified_on_completion,
                 continue_parent,
             );
-            return Ok(ToolOutput::Text(text.into()));
+            return Ok(ToolOutput::Text(background_subagent_text(text, &id, true)));
         }
 
         // 6. Return result
@@ -775,6 +781,22 @@ impl xai_tool_runtime::Tool for TaskTool {
                     .unwrap_or_else(|| "Unknown subagent error".to_string()),
             ))
         }
+    }
+}
+
+/// Background notice text plus the handle Code Mode scripts receive.
+fn background_subagent_text(
+    text: String,
+    subagent_id: &str,
+    auto_backgrounded: bool,
+) -> crate::types::output::TextOutput {
+    let value = crate::script_value::SubagentValue::Background {
+        subagent_id: subagent_id.to_owned(),
+        auto_backgrounded,
+    };
+    match serde_json::to_value(value) {
+        Ok(data) => crate::types::output::TextOutput::with_data(text, data),
+        Err(_) => text.into(),
     }
 }
 

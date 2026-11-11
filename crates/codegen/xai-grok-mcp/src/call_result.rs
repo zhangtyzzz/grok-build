@@ -11,6 +11,15 @@ pub(crate) fn mcp_output_from_call_result(
     expose_base64: bool,
 ) -> MCPOutput {
     let is_error = call_result.is_error.unwrap_or(false);
+    let text_blocks = call_result
+        .content
+        .iter()
+        .filter_map(|c| match c {
+            rmcp::model::ContentBlock::Text(t) => Some(t.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     let mut parts: Vec<String> = call_result
         .content
         .into_iter()
@@ -39,11 +48,12 @@ pub(crate) fn mcp_output_from_call_result(
     ));
 
     let text = parts.join("\n");
-    if is_error {
+    let output = if is_error {
         MCPOutput::errored(tool, server, text)
     } else {
         MCPOutput::okay_output(tool, server, text)
-    }
+    };
+    output.with_protocol_parts(text_blocks, call_result.structured_content)
 }
 
 /// The wrapper has no `data:image/` prefix, so the image-extraction regex skips it.

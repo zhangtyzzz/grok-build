@@ -13,7 +13,7 @@ mod web_search;
 pub use ext::Extensions;
 pub use glob::GlobToolInput;
 pub use grep::{
-    GrepFileMatch, GrepLineMatch, GrepOutputMode, GrepSearchOutput, GrepToolInput,
+    GrepFileMatch, GrepFileSummary, GrepLineMatch, GrepOutputMode, GrepSearchOutput, GrepToolInput,
     LenientNumberSchema, LenientNumberSchemaMin0, deserialize_lenient_u32,
 };
 pub use read::{ReadLineCounts, ReadLineRange};
