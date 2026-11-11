@@ -65,7 +65,7 @@ fn git_branch_mutates(words: &[String]) -> bool {
     if words.get(i).map(String::as_str) != Some("branch") {
         return false;
     }
-    let args = &words[i + 1..];
+    let args = words.get(i + 1..).unwrap_or_default();
     let listing = args.iter().any(|arg| arg == "--list" || arg == "-l");
     let mut args = args.iter().map(String::as_str).peekable();
     while let Some(arg) = args.next() {
