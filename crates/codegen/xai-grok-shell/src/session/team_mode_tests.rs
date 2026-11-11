@@ -251,3 +251,17 @@ fn worker_model_needs_a_leading_parent() {
         None
     );
 }
+
+#[test]
+fn worker_model_only_for_model_issued_task_spawns() {
+    let cheap = || Some("cheap-model".to_owned());
+    assert_eq!(
+        worker_model_for_spawn(cheap(), true, false).as_deref(),
+        Some("cheap-model")
+    );
+    // `/goal` roles and scheduled spawns carry no tool call id: they keep the session model.
+    assert_eq!(worker_model_for_spawn(cheap(), false, false), None);
+    // Workflow agents (`/deep-research`) keep their own model choice too.
+    assert_eq!(worker_model_for_spawn(cheap(), true, true), None);
+    assert_eq!(worker_model_for_spawn(None, true, false), None);
+}

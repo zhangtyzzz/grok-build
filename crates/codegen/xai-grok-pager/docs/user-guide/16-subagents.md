@@ -410,14 +410,14 @@ worker_model = "<cheaper-model-id>" # optional; or GROK_TEAM_WORKER_MODEL
 
 While the mode is on:
 
-- The lead cannot edit files (`apply_patch` included) or run shell commands other than read-only inspection such as `ls`, `cat`, `rg`, `git status`, `git diff`, and `git log`. Output redirection to files, command substitution, and background jobs count as not read-only. A rejected call tells the model to delegate instead.
+- The lead cannot edit files (`apply_patch` included) or run shell commands other than read-only inspection such as `ls`, `cat`, `rg`, `git status`, `git diff`, `git log`, and listing forms of `git branch`. Output redirection to files, command substitution, and background jobs count as not read-only. A rejected call tells the model to delegate instead.
 - Everything else stays available to the lead: reading and searching files, spawning and messaging subagents, the todo list, questions to you, plan mode tools, web, MCP tools, and skills. In plan mode the lead still writes the plan file.
 - Subagents are unaffected and work normally. The mode applies to the top-level session only.
 - If the session has no subagent tool (for example with `[subagents] enabled = false`), the mode has no effect.
 
 This is a delegation rule, not a sandbox: a call the lead is allowed to make still goes through the normal permission prompts.
 
-`worker_model` applies only to subagents spawned while the mode is on, and only when nothing more specific chooses a model: an explicit `model` argument, a persona or goal role model, a `[subagents.models]` pin, or a model set in the agent definition all take precedence. Without it, subagents inherit the parent's model as usual.
+`worker_model` applies only to subagents the lead spawns with its subagent tool while the mode is on. `/goal` planning and verification roles, workflow agents such as `/deep-research`, and scheduled spawns keep their usual model, so completion checks still run on the strong model. Within those spawns it applies only when nothing more specific chooses a model: an explicit `model` argument, a persona or goal role model, a `[subagents.models]` pin, or a model set in the agent definition all take precedence. Without it, subagents inherit the parent's model as usual. A `worker_model` that names no known model is ignored with a warning in the log, and subagents inherit the parent's model.
 
 The mode is saved with the session, so it survives resume, and the model is told about it through per-turn reminders rather than a changed system prompt, so turning it on or off does not invalidate the prompt cache.
 

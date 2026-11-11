@@ -167,17 +167,17 @@ helper 回归覆盖同 slug 不同 provider、缺失 ref 不降级、legacy alia
 - 形态：与 Plan Mode、权限模式正交的会话标志，不是新的 `SessionMode`。`/team on|off|status` 切换（shell 内置命令，pager 原样转发）；`[team] enabled = true` 或 `GROK_TEAM_MODE=1` 让新建的顶层会话一开始就处于该模式。状态存在 `PlanModeTracker.team`，随 `plan_mode.json` 持久化，resume 和 session fork 自动带上；旧文件没有 `team` 字段时按关闭处理。
 - 不改系统提示：模型通过每轮开头的 `<system-reminder>` 得知模式（首轮与压缩后发完整说明，之后每轮一行，关闭后发一次退出说明），提示缓存前缀不变。
 - 硬约束在工具执行层（`tool_calls.rs` 紧接 Plan Mode 闸门之后）：只拦文件编辑（`AccessKind::Edit`、`apply_patch`）和非只读 shell（`Bash`/`Monitor`），被拒调用作为“未执行”返回并说明应委派。Plan Mode 下 plan 文件仍可写。读文件、搜索、todo、提问、计划工具、web、MCP、skill、派发与引导 subagent 都留给 leader。Code Mode 的嵌套调用走同一路径，同样受限。
-- 只读命令判定复用 `xai-grok-workspace` 的 `evaluate_bash` 安全列表（`bash_is_read_only_query`）：必须是无 session grant 的 AutoAllow、无安全发现、无写重定向、不创建路径；命令替换、后台任务、`bash -c` 一律算非只读。宁可多拒，leader 还有读/搜工具可用。
+- 只读命令判定复用 `xai-grok-workspace` 的 `evaluate_bash` 安全列表（`bash_is_read_only_query`）：必须是无 session grant 的 AutoAllow、无安全发现、无写重定向、不创建路径；命令替换、后台任务、`bash -c` 一律算非只读。`git branch` 在共享安全列表里，但只有列表形式（`-a`/`-r`/`-v`/`--list <pattern>`/`--show-current`/`--contains` 等）算只读，建/删/改名/`-f`/`-u` 一律拒绝（fork 本地检查，不改上游列表）。宁可多拒，leader 还有读/搜工具可用。
 - 失败开放的边界：仅顶层会话（`subagent_depth == 0`）且会话里存在 `ToolKind::Task` 工具时生效；没有可派发对象时不提醒也不拦截，避免把 leader 锁死。subagent 永远是 worker，即使它带着 leader 对话的副本启动。
 - 这是委派规则，不是安全边界：闸门放行的调用仍走正常权限流程。
-- Worker 模型：`[team] worker_model`（`GROK_TEAM_WORKER_MODEL` 优先）只在父会话处于 team 模式时生效，优先级低于运行时 `model` 参数、persona/goal 角色模型、`[subagents.models]` 和 agent 定义自带的模型，高于“继承父会话模型”。
+- Worker 模型：`[team] worker_model`（`GROK_TEAM_WORKER_MODEL` 优先）只在父会话处于 team 模式、且是模型通过任务工具发起的派发时生效（`tool_call_id` 存在、非 workflow 所有）；`/goal` 的 planner/验证/strategist/summarizer、workflow agent 和定时派发保持各自的模型选择，保证验收仍在强模型上；优先级低于运行时 `model` 参数、persona/goal 角色模型、`[subagents.models]` 和 agent 定义自带的模型，高于“继承父会话模型”。
 - pager 用持久化的 `TeamModeChanged { enabled }` 更新提示行的 `team` 标记，回放时也应用；该通知不关闭 cancel-rewind 窗口。
 
 **代码入口。** shell：`session/team_mode.rs`（状态、配置解析、闸门、提示文本，纯逻辑）与 `team_mode_tests.rs`；`session/acp_session_impl/team_mode.rs`（reminder 注入、闸门接线、`/team` 处理）；单行挂钩在 `session/plan_mode.rs`（`team` 字段、快照、`reset_after_compaction`）、`acp_session.rs`（模块声明）、`acp_session_impl/{tool_calls,turn,slash_exec,updates}.rs`、`session/slash_commands.rs`（`team` 内置命令与 `BuiltinAction::Team`）、`extensions/notification.rs`（`TeamModeChanged`）、`agent/config.rs`（`[team]`）、`agent/mvp_agent/{session_setup,subagent_spawn}.rs`、`agent/subagent/mod.rs`（`team_worker_model` 与 `resolve_subagent_sampling_config`）。workspace：`permission/grants/read_only_query.rs`。pager：`app/agent_view/{mod,session,render}.rs`、`app/acp_handler/session_notification.rs`。文档：pager 用户指南 `04-slash-commands.md`、`16-subagents.md`、`26-config-reference.md`。
 
 **合并方法。** 逻辑都在 fork 自有文件里，上游文件只有挂钩行。上游重构 Plan Mode 闸门、`PlanModeTracker` 持久化、每轮 reminder 注入或内置命令表时，把挂钩移到新位置：闸门仍须位于权限审批之前并覆盖 Code Mode 嵌套调用，状态仍随会话持久化，压缩后仍重发完整说明。上游若提供等价的“只派发”会话模式（带工具层硬约束），评估后采用上游并删除本节实现；只有提示词的 orchestrator 不算等价。上游扩充 `evaluate_bash` 安全列表时无需改动，只读判定自动跟随。
 
-**验证。** `cargo test -p xai-grok-workspace --lib read_only_query`；`cargo test -p xai-grok-shell --lib team_mode`、`cargo test -p xai-grok-shell --lib slash_commands`、`cargo test -p xai-grok-shell --lib team_mode_changed_wire_shape`；`cargo test -p xai-grok-pager --lib team_mode`；`cargo check -p xai-grok-pager-bin`。
+**验证。** `cargo test -p xai-grok-workspace --lib read_only_query`；`cargo test -p xai-grok-shell --lib team_mode`（含 worker 模型只作用于任务工具派发）、`cargo test -p xai-grok-shell --lib slash_commands`、`cargo test -p xai-grok-shell --lib team_mode_changed_wire_shape`；`cargo test -p xai-grok-pager --lib team_mode`；`cargo check -p xai-grok-pager-bin`。
 
 ## 4. 跟随上游或允许等价替代的区域
 

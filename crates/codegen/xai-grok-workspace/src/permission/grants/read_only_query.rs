@@ -29,21 +29,76 @@ pub fn bash_is_read_only_query(cmd: &str) -> bool {
             .protected_paths
             .iter()
             .all(|path| is_safe_write_sink(path))
-        && !script_creates_paths(cmd)
+        && !script_mutates_without_writes(cmd)
 }
 
-/// `mkdir`/`touch` are auto-allowed by the safe lists but are still writes; an operand the write
-/// scan cannot extract (`mkdir "$d"`) would otherwise leave no trace in `protected_paths`.
-fn script_creates_paths(cmd: &str) -> bool {
+/// Commands the safe lists auto-allow that still change state without naming a write target:
+/// `mkdir`/`touch` (an operand like `mkdir "$d"` would leave no trace in `protected_paths`) and
+/// `git branch` with anything but listing options (create, delete, rename, move, set upstream).
+fn script_mutates_without_writes(cmd: &str) -> bool {
     let Some(tree) = try_parse_shell(cmd) else {
         return true;
     };
     let Some(segments) = try_parse_word_only_commands_sequence(&tree, cmd) else {
         return true;
     };
-    segments
-        .iter()
-        .any(|segment| is_safe_creation_command(unwrap_wrappers(segment.words())))
+    segments.iter().any(|segment| {
+        let words = unwrap_wrappers(segment.words());
+        is_safe_creation_command(words) || git_branch_mutates(words)
+    })
+}
+
+/// `git branch` is on the shared read-only verb list, but only its listing forms are queries.
+/// Global options mirror the ones the shared git check accepts before the verb (`-C <dir>`, `-C<dir>`, `--no-pager`, `-P`).
+fn git_branch_mutates(words: &[String]) -> bool {
+    if words.first().map(String::as_str) != Some("git") {
+        return false;
+    }
+    let mut i = 1;
+    while let Some(word) = words.get(i) {
+        match word.as_str() {
+            "-C" => i += 2,
+            w if w.starts_with('-') => i += 1,
+            _ => break,
+        }
+    }
+    if words.get(i).map(String::as_str) != Some("branch") {
+        return false;
+    }
+    let args = &words[i + 1..];
+    let listing = args.iter().any(|arg| arg == "--list" || arg == "-l");
+    let mut args = args.iter().map(String::as_str).peekable();
+    while let Some(arg) = args.next() {
+        match arg {
+            "-a" | "--all" | "-r" | "--remotes" | "-v" | "-vv" | "--verbose" | "-l" | "--list"
+            | "--show-current" | "-i" | "--ignore-case" | "--omit-empty" | "--color"
+            | "--no-color" | "--column" | "--no-column" | "--abbrev" | "--no-abbrev" => {}
+            "--contains" | "--no-contains" | "--merged" | "--no-merged" | "--points-at"
+            | "--sort" | "--format" => {
+                // The value is optional for some of these; never swallow a following option.
+                args.next_if(|next| !next.starts_with('-'));
+            }
+            _ if arg.starts_with("--")
+                && [
+                    "--contains=",
+                    "--no-contains=",
+                    "--merged=",
+                    "--no-merged=",
+                    "--points-at=",
+                    "--sort=",
+                    "--format=",
+                    "--color=",
+                    "--column=",
+                    "--abbrev=",
+                ]
+                .iter()
+                .any(|prefix| arg.starts_with(prefix)) => {}
+            // With `--list`, bare words are name patterns; without it they name a branch to create.
+            _ if listing && !arg.starts_with('-') => {}
+            _ => return true,
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -65,6 +120,12 @@ mod tests {
             "ls missing 2>/dev/null",
             "wc -l src/lib.rs",
             "cat <<EOF\nhi\nEOF",
+            "git branch",
+            "git branch -a -vv",
+            "git branch --show-current",
+            "git branch --list 'feat/*'",
+            "git branch --contains HEAD -r",
+            "git -C crates branch --merged main",
         ] {
             assert!(bash_is_read_only_query(cmd), "{cmd} should be read-only");
         }
@@ -100,6 +161,14 @@ mod tests {
             "sed -i s/a/b/ file",
             "cat a | tee b",
             "cat > out.txt <<EOF\nhi\nEOF",
+            "git branch feature-x",
+            "git branch -D old",
+            "git branch -m a b",
+            "git branch -f main HEAD~3",
+            "git branch -u origin/x",
+            "git branch --edit-description",
+            "git branch --contains -d old",
+            "git -C crates branch new",
         ] {
             assert!(!bash_is_read_only_query(cmd), "{cmd} must be delegated");
         }

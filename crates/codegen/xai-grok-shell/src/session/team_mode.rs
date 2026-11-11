@@ -56,6 +56,16 @@ pub(crate) fn spawn_worker_model(
     parent_tracker.filter(|tracker| tracker.lock().team.is_enabled())?;
     config.resolve_worker_model()
 }
+/// Keeps the worker model only for spawns the lead's model issued with its task tool.
+/// Harness roles (the `/goal` planner, verifier, strategist, summarizer), workflow agents, and scheduled spawns
+/// have no `tool_call_id` or a workflow owner: they keep their own model choice, so `/goal` verification stays on the strong model.
+pub(crate) fn worker_model_for_spawn(
+    worker_model: Option<String>,
+    issued_by_model_tool_call: bool,
+    workflow_owned: bool,
+) -> Option<String> {
+    worker_model.filter(|_| issued_by_model_tool_call && !workflow_owned)
+}
 /// Initial `plan_mode.json` state for a brand-new session: `None` (nothing to restore) unless `[team] enabled`.
 pub(crate) fn new_session_plan_snapshot(config: &TeamConfig) -> Option<PlanModeSnapshot> {
     if !config.resolve_enabled() {
