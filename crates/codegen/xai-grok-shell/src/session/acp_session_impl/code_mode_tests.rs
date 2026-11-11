@@ -349,6 +349,63 @@ fn trace_keeps_unfinished_outcomes_on_cancellation() {
 
 // Run after `cargo build -p xai-grok-tools --example code_mode_worker`.
 // Explicit executable injection is private to the host, never model-controlled.
+/// A tool-reported failure (a missing file) rejects with `ToolCallError`, and the
+/// catalog describes what each call resolves to.
+#[ignore = "requires the standalone code_mode_worker example; see docs/code-mode.md"]
+#[tokio::test(flavor = "current_thread")]
+async fn real_worker_rejects_tool_failures_with_tool_call_error() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let worker = std::env::var_os("GROK_TEST_CODE_MODE_WORKER")
+                .expect("set absolute worker example path");
+            let (mut actor, directory) = fixture().await;
+            actor.session_info.id =
+                acp::SessionId::new(format!("code-mode-error-{}", uuid::Uuid::new_v4()));
+            let missing = serde_json::to_string(&directory.path().join("missing.txt")).unwrap();
+            let code = format!(
+                "const returns = catalog.describe('read_file').returns; \
+                 try {{ await tools.read_file({{target_file:{missing}}}); return 'resolved'; }} \
+                 catch (e) {{ return {{instance: e instanceof ToolCallError, tool: e.tool, \
+                 message: e.message, kinds: returns.oneOf.map(s => s.properties.kind.const)}}; }}"
+            );
+            let request = crate::sampling::types::ToolCallResponse {
+                id: "outer-error".into(),
+                kind: "function".into(),
+                function: crate::sampling::types::ToolCallFunction::new(
+                    "execute",
+                    json!({ "code": code }).to_string(),
+                ),
+            };
+            actor
+                .execute_code_mode(request, None, Some(Path::new(&worker)), &mut Vec::new())
+                .await
+                .unwrap();
+            let result: serde_json::Value =
+                serde_json::from_str(&tool_result_text(&actor, "outer-error").await).unwrap();
+            assert_eq!(result["ok"], true, "{result}");
+            assert_eq!(result["value"]["instance"], true, "{result}");
+            assert_eq!(result["value"]["tool"], "read_file", "{result}");
+            assert!(
+                result["value"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .to_lowercase()
+                    .contains("does not exist"),
+                "{result}"
+            );
+            assert_eq!(
+                result["value"]["kinds"],
+                json!(["text", "image", "pdf"]),
+                "{result}"
+            );
+            assert_eq!(result["calls"][0]["status"], "failed", "{result}");
+            std::fs::remove_dir_all(crate::session::persistence::session_dir(
+                &actor.session_info,
+            ))
+            .ok();
+        })
+        .await;
+}
 #[ignore = "requires the standalone code_mode_worker example; see docs/code-mode.md"]
 #[tokio::test(flavor = "current_thread")]
 async fn real_worker_and_session_round_trip_export_only_outer_result() {
@@ -359,7 +416,7 @@ async fn real_worker_and_session_round_trip_export_only_outer_result() {
         actor.workspace_ops.bind_local_session(&actor.session_id_string(),actor.tool_context.cwd.as_path().to_path_buf(),actor.tool_context.hunk_tracker_handle.clone(),actor.tool_bridge_handle().toolset(),None).unwrap();
         let path=directory.path().join("note.txt");
         let path_json=serde_json::to_string(&path).unwrap();
-        let code=format!("const paths=[{path_json},{path_json}]; const r=await Promise.all(paths.map(p=>tools.read_file({{target_file:p}}))); return r.filter(s=>s.includes('nested-needle')).length;");
+        let code=format!("const paths=[{path_json},{path_json}]; const r=await Promise.all(paths.map(p=>tools.read_file({{target_file:p}}))); return r.filter(v=>v.kind==='text'&&v.content==='nested-needle\\n').length;");
         let request=crate::sampling::types::ToolCallResponse{id:"outer-worker".into(),kind:"function".into(),function:crate::sampling::types::ToolCallFunction::new("execute",json!({"code":code}).to_string())};
         actor.chat_state_handle.push_assistant_response(ConversationItem::assistant_tool_calls(vec![xai_grok_sampling_types::ToolCall {
             id: request.id.clone().into(), name: request.function.name.clone(), arguments: request.function.arguments.clone().into(),
@@ -656,7 +713,7 @@ async fn real_worker_saturated_in_flight_calls_share_the_session_pipeline() {
                 })
                 .collect();
             let code = format!(
-                "const r=await Promise.all({}.map(p=>tools.read_file({{target_file:p}}))); return r.map((s,i)=>s.includes('needle-'+i));",
+                "const r=await Promise.all({}.map(p=>tools.read_file({{target_file:p}}))); return r.map((v,i)=>v.content.includes('needle-'+i));",
                 serde_json::to_string(&paths).unwrap()
             );
             let request = crate::sampling::types::ToolCallResponse {
