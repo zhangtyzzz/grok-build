@@ -306,10 +306,10 @@ fn task_values_and_handles() {
         output: "ok".into(),
         ..Default::default()
     };
-    let schema = schema::<TaskOutputOutput>();
+    let task_schema = schema::<TaskOutputOutput>();
     let single = conforms(
         ToolOutput::TaskOutput(TaskOutputOutput::Result(task.clone())),
-        &schema,
+        &task_schema,
     );
     assert_eq!(single["kind"], "task");
     assert_eq!(single["exit_code"], 0);
@@ -319,7 +319,7 @@ fn task_values_and_handles() {
             results: vec![task],
             summary: "1 done".into(),
         })),
-        &schema,
+        &task_schema,
     );
     assert_eq!(multi["tasks"][0]["task_id"], "t1");
     rejects(ToolOutput::TaskOutput(TaskOutputOutput::TaskNotFound(

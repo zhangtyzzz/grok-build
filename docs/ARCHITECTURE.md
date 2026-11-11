@@ -340,7 +340,11 @@ or telemetry clients enter that runtime.
 
 Nested calls, to builtins and, through an inline `use_tool` call, to MCP and
 managed-gateway tools from the `search_tool` snapshot, use the existing shell
-prepare/permission/dispatch/finalize pipeline. A scoped nested result sink keeps provider history paired;
+prepare/permission/dispatch/finalize pipeline. A script receives each call's
+typed value, projected by `xai-grok-tools::script_value` from the same
+`ToolOutput` the model-facing text comes from; every registered tool declares
+that value's schema, which the catalog exposes as `returns`, and failures
+reject. A scoped nested result sink keeps provider history paired;
 parent IDs and owner-only local JSONL traces preserve provenance. Per-run locks
 span concurrent child batches. Cancellation closes admission, aborts owned tool
 futures and kills/reaps the worker, without claiming rollback of external effects.
