@@ -26,14 +26,14 @@ use crate::implementations::opencode::glob::GlobOutput;
 use crate::implementations::skills::skill::SkillOutput;
 use crate::types::output::{
     ApplyPatchOutput, AskUserQuestionOutput, BashToolOutput, CodexGrepFilesOutput,
-    EnterPlanModeOutput, ExitPlanModeOutput, GrepFileSummary, GrepSearchOutput, KillTaskOutput,
-    ListDirEntry, ListDirOutput, MCPOutputDetails, MediaGenOutput, ReadFileOutput,
-    SearchReplaceOutput, TaskOutputOutput, TodoWriteOutput, ToolOutput, WebFetchOutput,
-    WebSearchOutput,
+    EnterPlanModeOutput, ExitPlanModeOutput, GrepFileSummary, GrepSearchOutput, ListDirEntry,
+    ListDirOutput, MCPOutputDetails, MediaGenOutput, ReadFileOutput, SearchReplaceOutput,
+    TodoWriteOutput, ToolOutput, WebFetchOutput, WebSearchOutput,
 };
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Value, json};
+use xai_tool_types::{KillTaskOutput, TaskOutputOutput};
 
 /// A script's view of one call: the declared value, or the failure text the call rejects with.
 pub type ScriptResult = Result<Value, String>;
@@ -719,6 +719,7 @@ script_schema! {
     GrepSearchOutput => GrepValue,
     SearchReplaceOutput => EditValue,
     BashToolOutput => BashValue,
+    crate::implementations::grok_build::bash::BashToolOutput => BashValue,
     TodoWriteOutput => TodoValue,
     WebSearchOutput => WebSearchValue,
     WebFetchOutput => WebFetchValue,

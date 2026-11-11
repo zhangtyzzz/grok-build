@@ -103,7 +103,12 @@ pub(crate) fn raw_output_json(
     output: &ToolOutput,
     rewriter: Option<&PathRewriter>,
 ) -> Option<serde_json::Value> {
-    let value = serde_json::to_value(output).ok()?;
+    let mut value = serde_json::to_value(output).ok()?;
+    // Code Mode's copies of the MCP protocol parts would double the client payload.
+    if let (ToolOutput::MCP(_), Some(object)) = (output, value.as_object_mut()) {
+        object.remove("text_blocks");
+        object.remove("structured_content");
+    }
     Some(match rewriter {
         Some(rw) => rw.rewrite_json(value),
         None => value,

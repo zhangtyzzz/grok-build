@@ -50,20 +50,46 @@ const settled = await Promise.allSettled([
 return settled.map((result, index) => ({
   index,
   status: result.status,
-  text: result.status === 'fulfilled' ? result.value.slice(0, 200) : result.reason.message,
+  lines: result.status === 'fulfilled' ? result.value.total_lines : null,
+  error: result.status === 'rejected' ? `${result.reason.tool}: ${result.reason.message}` : null,
 }));
 ```
 
-The host returns normal model-facing tool text as a **string**, including normal
-output caps/spill references and hook replacements. Parse it as JSON only when
-that tool's documented output is JSON. Runtime/permission/policy/tool errors
-reject the Promise; tools' own successful structured/text contracts still apply
-(for example a reported command exit status need not be a dispatch exception).
+### Typed results
+
+Every tool call resolves to a JSON value in the shape its tool declares, and
+`catalog.describe(name).returns` is that JSON Schema; scripts read fields
+instead of parsing display text. The model-facing text of direct calls is
+unchanged: the value is a second projection of the same `ToolOutput`
+(`xai-grok-tools/src/script_value.rs`). Examples of the shapes:
+
+| Tool family | Value |
+| --- | --- |
+| file reads | `{kind:"text", path, content, start_line, line_count, total_lines}` (no line-number prefixes), `{kind:"image", mime_type}`, `{kind:"pdf", pages, total_pages, file_size}` |
+| directory listings | `{path, entries:[{path, kind}], truncated, listing}` |
+| content search | `{matches:[{path, line_number, line}], files:[{path, count?}], match_count, truncated}` for every output mode |
+| shell | `{kind:"completed", exit_code, output, truncated, output_file, timed_out, signal, cwd}` or `{kind:"background", task_id, output_file, ...}` |
+| edits / patches | `{path, edits:[{old_line, new_line}]}` / `{files:[{path, action, move_to}]}` |
+| task output | `{kind:"task", task_id, status, exit_code, output, ...}` or `{kind:"multi", tasks, ...}` |
+| subagents | `{kind:"completed", subagent_id, output, ...}` or `{kind:"background", subagent_id, auto_backgrounded}` |
+| MCP and gateway tools | `{text, data}`: `data` is `structuredContent`, else the text parsed as JSON (one document, or an array when every line is one), else `null`; with an MCP `outputSchema`, `returns` narrows `data` to it |
+
+Failures reject with a `ToolCallError` (`e.tool` names the tool, `e.message`
+is the failure the tool reported), whether they came from dispatch,
+permissions, hooks, policy or the tool itself (file not found, no match for an
+edit, an rg error, a disabled feature). A nonzero shell exit code is a result,
+not a rejection. A call whose output a PostToolUse hook replaced rejects with
+the replacement text: there is no typed value to trust, and the original is not
+revealed. Every builtin tool must declare its schema: the registration bound
+requires `ScriptSchema` on `Tool::Output`, tools returning the untyped
+`ToolOutput` override `ToolMetadata::script_output_schema`, and
+`every_builtin_tool_declares_a_script_result_schema` fails on a gap.
+Runtime-registered tools that declare nothing return arbitrary JSON (`{}`).
 
 `catalog.search(query, offset)` takes a string; every whitespace-separated word
 must appear in a tool's name or description (case-insensitive), and it returns
 at most 20 summaries per page. `catalog.describe(name)` returns the full input
-schema. Both also accept the object form (`{query, offset}`, `{name}`) models
+schema (`parameters`) and result schema (`returns`). Both also accept the object form (`{query, offset}`, `{name}`) models
 often write, and any other argument type throws a `TypeError` rather than
 silently matching nothing. Names are not rewritten into aliases: bracket
 notation works for non-identifiers, e.g. `tools["linear__save_issue"]({...})`;
@@ -71,15 +97,14 @@ an unknown name throws an error that points to `catalog.search()`.
 
 Each `execute` starts a fresh runtime with no state from earlier runs. The tool
 description therefore asks for results that are sufficient for the question,
-not merely compact: parse JSON text before searching it, extract by field,
-heading or keyword instead of the opening characters or guessed offsets, and
+not merely compact: check `returns` instead of guessing a result's structure,
+extract by field, heading or keyword instead of the opening characters or
+guessed offsets, and
 return the requested facts with their context. In live testing (2026-10-22) one
 page was fetched five times because the first script returned only its first
 1200 characters plus keyword offsets, and a later script applied offsets found
 in the serialized JSON to the parsed body. The runtime had delivered the full
 data each time; the repeats came from discarding it early.
-Both catalog functions return JSON objects directly; only host tool calls return
-model-facing text strings.
 
 The inventory is every declared builtin tool plus, whenever `use_tool` is offered,
 every MCP and managed-gateway tool from the snapshot `search_tool` searches (the
@@ -91,13 +116,11 @@ ordinary inline `use_tool` call, so MCP auth retry, argument coercion,
 permissions, hooks and telemetry are unchanged. Only the model-facing inline
 limit is skipped: `use_tool` truncates MCP text for calls the model reads
 directly (`MAX_MCP_OUTPUT_BYTES`, 20 KB by default), but a nested call registers
-its id in `UntruncatedMcpCalls`, so the script receives complete data it can
-parse. A single nested result over the 2 MiB frame limit fails that call with a
+its id in `UntruncatedMcpCalls`, so the script receives complete data. A single nested result over the 2 MiB frame limit fails that call with a
 catchable error instead of aborting the run; the final `execute` result keeps
 its own bound. System reminders appended to a nested result (background-task
-completions, diagnostics, coercion notes) are split off before the script sees
-the text and appended after the `execute` result, so they neither corrupt JSON
-nor get lost. Every nested call keeps normal
+completions, diagnostics, coercion notes) never enter the value and are
+appended after the `execute` result, so they are not lost. Every nested call keeps normal
 validation, hooks, permissions, trust/sandbox checks, same-file locking and
 cancellation. Media-generation caps count all calls admitted in one run. The
 inventory is frozen per run: a tool whose definition changes mid-run is
@@ -112,13 +135,10 @@ The `execute` result is `{ok, value, error, logs, warnings, calls, trace}`,
 plus `truncated` and `result_file` for an oversized value. `calls` lists each
 nested call as `{id, name, sequence, status}`; `trace` holds every nested call's
 arguments and full output, and the description points the model at it for
-reuse instead of calling again. An MCP result reaches the script as text: `call_result.rs` joins its text blocks
-with newlines (several JSON blocks become JSON Lines) and appends
-`structuredContent` as a final JSON line when no text block already carries it;
-the description states this so scripts parse line by line instead of probing.
-Builtin `read_file` text carries `N→` line
-anchors (first line and every tenth line), so the description tells scripts to
-strip them before parsing file contents.
+reuse instead of calling again; it records each nested call's typed value or
+failure text. Before typed results (until 1.0.47-alpha.4) scripts received the
+model-facing text and the description had to explain MCP JSON Lines and
+`read_file`'s `N→` anchors; models still guessed shapes and spent turns probing.
 
 Large results follow the same inline limit as MCP output (`MAX_MCP_OUTPUT_BYTES`,
 20 KB by default), so the model sees one size rule. A final value over it is

@@ -165,7 +165,7 @@ async fn list_dir_slice(
 }
 
 /// One page: formatted lines for the model plus the same entries for scripts.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct ListDirSlice {
     lines: Vec<String>,
     entries: Vec<ListDirEntry>,
