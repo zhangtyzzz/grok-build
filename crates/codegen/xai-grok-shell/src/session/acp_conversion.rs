@@ -104,10 +104,19 @@ pub(crate) fn raw_output_json(
     rewriter: Option<&PathRewriter>,
 ) -> Option<serde_json::Value> {
     let mut value = serde_json::to_value(output).ok()?;
-    // Code Mode's copies of the MCP protocol parts would double the client payload.
-    if let (ToolOutput::MCP(_), Some(object)) = (output, value.as_object_mut()) {
-        object.remove("text_blocks");
-        object.remove("structured_content");
+    // Fields only Code Mode scripts read stay off the client wire (MCP's would double it).
+    match (output, value.as_object_mut()) {
+        (ToolOutput::MCP(_), Some(object)) => {
+            object.remove("text_blocks");
+            object.remove("structured_content");
+        }
+        (ToolOutput::ListDir(_), Some(object)) => {
+            if let Some(content) = object.get_mut("Content").and_then(|c| c.as_object_mut()) {
+                content.remove("entries");
+                content.remove("truncated");
+            }
+        }
+        _ => {}
     }
     Some(match rewriter {
         Some(rw) => rw.rewrite_json(value),
@@ -1006,6 +1015,33 @@ mod tests {
         // ToolOutput::Text wraps TextOutput { text: String }, which serde can serialize with internal tagging
         // raw_output carries the JSON
         assert!(update.fields.raw_output.is_some());
+    }
+
+    #[test]
+    fn raw_output_json_omits_code_mode_only_fields() {
+        let mcp = ToolOutput::MCP(
+            xai_grok_tools::types::output::MCPOutput::okay_output(
+                "s__t".into(),
+                "s".into(),
+                "{\"id\":1}".into(),
+            )
+            .with_protocol_parts("{\"id\":1}".into(), Some(serde_json::json!({"id": 1}))),
+        );
+        let json = raw_output_json(&mcp, None).unwrap();
+        assert!(json.get("text_blocks").is_none(), "{json}");
+        assert!(json.get("structured_content").is_none(), "{json}");
+        let list = ToolOutput::ListDir(ListDirOutput::Content(ListDirContent {
+            content: "- /p/\n  a.rs".to_string(),
+            absolute_root_path: PathBuf::from("/p"),
+            entries: vec![xai_grok_tools::types::output::ListDirEntry {
+                path: "a.rs".into(),
+                kind: xai_grok_tools::types::output::ListDirEntryKind::File,
+            }],
+            truncated: true,
+        }));
+        let json = raw_output_json(&list, None).unwrap();
+        assert!(json["Content"].get("entries").is_none(), "{json}");
+        assert_eq!(json["Content"]["content"], "- /p/\n  a.rs");
     }
 
     #[test]

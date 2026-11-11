@@ -307,9 +307,13 @@ pub struct MediaValue {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct MemorySearchHit {
     pub path: String,
+    /// 1-based first line of the snippet.
     pub start_line: usize,
+    /// 1-based last line of the snippet, inclusive.
     pub end_line: usize,
+    /// Relevance; higher is more relevant.
     pub score: f64,
+    /// `global`, `workspace` or `session`.
     pub source: String,
     pub snippet: String,
 }
@@ -322,7 +326,9 @@ pub struct MemorySearchValue {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct MemoryGetValue {
     pub path: String,
+    /// The requested lines without line-number prefixes.
     pub content: String,
+    /// 1-based number of the first line in `content`.
     pub start_line: usize,
     pub line_count: usize,
 }

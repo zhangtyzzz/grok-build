@@ -318,8 +318,10 @@ fn seed_depth1_children(
     }
     false
 }
+/// Direct children carried for Code Mode scripts; larger listings belong to glob or grep.
+const MAX_SCRIPT_ENTRIES: usize = 1_000;
 /// The root's direct children for Code Mode scripts, sorted, with the tree's
-/// ignore rules and seed cap; `true` when the cap cut the list.
+/// ignore rules; `true` when [`MAX_SCRIPT_ENTRIES`] cut the list.
 fn direct_children(root: &Path, respect_gitignore: bool) -> (Vec<ListDirEntry>, bool) {
     let walker = list_dir_walk_builder(root, respect_gitignore)
         .max_depth(Some(1))
@@ -333,7 +335,7 @@ fn direct_children(root: &Path, respect_gitignore: bool) -> (Vec<ListDirEntry>, 
         let (Some(ft), Some(name)) = (entry.file_type(), entry.file_name().to_str()) else {
             continue;
         };
-        if entries.len() == MAX_SEED_ITEMS {
+        if entries.len() == MAX_SCRIPT_ENTRIES {
             entries.sort_by(|a: &ListDirEntry, b| a.path.cmp(&b.path));
             return (entries, true);
         }
