@@ -206,6 +206,11 @@ pub fn sanitize_description(s: &str) -> String {
 pub struct SearchTool;
 
 impl crate::types::tool_metadata::ToolMetadata for SearchTool {
+    fn script_output_schema(&self) -> Option<serde_json::Value> {
+        Some(crate::script_value::schema_of::<
+            crate::script_value::ToolSearchValue,
+        >())
+    }
     fn kind(&self) -> ToolKind {
         ToolKind::SearchTool
     }

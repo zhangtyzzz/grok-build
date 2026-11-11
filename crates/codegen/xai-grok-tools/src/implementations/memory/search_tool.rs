@@ -3,14 +3,20 @@
 use std::sync::Arc;
 
 use super::types::MemorySearchInput;
+use crate::script_value::{MemorySearchHit, MemorySearchValue};
 use crate::types::memory_backend::{MemoryBackend, format_staleness_note};
-use crate::types::output::ToolOutput;
+use crate::types::output::{TextOutput, ToolOutput};
 use crate::types::tool::{ToolKind, ToolNamespace};
 
 #[derive(Debug, Default)]
 pub struct MemorySearchImpl;
 
 impl crate::types::tool_metadata::ToolMetadata for MemorySearchImpl {
+    fn script_output_schema(&self) -> Option<serde_json::Value> {
+        Some(crate::script_value::schema_of::<
+            crate::script_value::MemorySearchValue,
+        >())
+    }
     fn kind(&self) -> ToolKind {
         ToolKind::MemorySearch
     }
@@ -72,9 +78,9 @@ impl xai_tool_runtime::Tool for MemorySearchImpl {
             .get::<Arc<dyn MemoryBackend>>()
             .cloned()
         else {
-            return Ok(ToolOutput::Text(
-                "Memory is not enabled. Use --experimental-memory to enable.".into(),
-            ));
+            return Ok(ToolOutput::Text(TextOutput::failure(
+                "Memory is not enabled. Use --experimental-memory to enable.",
+            )));
         };
         let max_results = input
             .max_results
@@ -94,9 +100,10 @@ impl xai_tool_runtime::Tool for MemorySearchImpl {
             })?;
         tracing::info!(target: crate::types::memory_backend::MEMORY_LOG_TARGET, results = results.len(), "MEMORY_SEARCH: complete");
         if results.is_empty() {
-            return Ok(ToolOutput::Text(
-                "No memory results found for query.".into(),
-            ));
+            return Ok(ToolOutput::Text(TextOutput::with_data(
+                "No memory results found for query.",
+                serde_json::json!({ "results": [] }),
+            )));
         }
         let mut output = format!("Found {} memory result(s):\n", results.len());
         for (i, r) in results.iter().enumerate() {
@@ -106,6 +113,22 @@ impl xai_tool_runtime::Tool for MemorySearchImpl {
                 i + 1, r.score, r.source, r.path, r.start_line, r.end_line, staleness, r.snippet,
             ));
         }
-        Ok(ToolOutput::Text(output.into()))
+        let data = MemorySearchValue {
+            results: results
+                .iter()
+                .map(|r| MemorySearchHit {
+                    path: r.path.clone(),
+                    start_line: r.start_line + 1,
+                    end_line: r.end_line,
+                    score: r.score,
+                    source: r.source.clone(),
+                    snippet: r.snippet.clone(),
+                })
+                .collect(),
+        };
+        Ok(ToolOutput::Text(match serde_json::to_value(data) {
+            Ok(data) => TextOutput::with_data(output, data),
+            Err(_) => output.into(),
+        }))
     }
 }

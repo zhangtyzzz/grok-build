@@ -20,7 +20,11 @@ fn run(code: &str, replies: Vec<Reply>) -> Vec<WorkerMessage> {
     execute(
         Init {
             code: code.to_owned(),
-            catalog: vec![serde_json::json!({"name":"test","parameters":{"type":"object"}})],
+            catalog: vec![serde_json::json!({
+                "name": "test",
+                "parameters": {"type": "object"},
+                "returns": {"type": "object", "properties": {"n": {"type": "integer"}}},
+            })],
         },
         std::io::Cursor::new(input),
         Capture(bytes.clone()),
@@ -291,4 +295,41 @@ fn catalog_accepts_object_form_and_rejects_non_strings() {
         "{value}"
     );
     assert_eq!(value["then"], "undefined");
+}
+#[test]
+fn values_resolve_as_json_and_failures_reject_with_tool_call_error() {
+    let messages = run(
+        r#"
+        const value = await tools.test({});
+        try { await tools.test({}); } catch (e) {
+          return {
+            n: value.n,
+            instance: e instanceof ToolCallError,
+            error: e instanceof Error,
+            name: e.name,
+            tool: e.tool,
+            message: e.message,
+            returns: catalog.describe("test").returns.properties.n.type,
+          };
+        }
+        "#,
+        vec![
+            reply(1, true, r#"{"n":3}"#),
+            reply(2, false, "File not found"),
+        ],
+    );
+    let (ok, value, error, _) = finished(&messages);
+    assert!(*ok, "{error:?}");
+    assert_eq!(
+        value,
+        &serde_json::json!({
+            "n": 3,
+            "instance": true,
+            "error": true,
+            "name": "ToolCallError",
+            "tool": "test",
+            "message": "File not found",
+            "returns": "integer",
+        })
+    );
 }

@@ -166,12 +166,27 @@ pub struct GrepFileMatch {
     pub matches: Vec<GrepLineMatch>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+/// A matching file from `files_with_matches` (`count: None`) or `count` mode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GrepFileSummary {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct GrepSearchOutput {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub exit_code: i32,
     pub match_count: usize,
+    /// Matched lines per file (`content` mode).
     #[serde(default)]
     pub file_matches: Vec<GrepFileMatch>,
+    /// Matching files (`files_with_matches` and `count` modes).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<GrepFileSummary>,
+    /// Results were cut at the head limit or byte budget.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }

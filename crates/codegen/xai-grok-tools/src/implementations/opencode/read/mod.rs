@@ -378,6 +378,7 @@ impl xai_tool_runtime::Tool for ReadTool {
             limit: input.limit.map(|l| l as usize),
             raw_output,
             total_lines,
+            start_line: Some(offset),
             extracted_images: Vec::new(),
         }))
     }
@@ -468,6 +469,7 @@ async fn read_directory(
         limit: None,
         raw_output: sliced.join("\n"),
         total_lines: total,
+        start_line: None,
         extracted_images: Vec::new(),
     })
 }

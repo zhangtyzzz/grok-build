@@ -3,8 +3,9 @@
 use std::sync::Arc;
 
 use super::types::MemoryGetInput;
+use crate::script_value::MemoryGetValue;
 use crate::types::memory_backend::MemoryBackend;
-use crate::types::output::ToolOutput;
+use crate::types::output::{TextOutput, ToolOutput};
 use crate::types::tool::{ToolKind, ToolNamespace};
 
 /// Format content with line numbers: `{line_num}→{line}`. Extracted as a free function so it can be unit-tested
@@ -26,6 +27,11 @@ pub(crate) fn format_with_line_numbers(content: &str, first_line_num: usize) -> 
 pub struct MemoryGetImpl;
 
 impl crate::types::tool_metadata::ToolMetadata for MemoryGetImpl {
+    fn script_output_schema(&self) -> Option<serde_json::Value> {
+        Some(crate::script_value::schema_of::<
+            crate::script_value::MemoryGetValue,
+        >())
+    }
     fn kind(&self) -> ToolKind {
         ToolKind::MemoryGet
     }
@@ -85,9 +91,9 @@ impl xai_tool_runtime::Tool for MemoryGetImpl {
             .get::<Arc<dyn MemoryBackend>>()
             .cloned()
         else {
-            return Ok(ToolOutput::Text(
-                "Memory is not enabled. Use --experimental-memory to enable.".into(),
-            ));
+            return Ok(ToolOutput::Text(TextOutput::failure(
+                "Memory is not enabled. Use --experimental-memory to enable.",
+            )));
         };
         let memory = memory.clone();
         tracing::info!(target: crate::types::memory_backend::MEMORY_LOG_TARGET,"MEMORY_GET: invoked");
@@ -113,7 +119,16 @@ impl xai_tool_runtime::Tool for MemoryGetImpl {
             input.lines.map_or("all".to_string(), |l| l.to_string()),
             numbered,
         );
-        Ok(ToolOutput::Text(output.into()))
+        let data = MemoryGetValue {
+            path: input.path.clone(),
+            line_count: total_lines,
+            start_line: first_line_num,
+            content,
+        };
+        Ok(ToolOutput::Text(match serde_json::to_value(data) {
+            Ok(data) => TextOutput::with_data(output, data),
+            Err(_) => output.into(),
+        }))
     }
 }
 

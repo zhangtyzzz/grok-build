@@ -364,6 +364,8 @@ struct ToolEntry {
     requires: Expr<ToolRequirement>,
     default_params: serde_json::Value,
     input_schema: serde_json::Value,
+    /// Schema of the value Code Mode scripts receive (`None` only when undeclared).
+    script_output_schema: Option<serde_json::Value>,
     /// Tool metadata — kind, description, doom-loop, definitions, reminders.
     metadata: Box<dyn ToolMetadata>,
     /// Converts `serde_json::Value` (from dispatch) back to `ToolOutput`.
@@ -415,6 +417,8 @@ struct FinalizedTool {
     /// internal schema used for `InputParam` requirement checks and TemplateRenderer param-name
     /// exposure, even if the exported tool definition schema is specialized per effective params.
     input_schema: serde_json::Value,
+    /// Schema of the value Code Mode scripts receive (see [`crate::script_value`]).
+    script_output_schema: Option<serde_json::Value>,
     /// Client-facing param → canonical param, for reverse-remapping at dispatch.
     reverse_params: HashMap<String, String>,
     /// useful for parsing input to specific type
@@ -540,7 +544,10 @@ impl ToolRegistryBuilder {
             + Sync
             + 'static,
         T::Args: serde::de::DeserializeOwned + schemars::JsonSchema + Into<ToolInput>,
-        T::Output: serde::Serialize + serde::de::DeserializeOwned + Into<ToolOutput>,
+        T::Output: serde::Serialize
+            + serde::de::DeserializeOwned
+            + Into<ToolOutput>
+            + crate::script_value::ScriptSchema,
     {
         self.register_with_params::<T, ()>();
     }
@@ -557,7 +564,10 @@ impl ToolRegistryBuilder {
             + Sync
             + 'static,
         T::Args: serde::de::DeserializeOwned + schemars::JsonSchema + Into<ToolInput>,
-        T::Output: serde::Serialize + serde::de::DeserializeOwned + Into<ToolOutput>,
+        T::Output: serde::Serialize
+            + serde::de::DeserializeOwned
+            + Into<ToolOutput>
+            + crate::script_value::ScriptSchema,
         P: crate::types::resources::ResourceType
             + serde::Serialize
             + serde::de::DeserializeOwned
@@ -576,6 +586,9 @@ impl ToolRegistryBuilder {
         let id = xai_tool_runtime::Tool::id(&tool).as_str().to_string();
         let kind = tool.kind();
         let requires = tool.requires_expr();
+        let script_output_schema = tool
+            .script_output_schema()
+            .or_else(<T::Output as crate::script_value::ScriptSchema>::script_schema);
         self.tools.insert(
             name,
             ToolEntry {
@@ -591,6 +604,7 @@ impl ToolRegistryBuilder {
                 } else {
                     generate_schema_cached::<T::Args>()
                 },
+                script_output_schema,
                 metadata: Box::new(tool),
                 output_converter: Box::new(|value| {
                     let typed: T::Output = serde_json::from_value(value)?;
@@ -633,6 +647,18 @@ impl ToolRegistryBuilder {
             .iter()
             .map(|(name, entry)| (name.clone(), entry.kind))
             .collect()
+    }
+    /// Registered tools that declare no Code Mode result schema (see
+    /// [`crate::script_value`]). `pub` so out-of-tree packs run the same audit.
+    pub fn tools_without_script_schema(&self) -> Vec<String> {
+        let mut missing: Vec<String> = self
+            .tools
+            .iter()
+            .filter(|(_, entry)| entry.script_output_schema.is_none())
+            .map(|(name, _)| name.clone())
+            .collect();
+        missing.sort();
+        missing
     }
     /// Registry-wide audit of [`ToolMetadata::lock_path_param`]. Returns one message per
     /// registered tool that violates either rule:
@@ -1289,6 +1315,7 @@ impl ToolRegistryBuilder {
                 inline_mcp_definition,
                 effective_params,
                 input_schema: entry.input_schema,
+                script_output_schema: entry.script_output_schema,
                 reverse_params,
                 parse_input: Arc::from(entry.parse_input),
                 contract_version,
@@ -1518,6 +1545,15 @@ impl FinalizedToolset {
             .iter()
             .map(|t| (t.client_name.clone(), t.metadata.kind()))
             .collect()
+    }
+    /// Schema of the value Code Mode scripts receive from the tool named `client_name`
+    /// (see [`crate::script_value`]); `None` for an unknown or undeclared tool.
+    pub fn script_output_schema(&self, client_name: &str) -> Option<serde_json::Value> {
+        self.tools
+            .read()
+            .iter()
+            .find(|t| t.client_name == client_name)
+            .and_then(|t| t.script_output_schema.clone())
     }
     /// Finalized canonical-to-client parameter names by tool kind.
     pub fn template_param_names(&self) -> HashMap<ToolKind, HashMap<String, String>> {
@@ -2045,6 +2081,11 @@ impl FinalizedToolset {
         let registry_id = xai_tool_runtime::Tool::id(&tool).as_str().to_owned();
         let input_schema = input_schema_override.unwrap_or_else(generate_schema_cached::<T::Args>);
         let definition = ToolDefinition::function(&name, Some(&description), input_schema.clone());
+        // Runtime tools that declare nothing return arbitrary JSON.
+        let script_output_schema = Some(
+            tool.script_output_schema()
+                .unwrap_or_else(crate::script_value::any_value_schema),
+        );
         self.local_registry.register(tool);
         tools.push(FinalizedTool {
             namespace: ToolNamespace::MCP.to_string(),
@@ -2065,6 +2106,7 @@ impl FinalizedToolset {
             definition,
             effective_params: serde_json::Value::Object(Default::default()),
             input_schema,
+            script_output_schema,
             reverse_params: HashMap::new(),
             parse_input: Arc::new(move |json| {
                 Ok(ToolInput::MCPTool(crate::types::tool_io::MCPToolInput {
@@ -2418,6 +2460,15 @@ mod tests {
             system_reminder_tag: crate::reminders::DEFAULT_REMINDER_TAG,
         }
     }
+    /// Every built-in tool tells Code Mode scripts what its calls resolve to.
+    #[test]
+    fn every_builtin_tool_declares_a_script_result_schema() {
+        let missing = ToolRegistryBuilder::new().tools_without_script_schema();
+        assert!(
+            missing.is_empty(),
+            "tools without a script schema: {missing:?}"
+        );
+    }
     /// Built-in half of the `lock_path_param` guard (a pack that lives in its own crate runs the
     /// same audit next to its tools): every built-in tool with a path-shaped input either
     /// declares the field it locks or is allowlisted with a reason.
@@ -2485,6 +2536,7 @@ mod tests {
                     requires: Expr::True,
                     default_params: serde_json::Value::Null,
                     input_schema: schema.clone(),
+                    script_output_schema: None,
                     metadata,
                     output_converter: Box::new(serde_json::from_value),
                     validate_params: Box::new(|_| Ok(())),

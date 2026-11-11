@@ -8,7 +8,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-use crate::types::output::{ListDirContent, ListDirOutput};
+use crate::types::output::{ListDirContent, ListDirEntry, ListDirEntryKind, ListDirOutput};
 use crate::types::requirements::Expr;
 use crate::types::tool::{ToolKind, ToolNamespace};
 
@@ -111,7 +111,7 @@ async fn list_dir_slice(
     offset: usize,
     limit: usize,
     depth: usize,
-) -> Result<Vec<String>, String> {
+) -> Result<ListDirSlice, String> {
     let mut entries = Vec::new();
     collect_entries(dir_path, Path::new(""), 0, depth, &mut entries)
         .await
@@ -122,7 +122,7 @@ async fn list_dir_slice(
 
     // Empty directory is a valid success case, not an error.
     if entries.is_empty() {
-        return Ok(Vec::new());
+        return Ok(ListDirSlice::default());
     }
 
     let total = entries.len();
@@ -146,7 +146,30 @@ async fn list_dir_slice(
         lines.push(format!("More than {} entries found", capped_limit));
     }
 
-    Ok(lines)
+    Ok(ListDirSlice {
+        lines,
+        entries: page
+            .iter()
+            .map(|entry| ListDirEntry {
+                path: entry.name.clone(),
+                kind: match entry.kind {
+                    DirEntryKind::Directory => ListDirEntryKind::Dir,
+                    DirEntryKind::File => ListDirEntryKind::File,
+                    DirEntryKind::Symlink => ListDirEntryKind::Symlink,
+                    DirEntryKind::Other => ListDirEntryKind::Other,
+                },
+            })
+            .collect(),
+        truncated: end_index < total,
+    })
+}
+
+/// One page: formatted lines for the model plus the same entries for scripts.
+#[derive(Default)]
+struct ListDirSlice {
+    lines: Vec<String>,
+    entries: Vec<ListDirEntry>,
+    truncated: bool,
 }
 
 /// BFS walker using `tokio::fs::read_dir`. Collects entries breadth-first up to `max_depth` levels. Directories beyond the depth limit are
@@ -331,18 +354,20 @@ impl xai_tool_runtime::Tool for CodexListDirTool {
             ));
         }
 
-        let entries = match list_dir_slice(&path, offset, limit, depth).await {
-            Ok(entries) => entries,
+        let slice = match list_dir_slice(&path, offset, limit, depth).await {
+            Ok(slice) => slice,
             Err(msg) => return Ok(ListDirOutput::Error(msg)),
         };
 
-        let mut output = Vec::with_capacity(entries.len() + 1);
+        let mut output = Vec::with_capacity(slice.lines.len() + 1);
         output.push(format!("Absolute path: {}", path.display()));
-        output.extend(entries);
+        output.extend(slice.lines);
         let content = output.join("\n");
 
         Ok(ListDirOutput::Content(ListDirContent {
             content,
+            entries: slice.entries,
+            truncated: slice.truncated,
             absolute_root_path: path,
         }))
     }
@@ -364,7 +389,7 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(tmp.path().join("file.txt"), tmp.path().join("link")).unwrap();
 
-        let result = list_dir_slice(tmp.path(), 1, 25, 2).await.unwrap();
+        let result = list_dir_slice(tmp.path(), 1, 25, 2).await.unwrap().lines;
 
         // Should contain file.txt, subdir/, and on unix: link@
         let joined = result.join("\n");
@@ -392,7 +417,7 @@ mod tests {
         std::fs::write(subsub.join("deep.txt"), "").unwrap();
 
         // depth=1: only top-level entries (the dir "a" but not its children)
-        let depth1 = list_dir_slice(tmp.path(), 1, 100, 1).await.unwrap();
+        let depth1 = list_dir_slice(tmp.path(), 1, 100, 1).await.unwrap().lines;
         let joined1 = depth1.join("\n");
         assert!(joined1.contains("a/"), "should see dir a/");
         assert!(!joined1.contains("b/"), "should NOT see b/ at depth 1");
@@ -402,7 +427,7 @@ mod tests {
         );
 
         // depth=2: top-level + children of a
-        let depth2 = list_dir_slice(tmp.path(), 1, 100, 2).await.unwrap();
+        let depth2 = list_dir_slice(tmp.path(), 1, 100, 2).await.unwrap().lines;
         let joined2 = depth2.join("\n");
         assert!(joined2.contains("a/"), "should see dir a/");
         assert!(joined2.contains("b/"), "should see b/ at depth 2");
@@ -412,7 +437,7 @@ mod tests {
         );
 
         // depth=3: everything
-        let depth3 = list_dir_slice(tmp.path(), 1, 100, 3).await.unwrap();
+        let depth3 = list_dir_slice(tmp.path(), 1, 100, 3).await.unwrap().lines;
         let joined3 = depth3.join("\n");
         assert!(joined3.contains("a/"), "should see dir a/");
         assert!(joined3.contains("b/"), "should see b/ at depth 3");
@@ -430,7 +455,7 @@ mod tests {
         std::fs::write(tmp.path().join("b.txt"), "").unwrap();
 
         // First page: limit=2, should get a.txt, b.txt + overflow message
-        let page1 = list_dir_slice(tmp.path(), 1, 2, 1).await.unwrap();
+        let page1 = list_dir_slice(tmp.path(), 1, 2, 1).await.unwrap().lines;
         let [a, b, ..] = page1.as_slice() else {
             panic!("expected at least two page1 entries: {page1:?}");
         };
@@ -442,7 +467,7 @@ mod tests {
         );
 
         // Second page: offset=3 → c.txt only, no overflow
-        let page2 = list_dir_slice(tmp.path(), 3, 2, 1).await.unwrap();
+        let page2 = list_dir_slice(tmp.path(), 3, 2, 1).await.unwrap().lines;
         assert_eq!(page2.len(), 1, "second page should have 1 entry");
         assert!(
             page2.first().is_some_and(|e| e.contains("c.txt")),
@@ -456,7 +481,10 @@ mod tests {
         std::fs::write(tmp.path().join("only.txt"), "").unwrap();
 
         // usize::MAX as limit should not panic
-        let result = list_dir_slice(tmp.path(), 1, usize::MAX, 1).await.unwrap();
+        let result = list_dir_slice(tmp.path(), 1, usize::MAX, 1)
+            .await
+            .unwrap()
+            .lines;
         assert_eq!(result.len(), 1);
         assert!(result.first().is_some_and(|e| e.contains("only.txt")));
     }
@@ -469,7 +497,7 @@ mod tests {
             std::fs::write(tmp.path().join(format!("file_{:03}.txt", i)), "").unwrap();
         }
 
-        let result = list_dir_slice(tmp.path(), 1, 25, 1).await.unwrap();
+        let result = list_dir_slice(tmp.path(), 1, 25, 1).await.unwrap().lines;
         assert!(
             result
                 .last()
@@ -487,7 +515,7 @@ mod tests {
         std::fs::write(tmp.path().join("m.txt"), "").unwrap();
 
         // limit=2, offset=2 → should get m.txt (2nd sorted entry)
-        let result = list_dir_slice(tmp.path(), 2, 1, 1).await.unwrap();
+        let result = list_dir_slice(tmp.path(), 2, 1, 1).await.unwrap().lines;
         assert!(
             result.first().is_some_and(|e| e.contains("m.txt")),
             "offset=2 should land on m.txt"
@@ -655,7 +683,7 @@ mod tests {
     async fn empty_directory_returns_success() {
         let tmp = TempDir::new().unwrap();
 
-        let result = list_dir_slice(tmp.path(), 1, 25, 2).await.unwrap();
+        let result = list_dir_slice(tmp.path(), 1, 25, 2).await.unwrap().lines;
         assert!(result.is_empty(), "empty dir should return empty vec");
 
         // Also verify the tool-level wrapper returns Content, not Error.
@@ -690,7 +718,7 @@ mod tests {
         std::os::unix::fs::symlink(tmp.path().join("real_dir"), tmp.path().join("link_to_dir"))
             .unwrap();
 
-        let result = list_dir_slice(tmp.path(), 1, 25, 1).await.unwrap();
+        let result = list_dir_slice(tmp.path(), 1, 25, 1).await.unwrap().lines;
         let joined = result.join("\n");
 
         assert!(
@@ -710,7 +738,7 @@ mod tests {
             std::fs::write(tmp.path().join(format!("f_{:03}.txt", i)), "").unwrap();
         }
 
-        let result = list_dir_slice(tmp.path(), 1, 10, 1).await.unwrap();
+        let result = list_dir_slice(tmp.path(), 1, 10, 1).await.unwrap().lines;
         let last = result.last().unwrap();
         assert!(
             last.contains("More than 10 entries found"),

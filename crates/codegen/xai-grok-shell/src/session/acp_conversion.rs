@@ -812,6 +812,7 @@ mod tests {
             limit: None,
             raw_output: "file content".to_string(),
             total_lines: 100,
+            start_line: None,
             extracted_images: Vec::new(),
         }));
         let update = acp_tool_update(&output, "call-1", None, None).unwrap();
@@ -944,6 +945,7 @@ mod tests {
             exit_code: 0,
             match_count: 0,
             file_matches: vec![],
+            ..Default::default()
         });
         assert!(acp_plan_update(&output).is_none());
     }
@@ -959,6 +961,7 @@ mod tests {
             limit: None,
             raw_output: "content".to_string(),
             total_lines: 100,
+            start_line: None,
             extracted_images: Vec::new(),
         }));
         let json = raw_output_json(&output, None).unwrap();
@@ -1005,6 +1008,8 @@ mod tests {
         let output = ToolOutput::ListDir(ListDirOutput::Content(ListDirContent {
             content: "file1.rs\nfile2.rs".to_string(),
             absolute_root_path: PathBuf::from("/project/src"),
+            entries: Vec::new(),
+            truncated: false,
         }));
         let json = raw_output_json(&output, None).unwrap();
         let round_tripped: ToolOutput = serde_json::from_value(json).unwrap();
@@ -1087,6 +1092,7 @@ mod tests {
             limit: None,
             raw_output: "content".to_string(),
             total_lines: 100,
+            start_line: None,
             extracted_images: Vec::new(),
         }));
         let json = raw_output_json(&output, Some(&rw)).unwrap();
@@ -1160,6 +1166,8 @@ mod tests {
         let output = ToolOutput::ListDir(ListDirOutput::Content(ListDirContent {
             content: "file1.rs\nfile2.rs".to_string(),
             absolute_root_path: PathBuf::from("/root/.grok/worktrees/myproject/ab-123/src"),
+            entries: Vec::new(),
+            truncated: false,
         }));
         let json = raw_output_json(&output, Some(&rw)).unwrap();
         let round_tripped: ToolOutput = serde_json::from_value(json).unwrap();
@@ -1360,6 +1368,7 @@ mod tests {
             limit: None,
             raw_output: "content".to_string(),
             total_lines: 100,
+            start_line: None,
             extracted_images: Vec::new(),
         }));
         let json = raw_output_json(&output, None).unwrap();

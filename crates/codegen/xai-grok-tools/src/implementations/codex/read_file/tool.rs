@@ -267,6 +267,8 @@ impl xai_tool_runtime::Tool for CodexReadFileTool {
             limit: Some(input.limit),
             raw_output,
             total_lines,
+            // `raw_output` holds the whole file.
+            start_line: Some(1),
             extracted_images: Vec::new(),
         }))
     }

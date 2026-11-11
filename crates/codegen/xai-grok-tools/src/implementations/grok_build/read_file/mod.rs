@@ -603,6 +603,7 @@ pub(crate) async fn run_read_file(
             limit: input.limit,
             raw_output: String::new(),
             total_lines: 0,
+            start_line: None,
             extracted_images: Vec::new(),
         }));
     }
@@ -617,10 +618,10 @@ pub(crate) async fn run_read_file(
         candidate => candidate,
     };
     let windowed = whole_read.is_none();
-    let (mut extracted, stored_offset, stored_limit) = match whole_read {
+    let (mut extracted, stored_offset, stored_limit, first_line) = match whole_read {
         Some(full) => {
             observed.note_whole_read(is_skill_markdown(&joined_path));
-            (full, None, None)
+            (full, None, None, 1)
         }
         None => {
             let start_line = resolve_read_start_line(&file_content, input.offset);
@@ -637,7 +638,12 @@ pub(crate) async fn run_read_file(
                 remaining,
                 max_lines,
             );
-            (extracted, stored_read_offset(input.offset), input.limit)
+            (
+                extracted,
+                stored_read_offset(input.offset),
+                input.limit,
+                start_line.max(1),
+            )
         }
     };
     if windowed && let Some(budget) = max_output_bytes(&resources).await {
@@ -730,6 +736,7 @@ pub(crate) async fn run_read_file(
         limit: stored_limit,
         raw_output: extracted.raw_output,
         total_lines,
+        start_line: Some(first_line),
         extracted_images,
     }))
 }

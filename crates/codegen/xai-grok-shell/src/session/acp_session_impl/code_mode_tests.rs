@@ -37,6 +37,7 @@ async fn fixture_with(
     std::fs::write(directory.path().join("note.txt"), "nested-needle\n").unwrap();
     (actor, directory)
 }
+/// A nested call as `(value JSON or failure text, failed, messages, loop, prepared)`.
 async fn nested(
     actor: &SessionActor,
     name: &str,
@@ -48,12 +49,29 @@ async fn nested(
     Option<ToolLoop>,
     Option<serde_json::Value>,
 ) {
+    let (value, messages, tool_loop, prepared) = nested_value(actor, name, input).await;
+    match value {
+        Ok(value) => (value.to_string(), false, messages, tool_loop, prepared),
+        Err(text) => (text, true, messages, tool_loop, prepared),
+    }
+}
+/// A nested call with the typed value its script receives.
+async fn nested_value(
+    actor: &SessionActor,
+    name: &str,
+    input: serde_json::Value,
+) -> (
+    xai_grok_tools::script_value::ScriptResult,
+    Vec<ConversationItem>,
+    Option<ToolLoop>,
+    Option<serde_json::Value>,
+) {
     let definition = actor
         .prepare_tool_definitions_inner()
         .await
         .into_iter()
         .find(|d| d.function.name == name);
-    let (text, failed, messages, tool_loop, prepared, _reminders) = tokio::time::timeout(
+    let (value, messages, tool_loop, prepared, _reminders) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         actor.execute_nested_code_call(
             "outer",
@@ -68,7 +86,7 @@ async fn nested(
     .await
     .expect("must not deadlock")
     .unwrap();
-    (text, failed, messages, tool_loop, prepared)
+    (value, messages, tool_loop, prepared)
 }
 #[tokio::test(flavor = "current_thread")]
 async fn nested_success_reuses_real_tools_without_orphan_results_and_direct_still_delivers() {
@@ -120,6 +138,39 @@ async fn nested_success_reuses_real_tools_without_orphan_results_and_direct_stil
                 parent_id().is_none(),
                 "nested sink must not leak into direct call"
             );
+        })
+        .await;
+}
+/// Scripts get the declared value: file text without line anchors, and the catalog
+/// carries each tool's result schema.
+#[tokio::test(flavor = "current_thread")]
+async fn nested_calls_resolve_to_declared_values() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (actor, directory) = fixture().await;
+            let path = directory.path().join("note.txt");
+            let (value, _, _, _) =
+                nested_value(&actor, "read_file", json!({"target_file": path})).await;
+            let value = value.expect("read resolves");
+            assert_eq!(value["kind"], "text", "{value}");
+            assert_eq!(value["content"], "nested-needle\n", "{value}");
+            assert_eq!(value["start_line"], 1, "{value}");
+            assert_eq!(value["total_lines"], 2, "{value}");
+            assert_eq!(value["path"], json!(path.to_string_lossy()), "{value}");
+            let (missing, _, _, _) = nested_value(
+                &actor,
+                "read_file",
+                json!({"target_file": directory.path().join("missing.txt")}),
+            )
+            .await;
+            assert!(missing.is_err(), "{missing:?}");
+            for name in actor.code_mode_inventory().await.keys() {
+                let returns = actor.script_output_schema(name);
+                assert!(
+                    returns.get("properties").is_some() || returns.get("oneOf").is_some(),
+                    "{name}: {returns}"
+                );
+            }
         })
         .await;
 }
@@ -733,7 +784,7 @@ async fn mcp_tools_enter_the_catalog_and_dispatch_through_use_tool() {
             for hidden in ["use_tool", "search_tool", "execute"] {
                 assert!(!inventory.contains_key(hidden), "{hidden}");
             }
-            let (text, failed, _, _, prepared, _) = tokio::time::timeout(
+            let (value, _, _, prepared, _) = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 actor.execute_nested_code_call(
                     "outer",
@@ -748,8 +799,11 @@ async fn mcp_tools_enter_the_catalog_and_dispatch_through_use_tool() {
             .await
             .expect("must not deadlock")
             .unwrap();
-            assert!(!failed, "{text}");
-            assert!(text.contains("MCP-RECEIPT"), "{text}");
+            let value = value.expect("MCP call resolves");
+            assert!(
+                value["text"].as_str().unwrap().contains("MCP-RECEIPT"),
+                "{value}"
+            );
             assert_eq!(receiver.0.lock().as_slice(), [json!({"body":"hello"})]);
             assert!(
                 prepared.is_some(),
@@ -827,7 +881,7 @@ async fn nested_mcp_output_is_complete_for_the_script() {
                     input_schema: json!({"type":"object"}),
                 }];
             let definition = actor.code_mode_inventory().await["fixture__list"].clone();
-            let (text, failed, _, _, _, reminders) = actor
+            let (value, _, _, _, reminders) = actor
                 .execute_nested_code_call(
                     "outer",
                     "outer/code/1",
@@ -839,11 +893,15 @@ async fn nested_mcp_output_is_complete_for_the_script() {
                 )
                 .await
                 .unwrap();
-            assert!(!failed, "{}", &text[..text.len().min(300)]);
+            let value = value.expect("MCP call resolves");
+            let text = value["text"].as_str().unwrap();
             assert!(!text.contains("MCP output truncated"));
-            let parsed: Vec<serde_json::Value> =
-                serde_json::from_str(&text).expect("complete JSON");
-            assert_eq!(parsed.len(), 1500);
+            assert_eq!(text, document, "complete text");
+            assert_eq!(
+                value["data"].as_array().map(Vec::len),
+                Some(1500),
+                "text decoded as JSON"
+            );
             assert!(reminders.is_empty());
             let resources = resources.lock().await;
             assert!(

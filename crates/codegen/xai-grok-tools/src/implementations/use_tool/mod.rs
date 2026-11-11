@@ -171,20 +171,35 @@ fn gateway_response_to_output(
     result: serde_json::Value,
 ) -> ToolOutput {
     let is_error = gateway_result_is_error(&result);
+    let (text_blocks, structured_content) = gateway_result_protocol_parts(&result);
     let text = gateway_result_to_text(result);
-    if is_error {
-        ToolOutput::MCP(MCPOutput::errored(
-            tool_name.to_owned(),
-            source.connector_name,
-            text,
-        ))
+    let output = if is_error {
+        MCPOutput::errored(tool_name.to_owned(), source.connector_name, text)
     } else {
-        ToolOutput::MCP(MCPOutput::okay_output(
-            tool_name.to_owned(),
-            source.connector_name,
-            text,
-        ))
-    }
+        MCPOutput::okay_output(tool_name.to_owned(), source.connector_name, text)
+    };
+    ToolOutput::MCP(output.with_protocol_parts(text_blocks, structured_content))
+}
+
+/// Text blocks and `structuredContent` of a gateway result, as the local client keeps them.
+fn gateway_result_protocol_parts(
+    result: &serde_json::Value,
+) -> (String, Option<serde_json::Value>) {
+    let text_blocks = result
+        .get("content")
+        .and_then(|v| v.as_array())
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter(|item| item.get("type").and_then(|v| v.as_str()) == Some("text"))
+        .filter_map(|item| item.get("text").and_then(|v| v.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let structured = result
+        .get("structuredContent")
+        .or_else(|| result.get("structured_content"))
+        .filter(|v| !v.is_null())
+        .cloned();
+    (text_blocks, structured)
 }
 
 pub async fn dispatch_mcp_tool(
@@ -316,6 +331,10 @@ pub async fn validate_mcp_target(
 }
 
 impl crate::types::tool_metadata::ToolMetadata for UseTool {
+    /// Scripts call MCP tools by name; this is the shape every such call returns.
+    fn script_output_schema(&self) -> Option<serde_json::Value> {
+        Some(crate::script_value::mcp_value_schema(None))
+    }
     fn kind(&self) -> ToolKind {
         ToolKind::UseTool
     }

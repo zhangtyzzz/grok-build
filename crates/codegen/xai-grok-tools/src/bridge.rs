@@ -145,6 +145,11 @@ impl ToolBridge {
         self.registry.get_tool_metadata(tool_name).map(|m| m.kind())
     }
 
+    /// Schema of the value Code Mode scripts receive from `tool_name`.
+    pub fn script_output_schema(&self, tool_name: &str) -> Option<serde_json::Value> {
+        self.registry.script_output_schema(tool_name)
+    }
+
     /// Get only built-in tool definitions (exclude MCP tools).
     pub async fn tool_definitions_builtins_only(&self) -> Vec<ToolDefinition> {
         self.registry.tool_definitions_builtins_only()

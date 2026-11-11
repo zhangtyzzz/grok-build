@@ -1161,6 +1161,11 @@ async fn media_output_from_outcome(
 pub struct ImageToVideoTool;
 
 impl crate::types::tool_metadata::ToolMetadata for ImageToVideoTool {
+    fn script_output_schema(&self) -> Option<serde_json::Value> {
+        Some(crate::script_value::schema_of::<
+            crate::script_value::MediaValue,
+        >())
+    }
     fn kind(&self) -> ToolKind {
         ToolKind::ImageToVideo
     }
@@ -1228,7 +1233,9 @@ impl xai_tool_runtime::Tool for ImageToVideoTool {
         // Free / X Basic users are zero-limited on Imagine server-side; return
         // the upsell prose instead of a doomed request.
         if client.is_tier_restricted() {
-            return Ok(ToolOutput::Text(TIER_RESTRICTED_UPSELL.into()));
+            return Ok(ToolOutput::Text(crate::types::output::TextOutput::failure(
+                TIER_RESTRICTED_UPSELL,
+            )));
         }
         if client.is_zdr_restricted() {
             return Err(zdr_restricted_error());
@@ -1269,6 +1276,11 @@ impl xai_tool_runtime::Tool for ImageToVideoTool {
 pub struct ReferenceToVideoTool;
 
 impl crate::types::tool_metadata::ToolMetadata for ReferenceToVideoTool {
+    fn script_output_schema(&self) -> Option<serde_json::Value> {
+        Some(crate::script_value::schema_of::<
+            crate::script_value::MediaValue,
+        >())
+    }
     fn kind(&self) -> ToolKind {
         ToolKind::ReferenceToVideo
     }
@@ -1396,7 +1408,9 @@ impl xai_tool_runtime::Tool for ReferenceToVideoTool {
         // Free / X Basic users are zero-limited on Imagine server-side; return
         // the upsell prose instead of a doomed request.
         if client.is_tier_restricted() {
-            return Ok(ToolOutput::Text(TIER_RESTRICTED_UPSELL.into()));
+            return Ok(ToolOutput::Text(crate::types::output::TextOutput::failure(
+                TIER_RESTRICTED_UPSELL,
+            )));
         }
         if client.is_zdr_restricted() {
             return Err(zdr_restricted_error());
