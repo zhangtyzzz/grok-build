@@ -184,6 +184,8 @@ mod child_tool_projection;
 mod length_salvage;
 #[path = "acp_session_impl/sampler_turn.rs"]
 mod sampler_turn;
+#[path = "acp_session_impl/team_mode.rs"]
+mod team_mode;
 use sampler_turn::*;
 #[path = "acp_session_impl/mcp_file_input.rs"]
 mod mcp_file_input;

@@ -1122,6 +1122,8 @@ pub enum SessionUpdate {
     PlanCleared,
     /// Session worker: ExecutePlan was accepted and is the running turn.
     PlanExecuting,
+    /// Fork: Team Leader mode turned on or off for this session (persisted, so a resumed viewer restores the indicator).
+    TeamModeChanged { enabled: bool },
     /// The durable, replayable signal that a turn reached its terminal outcome.
     /// Rides the persisted `_x.ai/session/update` rail, unlike the fire-and-forget `x.ai/session/prompt_complete` notification.
     /// A viewer that re-attaches mid-turn can therefore finalize the turn from replay instead of staying stuck on "Waiting…".
@@ -2611,6 +2613,21 @@ mod tests {
             Some(&serde_json::json!("plan_executing"))
         );
         assert!(executing.get("turn_id").is_none());
+    }
+
+    #[test]
+    fn team_mode_changed_wire_shape() {
+        let update = SessionUpdate::TeamModeChanged { enabled: true };
+        let json = serde_json::to_value(&update).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"sessionUpdate": "team_mode_changed", "enabled": true})
+        );
+        let parsed: SessionUpdate = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            parsed,
+            SessionUpdate::TeamModeChanged { enabled: true }
+        ));
     }
 
     /// Pins the exact `ModelChanged` JSON, since the pager and any third-party clients consume this on the wire. `sessionUpdate` tag is the snake_case variant name.

@@ -338,6 +338,18 @@ pub(super) const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
             }
         },
     },
+    BuiltinCommand {
+        name: "team",
+        description: "Toggle Team Leader mode (plan and delegate; subagents do the edits and commands)",
+        argument_hint: Some("on|off|status"),
+        aliases: &[],
+        model_authored_eligibility: ModelAuthoredEligibility::Denied,
+        gate: BuiltinGate::AlwaysOn,
+        workflow_projection: WorkflowProjection::None,
+        resolve: |args| BuiltinAction::Team {
+            enabled: crate::session::team_mode::parse_team_arg(args),
+        },
+    },
 ];
 /// Split a trailing `--budget <tokens>` flag off a `/goal` objective.
 /// Only a TRAILING, standalone flag is consumed: the flag must be its own whitespace-separated token and the value a final all-digit positive token.
@@ -1251,6 +1263,10 @@ pub(super) enum BuiltinAction {
     GoalPause,
     GoalResume,
     GoalClear,
+    /// Fork: `/team`. `None` reports the current state.
+    Team {
+        enabled: Option<bool>,
+    },
     DeepResearch {
         query: String,
     },
@@ -1292,6 +1308,7 @@ impl BuiltinAction {
             | BuiltinAction::GoalPause
             | BuiltinAction::GoalResume
             | BuiltinAction::GoalClear => "goal",
+            BuiltinAction::Team { .. } => "team",
             BuiltinAction::DeepResearch { .. } => "deep-research",
             BuiltinAction::WorkflowManage { .. } => "workflow",
             BuiltinAction::WorkflowLaunch { .. } => "workflow",
@@ -1325,6 +1342,7 @@ impl BuiltinAction {
             | BuiltinAction::GoalPause
             | BuiltinAction::GoalResume
             | BuiltinAction::GoalClear => false,
+            BuiltinAction::Team { enabled } => enabled.is_some(),
             BuiltinAction::DeepResearch { .. } => true,
             BuiltinAction::WorkflowManage { .. } => true,
             BuiltinAction::WorkflowLaunch { input, .. } => !input.is_empty(),

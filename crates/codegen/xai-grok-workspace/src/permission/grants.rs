@@ -35,12 +35,14 @@ use xai_grok_tools::implementations::grok_build::web_fetch::{
 use xai_grok_tools::types::resources::resolve_model_path;
 
 mod bash_grants;
+mod read_only_query;
 
 use bash_grants::whole_script_grant;
 pub use bash_grants::{always_allow_row_is_effective, always_allow_scope_persists};
 pub(crate) use bash_grants::{
     bash_glob_covers_script, bash_grant_segments, persist_bash_always_allow,
 };
+pub use read_only_query::bash_is_read_only_query;
 
 /// True iff `name` is a valid qualified MCP ID whose server is in `servers`.
 /// Malformed names fail closed, including `{""}` or names like `"__tool"`.

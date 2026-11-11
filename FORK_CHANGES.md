@@ -14,7 +14,8 @@ Fork：`zhangtyzzz/grok-build`。上游：`xai-org/grok-build`。两者的主分
 2. 使用自定义模型服务，尤其是 Anthropic Messages 协议及其 5 分钟 / 1 小时提示缓存；不同服务的端点、认证和模型身份必须隔离。
 3. 通过自己的 GitHub Releases 分发、校验和更新 macOS、Linux、Windows 的 ARM64 / x86-64 包，不让安装器或应用内更新跳回上游发行源。
 4. JavaScript Code Mode：模型可用一段异步脚本组合会话里的所有工具（含 MCP 与托管网关工具），减少往返轮次并把中间结果留在上下文之外，但不绕过既有权限链。
-5. 缩小长期维护的差异。上游已有等价能力时优先采用上游；只保留有明确目标、测试或平台兼容依据的增量。
+5. Team Leader 模式：会话里的顶级模型只负责规划、派发和验收，动手的编辑与命令交给 subagent（可配成更便宜的模型）。
+6. 缩小长期维护的差异。上游已有等价能力时优先采用上游；只保留有明确目标、测试或平台兼容依据的增量。
 
 用户所说的“小 tips”泛指零散优化，没有另外确认一套 UI 功能清单。不要据此发明需求。Plan Mode 已在 2026-09-18 决定跟随上游；不再维护 fork 专属的 planner 模型、审批状态机或持久化 barrier。
 
@@ -157,6 +158,27 @@ helper 回归覆盖同 slug 不同 provider、缺失 ref 不降级、legacy alia
 
 **验证。** `cargo test -p xai-grok-tools --lib code_mode`；`cargo build -p xai-grok-tools --example code_mode_worker` 后设 `GROK_TEST_CODE_MODE_WORKER=<绝对路径>` 运行 `cargo test -p xai-grok-shell --lib code_mode -- --include-ignored`（含 MCP 进入 catalog 并经 `use_tool` 到达网关、真实 worker 往返/取消回收/8 路并发、混合批次插话、超时配置）；`cargo check -p xai-grok-pager-bin`。
 
+### 3.7 Team Leader 模式（`/team`，默认关闭）
+
+**背景与目标。** 维护者希望把任务交给一个“只当 team leader”的会话：顶级模型做 planner/manager，负责拆任务、写任务说明、验收结果，永远不亲手改文件或跑构建，执行交给更便宜的 subagent 模型（2026-11-11 维护者提出，方案与文档由实现者决定）。上游已有派发零件（`spawn_subagent`、给运行中的 subagent 发消息、`resume_from`、worktree 隔离、`[subagents.models]`），也有内置 `orchestrator` agent，但它只是提示词，没有硬约束，也不能在会话中途切换。本 fork 补的是：一个可随时开关的会话标志、工具层的委派闸门、leader 专用提示，以及“leader 模式下 subagent 默认用 worker 模型”。
+
+**必须保留的约束。**
+
+- 形态：与 Plan Mode、权限模式正交的会话标志，不是新的 `SessionMode`。`/team on|off|status` 切换（shell 内置命令，pager 原样转发）；`[team] enabled = true` 或 `GROK_TEAM_MODE=1` 让新建的顶层会话一开始就处于该模式。状态存在 `PlanModeTracker.team`，随 `plan_mode.json` 持久化，resume 和 session fork 自动带上；旧文件没有 `team` 字段时按关闭处理。
+- 不改系统提示：模型通过每轮开头的 `<system-reminder>` 得知模式（首轮与压缩后发完整说明，之后每轮一行，关闭后发一次退出说明），提示缓存前缀不变。
+- 硬约束在工具执行层（`tool_calls.rs` 紧接 Plan Mode 闸门之后）：只拦文件编辑（`AccessKind::Edit`、`apply_patch`）和非只读 shell（`Bash`/`Monitor`），被拒调用作为“未执行”返回并说明应委派。Plan Mode 下 plan 文件仍可写。读文件、搜索、todo、提问、计划工具、web、MCP、skill、派发与引导 subagent 都留给 leader。Code Mode 的嵌套调用走同一路径，同样受限。
+- 只读命令判定复用 `xai-grok-workspace` 的 `evaluate_bash` 安全列表（`bash_is_read_only_query`）：必须是无 session grant 的 AutoAllow、无安全发现、无写重定向、不创建路径；命令替换、后台任务、`bash -c` 一律算非只读。`git branch` 在共享安全列表里，但只有列表形式（`-a`/`-r`/`-v`/`--list <pattern>`/`--show-current`/`--contains` 等）算只读，建/删/改名/`-f`/`-u` 一律拒绝（fork 本地检查，不改上游列表）。宁可多拒，leader 还有读/搜工具可用。
+- 失败开放的边界：仅顶层会话（`subagent_depth == 0`）且会话里存在 `ToolKind::Task` 工具时生效；没有可派发对象时不提醒也不拦截，避免把 leader 锁死。subagent 永远是 worker，即使它带着 leader 对话的副本启动。
+- 这是委派规则，不是安全边界：闸门放行的调用仍走正常权限流程。
+- Worker 模型：`[team] worker_model`（`GROK_TEAM_WORKER_MODEL` 优先）只在父会话处于 team 模式、且是模型通过任务工具发起的派发时生效（`tool_call_id` 存在、非 workflow 所有）；`/goal` 的 planner/验证/strategist/summarizer、workflow agent 和定时派发保持各自的模型选择，保证验收仍在强模型上；优先级低于运行时 `model` 参数、persona/goal 角色模型、`[subagents.models]` 和 agent 定义自带的模型，高于“继承父会话模型”。
+- pager 用持久化的 `TeamModeChanged { enabled }` 更新提示行的 `team` 标记，回放时也应用；该通知不关闭 cancel-rewind 窗口。
+
+**代码入口。** shell：`session/team_mode.rs`（状态、配置解析、闸门、提示文本，纯逻辑）与 `team_mode_tests.rs`；`session/acp_session_impl/team_mode.rs`（reminder 注入、闸门接线、`/team` 处理）；单行挂钩在 `session/plan_mode.rs`（`team` 字段、快照、`reset_after_compaction`）、`acp_session.rs`（模块声明）、`acp_session_impl/{tool_calls,turn,slash_exec,updates}.rs`、`session/slash_commands.rs`（`team` 内置命令与 `BuiltinAction::Team`）、`extensions/notification.rs`（`TeamModeChanged`）、`agent/config.rs`（`[team]`）、`agent/mvp_agent/{session_setup,subagent_spawn}.rs`、`agent/subagent/mod.rs`（`team_worker_model` 与 `resolve_subagent_sampling_config`）。workspace：`permission/grants/read_only_query.rs`。pager：`app/agent_view/{mod,session,render}.rs`、`app/acp_handler/session_notification.rs`。文档：pager 用户指南 `04-slash-commands.md`、`16-subagents.md`、`26-config-reference.md`。
+
+**合并方法。** 逻辑都在 fork 自有文件里，上游文件只有挂钩行。上游重构 Plan Mode 闸门、`PlanModeTracker` 持久化、每轮 reminder 注入或内置命令表时，把挂钩移到新位置：闸门仍须位于权限审批之前并覆盖 Code Mode 嵌套调用，状态仍随会话持久化，压缩后仍重发完整说明。上游若提供等价的“只派发”会话模式（带工具层硬约束），评估后采用上游并删除本节实现；只有提示词的 orchestrator 不算等价。上游扩充 `evaluate_bash` 安全列表时无需改动，只读判定自动跟随。
+
+**验证。** `cargo test -p xai-grok-workspace --lib read_only_query`；`cargo test -p xai-grok-shell --lib team_mode`（含 worker 模型只作用于任务工具派发）、`cargo test -p xai-grok-shell --lib slash_commands`、`cargo test -p xai-grok-shell --lib team_mode_changed_wire_shape`；`cargo test -p xai-grok-pager --lib team_mode`；`cargo check -p xai-grok-pager-bin`。
+
 ## 4. 跟随上游或允许等价替代的区域
 
 ### 4.1 Plan Mode、结构化输出和工具观测的来源
@@ -231,6 +253,7 @@ git log --all --diff-filter=A -- path/to/affected/file
 | `sampler_turn.rs` / `turn.rs` | 请求前 route 重选、请求中同候选重试、选定 sampler 后 schema 判定。 |
 | privacy/telemetry/config 和各 crate `Cargo.toml` | 新上报路径、feature 迁移、`release-dist` 的完整接线。 |
 | sampling-types / sampler | 断点 placement 与 policy 后处理的边界、TTL/off、空块、认证头和 wire 兼容。 |
+| shell `plan_mode.rs` / `tool_calls.rs` / `turn.rs` / `slash_commands.rs` 的 team 挂钩 | §3.7 的状态字段与压缩重置、Plan Mode 闸门之后的委派闸门、每轮 reminder 注入、`team` 内置命令是否仍在且只是一行调用。 |
 | shell `tool_calls.rs` / `cancel.rs` / `code_mode.rs` | 直接写 tool_result 的路径是否经过 `deliver_tool_result`；Code Mode 混合批次是否只做一次收尾；后台通知是否写给父 `execute`；MCP inventory 是否仍取自 `search_tool` 快照并经 `use_tool` 调用。 |
 | installers/update/dist/workflows | fork 发行源、版本匹配、固定工具输入、包验证与权限边界。 |
 
@@ -328,5 +351,6 @@ fork 自己维护发布编号：upstream sync 从 fork main 当前稳定版递�
 | alpha CI 后仅预热、默认 main 可信调度与精确 SHA 接收 | 本文 §6.2；`alpha-prewarm.yml` / `release-cache.yml`；`dispatch-alpha-warm.py` 与实际 shell guard 测试；`upstream_sync.py::protected`。 |
 | 标准发行入口与精确产物复用 | `6ff1d78f`、`2e09f905`；`docs/release-distribution.md`。 |
 | JavaScript Code Mode（默认开启，全工具含 MCP） | PR #104、#106（MCP 提示双路径）、嵌套结果完整性修复；`docs/code-mode.md`；本文 §3.6。 |
+| Team Leader 模式（会话标志加工具层委派闸门，worker 模型回退） | 本文 §3.7；`session/team_mode.rs` 及其单测；pager 用户指南 `16-subagents.md`。 |
 
 新上游若使这些文件或符号消失，先核实行为迁移或等价替代，再更新入口；不要仅为维持本文的旧路径把已删除代码恢复。

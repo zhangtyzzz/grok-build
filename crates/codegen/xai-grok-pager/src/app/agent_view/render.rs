@@ -2298,8 +2298,18 @@ impl AgentView {
         } else {
             self.published_mode_label()
         };
-        let flags: Vec<PromptFlag> =
+        let mut flags: Vec<PromptFlag> =
             mode_flags(mode_label, self.session.permission_label(), &theme);
+        if self.team_mode_active {
+            flags.insert(
+                0,
+                PromptFlag {
+                    text: "team",
+                    color: Some(theme.accent_system),
+                    bold: false,
+                },
+            );
+        }
         let multiline = self.multiline_mode;
         let warning = self.credit_balance.as_ref().and_then(|bal| {
             crate::views::credit_bar::usage_warning_for_session(

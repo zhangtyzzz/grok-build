@@ -396,6 +396,33 @@ The parent's scrollback keeps showing the subagent's status after you close.
 
 ---
 
+## Team Leader Mode
+
+Team Leader mode turns the session into a manager: the main model plans, splits the work into tasks, briefs subagents, and verifies what they report, while the subagents do the hands-on work. Use it to keep a strong model on planning and review and run the execution on a cheaper one.
+
+Turn it on with `/team on` (off with `/team off`), or start every new session in it:
+
+```toml
+[team]
+enabled = true                       # or GROK_TEAM_MODE=1
+worker_model = "<cheaper-model-id>" # optional; or GROK_TEAM_WORKER_MODEL
+```
+
+While the mode is on:
+
+- The lead cannot edit files (`apply_patch` included) or run shell commands other than read-only inspection such as `ls`, `cat`, `rg`, `git status`, `git diff`, `git log`, and listing forms of `git branch`. Output redirection to files, command substitution, and background jobs count as not read-only. A rejected call tells the model to delegate instead.
+- Everything else stays available to the lead: reading and searching files, spawning and messaging subagents, the todo list, questions to you, plan mode tools, web, MCP tools, and skills. In plan mode the lead still writes the plan file.
+- Subagents are unaffected and work normally. The mode applies to the top-level session only.
+- If the session has no subagent tool (for example with `[subagents] enabled = false`), the mode has no effect.
+
+This is a delegation rule, not a sandbox: a call the lead is allowed to make still goes through the normal permission prompts.
+
+`worker_model` applies only to subagents the lead spawns with its subagent tool while the mode is on. `/goal` planning and verification roles, workflow agents such as `/deep-research`, and scheduled spawns keep their usual model, so completion checks still run on the strong model. Within those spawns it applies only when nothing more specific chooses a model: an explicit `model` argument, a persona or goal role model, a `[subagents.models]` pin, or a model set in the agent definition all take precedence. Without it, subagents inherit the parent's model as usual. A `worker_model` that names no known model is ignored with a warning in the log, and subagents inherit the parent's model.
+
+The mode is saved with the session, so it survives resume, and the model is told about it through per-turn reminders rather than a changed system prompt, so turning it on or off does not invalidate the prompt cache.
+
+---
+
 ## Depth Limits
 
 Only the top-level session spawns subagents. A subagent cannot spawn its own subagents: the maximum nesting depth is one. If a subagent calls `spawn_subagent`, the call fails with a depth-limit error. This keeps the agent tree flat and prevents runaway spawning.

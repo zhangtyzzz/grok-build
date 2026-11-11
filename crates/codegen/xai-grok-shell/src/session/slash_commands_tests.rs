@@ -598,6 +598,7 @@ fn available_commands_orders_builtins_first() {
             "deep-research",
             "workflow",
             "goal",
+            "team",
             "loop",
             "commit",
             "deploy",
@@ -1233,6 +1234,21 @@ fn inspect_reserved_names_exclude_gated_shell_builtins() {
     assert!(super::is_reserved_slash_name("HOOKS-ADD"));
     assert!(!super::is_reserved_slash_name("goal"));
     assert!(!super::is_reserved_slash_name("deploy"));
+}
+
+#[test]
+fn team_builtin_parses_on_off_and_status() {
+    let resolve = |args: &str| match resolve_builtin("team", args) {
+        Some(BuiltinAction::Team { enabled }) => enabled,
+        other => panic!("/team {args} resolved to {other:?}"),
+    };
+    assert_eq!(resolve("on"), Some(true));
+    assert_eq!(resolve(" ON "), Some(true));
+    assert_eq!(resolve("off"), Some(false));
+    assert_eq!(resolve("disable"), Some(false));
+    assert_eq!(resolve(""), None);
+    assert_eq!(resolve("status"), None);
+    assert!(super::is_reserved_slash_name("team"));
 }
 
 #[test]

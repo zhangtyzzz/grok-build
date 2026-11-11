@@ -727,6 +727,9 @@ pub struct Config {
     /// `[goal]` section: canonical `/goal` configuration. See [`GoalConfig`].
     #[serde(default)]
     pub goal: GoalConfig,
+    /// Fork: `[team]` section (Team Leader mode). See [`crate::session::team_mode::TeamConfig`].
+    #[serde(default)]
+    pub team: crate::session::team_mode::TeamConfig,
     #[serde(default)]
     pub workflows: WorkflowsConfig,
     /// `[doom_loop_recovery]` section: the shared settings struct.
@@ -1148,6 +1151,7 @@ impl Default for Config {
         let mut cfg = Self {
             features: Features::default(),
             goal: GoalConfig::default(),
+            team: Default::default(),
             workflows: WorkflowsConfig::default(),
             doom_loop_recovery: crate::util::config::DoomLoopRecoverySettings::default(),
             long_reasoning_reminder: crate::util::config::LongReasoningReminderSettings::default(),

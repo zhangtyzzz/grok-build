@@ -360,6 +360,7 @@ impl AgentView {
             hovered_question_button: None,
             question_scroll_region: None,
             plan_mode_active: false,
+            team_mode_active: false,
             plan_mode_pending: None,
             available_modes: Vec::new(),
             session_mode: xai_grok_tools::types::SessionMode::Default,

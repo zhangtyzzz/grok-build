@@ -1275,6 +1275,8 @@ pub struct AgentView {
     /// tool completes, cleared when `exit_plan_mode` tool completes.
     /// Controls prompt accent color and shortcut bar hints.
     pub(crate) plan_mode_active: bool,
+    /// Fork: Team Leader mode is on for this session (`TeamModeChanged`). Shows the `team` prompt flag.
+    pub(crate) team_mode_active: bool,
     /// Optimistic plan-mode state set immediately on Shift+Tab.
     /// Cleared to `None` when `detect_plan_mode_change_replayed` confirms real state.
     /// The cycle logic uses `plan_mode_pending.unwrap_or(plan_mode_active)` so rapid Shift+Tab presses advance correctly without waiting for ACP.

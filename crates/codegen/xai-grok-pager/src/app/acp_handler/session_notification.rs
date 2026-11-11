@@ -1342,6 +1342,12 @@ pub(super) fn handle_session_notification_with_origin(
                 true
             }
         }
+        // Fork: applied on replay too, so a resumed session restores the indicator.
+        XaiSessionUpdate::TeamModeChanged { enabled } => {
+            let changed = agent.team_mode_active != enabled;
+            agent.team_mode_active = enabled;
+            changed
+        }
         XaiSessionUpdate::SessionStatus(status) => {
             agent.status_context = Some(*status);
             status_snapshot_applied = true;

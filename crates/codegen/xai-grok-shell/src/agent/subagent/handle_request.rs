@@ -817,6 +817,11 @@ pub(crate) async fn run_shell_child(
     if request.fork_context {
         effective_runtime.model = Some(ctx.model_id.0.to_string());
     }
+    ctx.team_worker_model = crate::session::team_mode::worker_model_for_spawn(
+        ctx.team_worker_model.take(),
+        request.tool_call_id.is_some(),
+        request.owner.is_workflow(),
+    );
     let (mut effective_sampling_config, mut effective_model_id) = resolve_effective_model_config(
         effective_runtime.model.as_deref(),
         &request.subagent_type,

@@ -1753,6 +1753,18 @@ impl SessionActor {
                 .await?;
             return Ok(Err(ToolLoop::Continue));
         }
+        if self
+            .team_mode_reject_tool_call(
+                &call,
+                &tool_call_id,
+                model_id_str,
+                &tool_input,
+                &access_kind,
+            )
+            .await?
+        {
+            return Ok(Err(ToolLoop::Continue));
+        }
         let tool_call_display = mcp_preparation
             .approval(self, &tool_call_id, &call.function.name, &mut tool_input)
             .await;
