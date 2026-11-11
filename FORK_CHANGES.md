@@ -351,7 +351,7 @@ fork 自己维护发布编号：upstream sync 从 fork main 当前稳定版递�
 | fork 独立版本号与 alpha 通道（取代 `217891d1` 的跟随上游版本线） | 本文 §6；`AGENTS.md` Releases；发布文档；`ForkVersionTests`。 |
 | alpha CI 后仅预热、默认 main 可信调度与精确 SHA 接收 | 本文 §6.2；`alpha-prewarm.yml` / `release-cache.yml`；`dispatch-alpha-warm.py` 与实际 shell guard 测试；`upstream_sync.py::protected`。 |
 | 标准发行入口与精确产物复用 | `6ff1d78f`、`2e09f905`；`docs/release-distribution.md`。 |
-| JavaScript Code Mode（默认开启，全工具含 MCP） | PR #104、#106（MCP 提示双路径）、嵌套结果完整性修复、类型化返回值（PR #TBD）；`docs/code-mode.md`；本文 §3.6。 |
+| JavaScript Code Mode（默认开启，全工具含 MCP） | PR #104、#106（MCP 提示双路径）、嵌套结果完整性修复、类型化返回值（PR #129）；`docs/code-mode.md`；本文 §3.6。 |
 | Team Leader 模式（会话标志加工具层委派闸门，worker 模型回退） | 本文 §3.7；`session/team_mode.rs` 及其单测；pager 用户指南 `16-subagents.md`。 |
 
 新上游若使这些文件或符号消失，先核实行为迁移或等价替代，再更新入口；不要仅为维持本文的旧路径把已删除代码恢复。
