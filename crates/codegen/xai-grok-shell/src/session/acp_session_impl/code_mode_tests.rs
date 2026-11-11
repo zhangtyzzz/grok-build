@@ -361,6 +361,16 @@ async fn real_worker_rejects_tool_failures_with_tool_call_error() {
             let (mut actor, directory) = fixture().await;
             actor.session_info.id =
                 acp::SessionId::new(format!("code-mode-error-{}", uuid::Uuid::new_v4()));
+            actor
+                .workspace_ops
+                .bind_local_session(
+                    &actor.session_id_string(),
+                    actor.tool_context.cwd.as_path().to_path_buf(),
+                    actor.tool_context.hunk_tracker_handle.clone(),
+                    actor.tool_bridge_handle().toolset(),
+                    None,
+                )
+                .unwrap();
             let missing = serde_json::to_string(&directory.path().join("missing.txt")).unwrap();
             let code = format!(
                 "const returns = catalog.describe('read_file').returns; \
