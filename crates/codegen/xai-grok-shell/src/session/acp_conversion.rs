@@ -116,6 +116,22 @@ pub(crate) fn raw_output_json(
                 content.remove("truncated");
             }
         }
+        (ToolOutput::ReadFile(_), Some(object)) => {
+            if let Some(content) = object
+                .get_mut("FileContent")
+                .and_then(|c| c.as_object_mut())
+            {
+                content.remove("start_line");
+            }
+        }
+        (ToolOutput::GrepSearch(_), Some(object)) => {
+            object.remove("files");
+            object.remove("truncated");
+        }
+        (ToolOutput::Text(_), Some(object)) => {
+            object.remove("data");
+            object.remove("failed");
+        }
         _ => {}
     }
     Some(match rewriter {
@@ -1042,6 +1058,40 @@ mod tests {
         let json = raw_output_json(&list, None).unwrap();
         assert!(json["Content"].get("entries").is_none(), "{json}");
         assert_eq!(json["Content"]["content"], "- /p/\n  a.rs");
+        let read = ToolOutput::ReadFile(ReadFileOutput::FileContent(FileContent {
+            content: "x".to_string(),
+            content_concise: None,
+            absolute_path: PathBuf::from("/p/a.rs"),
+            offset: None,
+            limit: None,
+            raw_output: "x".to_string(),
+            total_lines: 1,
+            start_line: Some(1),
+            extracted_images: Vec::new(),
+        }));
+        let json = raw_output_json(&read, None).unwrap();
+        assert!(json["FileContent"].get("start_line").is_none(), "{json}");
+        let grep = ToolOutput::GrepSearch(GrepSearchOutput {
+            files: vec![GrepFileSummary {
+                path: "a.rs".into(),
+                count: None,
+            }],
+            truncated: true,
+            ..Default::default()
+        });
+        let json = raw_output_json(&grep, None).unwrap();
+        assert!(json.get("files").is_none(), "{json}");
+        assert!(json.get("truncated").is_none(), "{json}");
+        let text = ToolOutput::Text(TextOutput {
+            text: "t".into(),
+            data: Some(serde_json::json!({"paths": ["a.rs"]})),
+            failed: true,
+            ..Default::default()
+        });
+        let json = raw_output_json(&text, None).unwrap();
+        assert!(json.get("data").is_none(), "{json}");
+        assert!(json.get("failed").is_none(), "{json}");
+        assert_eq!(json["text"], "t");
     }
 
     #[test]

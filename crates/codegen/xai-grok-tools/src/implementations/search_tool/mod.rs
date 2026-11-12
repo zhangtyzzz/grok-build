@@ -260,14 +260,16 @@ impl xai_tool_runtime::Tool for SearchTool {
         let resources = shared_resources(&ctx)?;
 
         let Some(tool_index) = resources.lock().await.get::<ToolIndex>().cloned() else {
+            let text = serde_json::to_string_pretty(&serde_json::json!({
+                "results": [],
+                "total_hidden_tools": 0,
+                "note": "No integration tools are configured. MCP servers are not connected."
+            }))
+            .unwrap();
+            // Same shape as a search result, so scripts see the declared schema.
+            let data = serde_json::json!({ "result_count": 0, "content": text });
             return Ok(ToolOutput::Text(
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "results": [],
-                    "total_hidden_tools": 0,
-                    "note": "No integration tools are configured. MCP servers are not connected."
-                }))
-                .unwrap()
-                .into(),
+                crate::types::output::TextOutput::with_data(text, data),
             ));
         };
         let tool_index = tool_index.0.clone();

@@ -156,7 +156,9 @@ async fn nested_calls_resolve_to_declared_values() {
             assert_eq!(value["content"], "nested-needle\n", "{value}");
             assert_eq!(value["start_line"], 1, "{value}");
             assert_eq!(value["total_lines"], 2, "{value}");
-            assert_eq!(value["path"], json!(path.to_string_lossy()), "{value}");
+            // The reader canonicalizes (macOS temp dirs sit behind the /var symlink).
+            let canonical = std::fs::canonicalize(&path).expect("canonical path");
+            assert_eq!(value["path"], json!(canonical.to_string_lossy()), "{value}");
             let (missing, _, _, _) = nested_value(
                 &actor,
                 "read_file",
