@@ -19,7 +19,7 @@
 //! Under `legacy-0.4.10`, the old depth-threshold algorithm is used instead
 //! (see `versions::legacy_0_4_10` module).
 mod versions;
-use crate::types::output::{ListDirContent, ListDirOutput};
+use crate::types::output::{ListDirContent, ListDirEntry, ListDirEntryKind, ListDirOutput};
 #[allow(unused_imports)]
 use crate::types::resources::{
     DisplayCwd, Params, PathNotFoundHints, RespectGitignore, SharedResources, display_cwd_or_cwd,
@@ -318,6 +318,44 @@ fn seed_depth1_children(
     }
     false
 }
+/// Direct children carried for Code Mode scripts; larger listings belong to glob or grep.
+const MAX_SCRIPT_ENTRIES: usize = 1_000;
+/// The root's direct children for Code Mode scripts, sorted, with the tree's
+/// ignore rules; `true` when [`MAX_SCRIPT_ENTRIES`] cut the list.
+fn direct_children(root: &Path, respect_gitignore: bool) -> (Vec<ListDirEntry>, bool) {
+    let walker = list_dir_walk_builder(root, respect_gitignore)
+        .max_depth(Some(1))
+        .build();
+    let mut entries = Vec::new();
+    for entry in walker {
+        let Ok(entry) = entry else { continue };
+        if entry.depth() != 1 {
+            continue;
+        }
+        let (Some(ft), Some(name)) = (entry.file_type(), entry.file_name().to_str()) else {
+            continue;
+        };
+        if entries.len() == MAX_SCRIPT_ENTRIES {
+            entries.sort_by(|a: &ListDirEntry, b| a.path.cmp(&b.path));
+            return (entries, true);
+        }
+        let kind = if ft.is_symlink() {
+            ListDirEntryKind::Symlink
+        } else if ft.is_dir() {
+            ListDirEntryKind::Dir
+        } else if ft.is_file() {
+            ListDirEntryKind::File
+        } else {
+            ListDirEntryKind::Other
+        };
+        entries.push(ListDirEntry {
+            path: name.to_owned(),
+            kind,
+        });
+    }
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    (entries, false)
+}
 /// Depth-1 seed first, then deep walk; only depth ≥ 2 counts toward `max_items`.
 fn build_tree(root: &Path, respect_gitignore: bool) -> (DirNode, bool) {
     build_tree_with_limit(root, respect_gitignore, MAX_GLOBAL_ITEMS)
@@ -607,7 +645,17 @@ impl xai_tool_runtime::Tool for ListDirTool {
                 truncation_notice,
             }
         };
-        let (body, path) = spawn_list_dir_walk(&display_path, move || {
+        let (body, path, (entries, truncated)) = spawn_list_dir_walk(&display_path, move || {
+            let children = direct_children(
+                &path,
+                !matches!(
+                    walk,
+                    ListDirWalk::Current {
+                        respect_gitignore: false,
+                        ..
+                    }
+                ),
+            );
             let body = match walk {
                 ListDirWalk::Legacy { max_output_bytes } => {
                     versions::legacy_0_4_10::render_legacy(&path, max_output_bytes)
@@ -627,7 +675,7 @@ impl xai_tool_runtime::Tool for ListDirTool {
                     )
                 }
             };
-            (body, path)
+            (body, path, children)
         })
         .await?;
         let trimmed_body = body.trim_end();
@@ -639,6 +687,8 @@ impl xai_tool_runtime::Tool for ListDirTool {
         Ok(ListDirOutput::Content(ListDirContent {
             content: output,
             absolute_root_path: path,
+            entries,
+            truncated,
         }))
     }
 }

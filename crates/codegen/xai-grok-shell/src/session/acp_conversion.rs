@@ -103,7 +103,37 @@ pub(crate) fn raw_output_json(
     output: &ToolOutput,
     rewriter: Option<&PathRewriter>,
 ) -> Option<serde_json::Value> {
-    let value = serde_json::to_value(output).ok()?;
+    let mut value = serde_json::to_value(output).ok()?;
+    // Fields only Code Mode scripts read stay off the client wire (MCP's would double it).
+    match (output, value.as_object_mut()) {
+        (ToolOutput::MCP(_), Some(object)) => {
+            object.remove("text_blocks");
+            object.remove("structured_content");
+        }
+        (ToolOutput::ListDir(_), Some(object)) => {
+            if let Some(content) = object.get_mut("Content").and_then(|c| c.as_object_mut()) {
+                content.remove("entries");
+                content.remove("truncated");
+            }
+        }
+        (ToolOutput::ReadFile(_), Some(object)) => {
+            if let Some(content) = object
+                .get_mut("FileContent")
+                .and_then(|c| c.as_object_mut())
+            {
+                content.remove("start_line");
+            }
+        }
+        (ToolOutput::GrepSearch(_), Some(object)) => {
+            object.remove("files");
+            object.remove("truncated");
+        }
+        (ToolOutput::Text(_), Some(object)) => {
+            object.remove("data");
+            object.remove("failed");
+        }
+        _ => {}
+    }
     Some(match rewriter {
         Some(rw) => rw.rewrite_json(value),
         None => value,
@@ -812,6 +842,7 @@ mod tests {
             limit: None,
             raw_output: "file content".to_string(),
             total_lines: 100,
+            start_line: None,
             extracted_images: Vec::new(),
         }));
         let update = acp_tool_update(&output, "call-1", None, None).unwrap();
@@ -944,6 +975,7 @@ mod tests {
             exit_code: 0,
             match_count: 0,
             file_matches: vec![],
+            ..Default::default()
         });
         assert!(acp_plan_update(&output).is_none());
     }
@@ -959,6 +991,7 @@ mod tests {
             limit: None,
             raw_output: "content".to_string(),
             total_lines: 100,
+            start_line: None,
             extracted_images: Vec::new(),
         }));
         let json = raw_output_json(&output, None).unwrap();
@@ -1001,10 +1034,73 @@ mod tests {
     }
 
     #[test]
+    fn raw_output_json_omits_code_mode_only_fields() {
+        let mcp = ToolOutput::MCP(
+            xai_grok_tools::types::output::MCPOutput::okay_output(
+                "s__t".into(),
+                "s".into(),
+                "{\"id\":1}".into(),
+            )
+            .with_protocol_parts("{\"id\":1}".into(), Some(serde_json::json!({"id": 1}))),
+        );
+        let json = raw_output_json(&mcp, None).unwrap();
+        assert!(json.get("text_blocks").is_none(), "{json}");
+        assert!(json.get("structured_content").is_none(), "{json}");
+        let list = ToolOutput::ListDir(ListDirOutput::Content(ListDirContent {
+            content: "- /p/\n  a.rs".to_string(),
+            absolute_root_path: PathBuf::from("/p"),
+            entries: vec![xai_grok_tools::types::output::ListDirEntry {
+                path: "a.rs".into(),
+                kind: xai_grok_tools::types::output::ListDirEntryKind::File,
+            }],
+            truncated: true,
+        }));
+        let json = raw_output_json(&list, None).unwrap();
+        assert!(json["Content"].get("entries").is_none(), "{json}");
+        assert_eq!(json["Content"]["content"], "- /p/\n  a.rs");
+        let read = ToolOutput::ReadFile(ReadFileOutput::FileContent(FileContent {
+            content: "x".to_string(),
+            content_concise: None,
+            absolute_path: PathBuf::from("/p/a.rs"),
+            offset: None,
+            limit: None,
+            raw_output: "x".to_string(),
+            total_lines: 1,
+            start_line: Some(1),
+            extracted_images: Vec::new(),
+        }));
+        let json = raw_output_json(&read, None).unwrap();
+        assert!(json["FileContent"].get("start_line").is_none(), "{json}");
+        let grep = ToolOutput::GrepSearch(GrepSearchOutput {
+            files: vec![GrepFileSummary {
+                path: "a.rs".into(),
+                count: None,
+            }],
+            truncated: true,
+            ..Default::default()
+        });
+        let json = raw_output_json(&grep, None).unwrap();
+        assert!(json.get("files").is_none(), "{json}");
+        assert!(json.get("truncated").is_none(), "{json}");
+        let text = ToolOutput::Text(TextOutput {
+            text: "t".into(),
+            data: Some(serde_json::json!({"paths": ["a.rs"]})),
+            failed: true,
+            ..Default::default()
+        });
+        let json = raw_output_json(&text, None).unwrap();
+        assert!(json.get("data").is_none(), "{json}");
+        assert!(json.get("failed").is_none(), "{json}");
+        assert_eq!(json["text"], "t");
+    }
+
+    #[test]
     fn test_raw_output_json_list_dir_round_trips() {
         let output = ToolOutput::ListDir(ListDirOutput::Content(ListDirContent {
             content: "file1.rs\nfile2.rs".to_string(),
             absolute_root_path: PathBuf::from("/project/src"),
+            entries: Vec::new(),
+            truncated: false,
         }));
         let json = raw_output_json(&output, None).unwrap();
         let round_tripped: ToolOutput = serde_json::from_value(json).unwrap();
@@ -1087,6 +1183,7 @@ mod tests {
             limit: None,
             raw_output: "content".to_string(),
             total_lines: 100,
+            start_line: None,
             extracted_images: Vec::new(),
         }));
         let json = raw_output_json(&output, Some(&rw)).unwrap();
@@ -1160,6 +1257,8 @@ mod tests {
         let output = ToolOutput::ListDir(ListDirOutput::Content(ListDirContent {
             content: "file1.rs\nfile2.rs".to_string(),
             absolute_root_path: PathBuf::from("/root/.grok/worktrees/myproject/ab-123/src"),
+            entries: Vec::new(),
+            truncated: false,
         }));
         let json = raw_output_json(&output, Some(&rw)).unwrap();
         let round_tripped: ToolOutput = serde_json::from_value(json).unwrap();
@@ -1360,6 +1459,7 @@ mod tests {
             limit: None,
             raw_output: "content".to_string(),
             total_lines: 100,
+            start_line: None,
             extracted_images: Vec::new(),
         }));
         let json = raw_output_json(&output, None).unwrap();

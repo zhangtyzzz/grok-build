@@ -261,6 +261,11 @@ fn default_aspect_ratio() -> String {
 pub struct ImageEditTool;
 
 impl crate::types::tool_metadata::ToolMetadata for ImageEditTool {
+    fn script_output_schema(&self) -> Option<serde_json::Value> {
+        Some(crate::script_value::schema_of::<
+            crate::script_value::MediaValue,
+        >())
+    }
     fn kind(&self) -> ToolKind {
         ToolKind::ImageGen
     }
@@ -333,9 +338,9 @@ impl xai_tool_runtime::Tool for ImageEditTool {
         // the upsell prose instead of a doomed request (shares `image_gen`'s
         // message and short-circuits before resolving any attachments).
         if client.is_tier_restricted() {
-            return Ok(ToolOutput::Text(
-                super::image_gen::TIER_RESTRICTED_UPSELL.into(),
-            ));
+            return Ok(ToolOutput::Text(crate::types::output::TextOutput::failure(
+                super::image_gen::TIER_RESTRICTED_UPSELL,
+            )));
         }
 
         // Before the attachments are read: a refused bearer must not cost the image encoding

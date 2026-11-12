@@ -25,12 +25,21 @@
       throw new ErrorClass('Unsupported non-finite or imprecise Code Mode number');
     return v;
   });
+  // Every failed tool call rejects with this; `tool` names the tool.
+  class ToolCallError extends ErrorClass {
+    constructor(tool, message) {
+      super(message);
+      this.name = 'ToolCallError';
+      this.tool = tool;
+    }
+  }
+  globalThis.ToolCallError = freeze(ToolCallError);
   const tools = Object.create(null);
   for (const entry of inventory) {
     const name = entry.name;
     tools[name] = input => new PromiseClass((resolve, reject) => {
       const id = call(name, serialize(input));
-      pending[id] = {resolve, reject};
+      pending[id] = {resolve, reject, name};
     });
   }
   // An unknown name fails with guidance instead of "not a function"; then/toJSON stay
@@ -73,7 +82,7 @@
       if (!entry) throw new ErrorClass('Unknown host reply');
       delete pending[id];
       if (ok) entry.resolve(parse(payload));
-      else entry.reject(new ErrorClass(payload));
+      else entry.reject(new ToolCallError(entry.name, payload));
     },
   };
 })()

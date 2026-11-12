@@ -19,7 +19,7 @@ pub fn line_diff(old: &str, new: &str) -> (i64, i64) {
 /// Wrapper for [`ToolOutput::Text`] so it can round-trip through
 /// `#[serde(tag = "type")]` (internally-tagged enums require struct/map
 /// payloads, not bare primitives).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TextOutput {
     pub text: String,
     /// Background-task id for auto-wake suppression when set (see
@@ -27,12 +27,39 @@ pub struct TextOutput {
     /// omitted from prompts and from JSON when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consumed_completion_task_id: Option<String>,
+    /// Value a Code Mode script receives instead of `{text}`, in the shape
+    /// the tool declares (see [`crate::script_value`]). Never shown in prompts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+    /// The text reports a failure (feature disabled, tier restriction): the
+    /// model reads it as usual, and a Code Mode script's call rejects with it.
+    /// Telemetry outcome (`ToolOutput::is_error`) is unaffected.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub failed: bool,
+}
+impl TextOutput {
+    /// Text plus the structured value scripts receive.
+    pub fn with_data(text: impl Into<String>, data: serde_json::Value) -> Self {
+        Self {
+            text: text.into(),
+            data: Some(data),
+            ..Self::default()
+        }
+    }
+    /// Text that reports a failure.
+    pub fn failure(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            failed: true,
+            ..Self::default()
+        }
+    }
 }
 impl From<String> for TextOutput {
     fn from(text: String) -> Self {
         Self {
             text,
-            consumed_completion_task_id: None,
+            ..Self::default()
         }
     }
 }
@@ -40,7 +67,7 @@ impl From<&str> for TextOutput {
     fn from(text: &str) -> Self {
         Self {
             text: text.to_owned(),
-            consumed_completion_task_id: None,
+            ..Self::default()
         }
     }
 }
@@ -168,6 +195,28 @@ pub struct ListDirContent {
     pub content: String,
     /// Root directory path (absolute) for this listing
     pub absolute_root_path: PathBuf,
+    /// Entries this call returned, relative to the root (the overview listing
+    /// returns the root's direct children). Read by Code Mode scripts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<ListDirEntry>,
+    /// More entries exist than `entries` holds.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+}
+/// One directory entry of a listing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ListDirEntry {
+    /// Path relative to the listing root, `/`-separated.
+    pub path: String,
+    pub kind: ListDirEntryKind,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ListDirEntryKind {
+    File,
+    Dir,
+    Symlink,
+    Other,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum ListDirOutput {
@@ -183,7 +232,7 @@ pub enum ListDirOutput {
     /// Generic / unclassified error
     Error(String),
 }
-pub use xai_tool_types::{GrepFileMatch, GrepLineMatch, GrepSearchOutput};
+pub use xai_tool_types::{GrepFileMatch, GrepFileSummary, GrepLineMatch, GrepSearchOutput};
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FileContent {
     /// content here is the model friendly output which will always be present since even
@@ -204,6 +253,9 @@ pub struct FileContent {
     /// offset-past-end vs genuinely-empty files.
     #[serde(default)]
     pub total_lines: usize,
+    /// 1-based number of the first line in `raw_output`, when the reader knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<usize>,
     /// Pre-truncation image captures for session harvest. Must survive
     /// ToolDyn hub `to_value`/`from_value`; session drains before PostToolUse
     /// and ACP wire serialize.
@@ -1131,6 +1183,13 @@ pub struct MCPOutput {
     /// `to_value`/`from_value`; session drains before PostToolUse and ACP.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extracted_images: Vec<crate::util::base64_images::ExtractedImage>,
+    /// The result's text blocks joined by newlines, without the image, resource
+    /// and `structuredContent` renderings `output` adds. Code Mode only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_blocks: Option<String>,
+    /// The result's `structuredContent`, as sent. Code Mode only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structured_content: Option<serde_json::Value>,
 }
 impl MCPOutput {
     pub fn okay_output(tool_name: String, server_name: String, output: String) -> Self {
@@ -1143,6 +1202,8 @@ impl MCPOutput {
             is_timeout: false,
             is_error: false,
             extracted_images: Vec::new(),
+            text_blocks: None,
+            structured_content: None,
         }
     }
     pub fn errored(tool_name: String, server_name: String, error: String) -> Self {
@@ -1155,7 +1216,22 @@ impl MCPOutput {
             is_timeout: false,
             is_error: true,
             extracted_images: Vec::new(),
+            text_blocks: None,
+            structured_content: None,
         }
+    }
+    /// Keep the protocol parts Code Mode scripts read (see [`crate::script_value`]).
+    pub fn with_protocol_parts(
+        mut self,
+        text_blocks: String,
+        structured_content: Option<serde_json::Value>,
+    ) -> Self {
+        self.text_blocks = Some(text_blocks);
+        self.structured_content = structured_content;
+        self
+    }
+    pub fn tool_name(&self) -> &str {
+        &self.tool_name
     }
     pub fn output(&self) -> &MCPOutputDetails {
         &self.output
@@ -1389,6 +1465,7 @@ mod tests {
             limit: None,
             raw_output: String::new(),
             total_lines: 1,
+            start_line: None,
             extracted_images: vec![crate::util::base64_images::ExtractedImage {
                 data: payload.clone(),
                 mime_type: "image/jpeg".into(),
@@ -1420,6 +1497,7 @@ mod tests {
             limit: None,
             raw_output: String::new(),
             total_lines: 1,
+            start_line: None,
             extracted_images: vec![crate::util::base64_images::ExtractedImage {
                 data: payload.clone(),
                 mime_type: "image/png".into(),
@@ -1450,6 +1528,7 @@ mod tests {
             limit: None,
             raw_output: String::new(),
             total_lines,
+            start_line: None,
             extracted_images: vec![],
         }
     }
@@ -1505,6 +1584,7 @@ mod tests {
         let output = ToolOutput::Text(TextOutput {
             text: "Task completed in 100ms with exit code: 0.".into(),
             consumed_completion_task_id: Some("bg-uuid-42".into()),
+            ..Default::default()
         });
         assert_eq!(
             output.to_prompt_format(),
@@ -1516,6 +1596,7 @@ mod tests {
         let text = TextOutput {
             text: "hello".into(),
             consumed_completion_task_id: None,
+            ..Default::default()
         };
         let json = serde_json::to_value(&text).unwrap();
         let obj = json.as_object().expect("object");
@@ -1530,6 +1611,7 @@ mod tests {
         let text = TextOutput {
             text: "Task completed".into(),
             consumed_completion_task_id: Some("task-abc".into()),
+            ..Default::default()
         };
         let json = serde_json::to_value(&text).unwrap();
         assert_eq!(

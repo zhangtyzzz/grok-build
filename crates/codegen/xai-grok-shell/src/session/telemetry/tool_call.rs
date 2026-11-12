@@ -353,6 +353,7 @@ pub fn grep_output(exit_code: i32) -> ToolOutput {
         exit_code,
         match_count: 4,
         file_matches: Vec::new(),
+        ..Default::default()
     })
 }
 
@@ -575,6 +576,7 @@ mod tests {
             exit_code,
             match_count: 4,
             file_matches: Vec::new(),
+            ..Default::default()
         })
     }
 

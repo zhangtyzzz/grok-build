@@ -80,6 +80,14 @@ pub trait ToolMetadata: Send + Sync {
         Expr::True
     }
 
+    /// Schema of the value Code Mode scripts receive from this tool (see
+    /// [`crate::script_value`]). Default `None`: the schema comes from the
+    /// `Tool::Output` type. Tools whose output type is the untyped `ToolOutput`
+    /// must override it.
+    fn script_output_schema(&self) -> Option<serde_json::Value> {
+        None
+    }
+
     /// Model-safe fallback description for `xai_tool_runtime::Tool::description()` implementations: the raw template with all `${{ … }}` / `${% …
     /// %}` markers stripped. The registry path (`versioned_definition`) renders templates properly with the finalized toolset context; this is only
     /// for consumers that bypass the registry, which must never see raw template syntax.

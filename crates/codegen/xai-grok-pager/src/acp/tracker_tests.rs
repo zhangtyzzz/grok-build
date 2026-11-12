@@ -1239,6 +1239,7 @@ fn test_search_tool_call_flow() {
                 content: "fn main() -> Result<()> {".to_string(),
             }],
         }],
+        ..Default::default()
     };
     let completed = acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
         acp::ToolCallId::new(tc_id.clone()),

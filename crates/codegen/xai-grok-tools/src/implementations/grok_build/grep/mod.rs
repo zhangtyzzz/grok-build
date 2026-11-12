@@ -641,6 +641,7 @@ async fn prepare_grep(
             exit_code: 2,
             match_count: 0,
             file_matches: Vec::new(),
+            ..Default::default()
         }));
     }
 
@@ -676,6 +677,7 @@ async fn prepare_grep(
             exit_code: 2,
             match_count: 0,
             file_matches: Vec::new(),
+            ..Default::default()
         }));
     }
 

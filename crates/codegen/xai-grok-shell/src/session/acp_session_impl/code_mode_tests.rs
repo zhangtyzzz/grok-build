@@ -37,6 +37,7 @@ async fn fixture_with(
     std::fs::write(directory.path().join("note.txt"), "nested-needle\n").unwrap();
     (actor, directory)
 }
+/// A nested call as `(value JSON or failure text, failed, messages, loop, prepared)`.
 async fn nested(
     actor: &SessionActor,
     name: &str,
@@ -48,12 +49,29 @@ async fn nested(
     Option<ToolLoop>,
     Option<serde_json::Value>,
 ) {
+    let (value, messages, tool_loop, prepared) = nested_value(actor, name, input).await;
+    match value {
+        Ok(value) => (value.to_string(), false, messages, tool_loop, prepared),
+        Err(text) => (text, true, messages, tool_loop, prepared),
+    }
+}
+/// A nested call with the typed value its script receives.
+async fn nested_value(
+    actor: &SessionActor,
+    name: &str,
+    input: serde_json::Value,
+) -> (
+    xai_grok_tools::script_value::ScriptResult,
+    Vec<ConversationItem>,
+    Option<ToolLoop>,
+    Option<serde_json::Value>,
+) {
     let definition = actor
         .prepare_tool_definitions_inner()
         .await
         .into_iter()
         .find(|d| d.function.name == name);
-    let (text, failed, messages, tool_loop, prepared, _reminders) = tokio::time::timeout(
+    let (value, messages, tool_loop, prepared, _reminders) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         actor.execute_nested_code_call(
             "outer",
@@ -68,7 +86,7 @@ async fn nested(
     .await
     .expect("must not deadlock")
     .unwrap();
-    (text, failed, messages, tool_loop, prepared)
+    (value, messages, tool_loop, prepared)
 }
 #[tokio::test(flavor = "current_thread")]
 async fn nested_success_reuses_real_tools_without_orphan_results_and_direct_still_delivers() {
@@ -120,6 +138,41 @@ async fn nested_success_reuses_real_tools_without_orphan_results_and_direct_stil
                 parent_id().is_none(),
                 "nested sink must not leak into direct call"
             );
+        })
+        .await;
+}
+/// Scripts get the declared value: file text without line anchors, and the catalog
+/// carries each tool's result schema.
+#[tokio::test(flavor = "current_thread")]
+async fn nested_calls_resolve_to_declared_values() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (actor, directory) = fixture().await;
+            let path = directory.path().join("note.txt");
+            let (value, _, _, _) =
+                nested_value(&actor, "read_file", json!({"target_file": path})).await;
+            let value = value.expect("read resolves");
+            assert_eq!(value["kind"], "text", "{value}");
+            assert_eq!(value["content"], "nested-needle\n", "{value}");
+            assert_eq!(value["start_line"], 1, "{value}");
+            assert_eq!(value["total_lines"], 2, "{value}");
+            // The reader canonicalizes (macOS temp dirs sit behind the /var symlink).
+            let canonical = std::fs::canonicalize(&path).expect("canonical path");
+            assert_eq!(value["path"], json!(canonical.to_string_lossy()), "{value}");
+            let (missing, _, _, _) = nested_value(
+                &actor,
+                "read_file",
+                json!({"target_file": directory.path().join("missing.txt")}),
+            )
+            .await;
+            assert!(missing.is_err(), "{missing:?}");
+            for name in actor.code_mode_inventory().await.keys() {
+                let returns = actor.script_output_schema(name);
+                assert!(
+                    returns.get("properties").is_some() || returns.get("oneOf").is_some(),
+                    "{name}: {returns}"
+                );
+            }
         })
         .await;
 }
@@ -298,6 +351,73 @@ fn trace_keeps_unfinished_outcomes_on_cancellation() {
 
 // Run after `cargo build -p xai-grok-tools --example code_mode_worker`.
 // Explicit executable injection is private to the host, never model-controlled.
+/// A tool-reported failure (a missing file) rejects with `ToolCallError`, and the
+/// catalog describes what each call resolves to.
+#[ignore = "requires the standalone code_mode_worker example; see docs/code-mode.md"]
+#[tokio::test(flavor = "current_thread")]
+async fn real_worker_rejects_tool_failures_with_tool_call_error() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let worker = std::env::var_os("GROK_TEST_CODE_MODE_WORKER")
+                .expect("set absolute worker example path");
+            let (mut actor, directory) = fixture().await;
+            actor.session_info.id =
+                acp::SessionId::new(format!("code-mode-error-{}", uuid::Uuid::new_v4()));
+            actor
+                .workspace_ops
+                .bind_local_session(
+                    &actor.session_id_string(),
+                    actor.tool_context.cwd.as_path().to_path_buf(),
+                    actor.tool_context.hunk_tracker_handle.clone(),
+                    actor.tool_bridge_handle().toolset(),
+                    None,
+                )
+                .unwrap();
+            let missing = serde_json::to_string(&directory.path().join("missing.txt")).unwrap();
+            let code = format!(
+                "const returns = catalog.describe('read_file').returns; \
+                 try {{ await tools.read_file({{target_file:{missing}}}); return 'resolved'; }} \
+                 catch (e) {{ return {{instance: e instanceof ToolCallError, tool: e.tool, \
+                 message: e.message, kinds: returns.oneOf.map(s => s.properties.kind.const)}}; }}"
+            );
+            let request = crate::sampling::types::ToolCallResponse {
+                id: "outer-error".into(),
+                kind: "function".into(),
+                function: crate::sampling::types::ToolCallFunction::new(
+                    "execute",
+                    json!({ "code": code }).to_string(),
+                ),
+            };
+            actor
+                .execute_code_mode(request, None, Some(Path::new(&worker)), &mut Vec::new())
+                .await
+                .unwrap();
+            let result: serde_json::Value =
+                serde_json::from_str(&tool_result_text(&actor, "outer-error").await).unwrap();
+            assert_eq!(result["ok"], true, "{result}");
+            assert_eq!(result["value"]["instance"], true, "{result}");
+            assert_eq!(result["value"]["tool"], "read_file", "{result}");
+            assert!(
+                result["value"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .to_lowercase()
+                    .contains("does not exist"),
+                "{result}"
+            );
+            assert_eq!(
+                result["value"]["kinds"],
+                json!(["text", "image", "pdf"]),
+                "{result}"
+            );
+            assert_eq!(result["calls"][0]["status"], "failed", "{result}");
+            std::fs::remove_dir_all(crate::session::persistence::session_dir(
+                &actor.session_info,
+            ))
+            .ok();
+        })
+        .await;
+}
 #[ignore = "requires the standalone code_mode_worker example; see docs/code-mode.md"]
 #[tokio::test(flavor = "current_thread")]
 async fn real_worker_and_session_round_trip_export_only_outer_result() {
@@ -308,7 +428,7 @@ async fn real_worker_and_session_round_trip_export_only_outer_result() {
         actor.workspace_ops.bind_local_session(&actor.session_id_string(),actor.tool_context.cwd.as_path().to_path_buf(),actor.tool_context.hunk_tracker_handle.clone(),actor.tool_bridge_handle().toolset(),None).unwrap();
         let path=directory.path().join("note.txt");
         let path_json=serde_json::to_string(&path).unwrap();
-        let code=format!("const paths=[{path_json},{path_json}]; const r=await Promise.all(paths.map(p=>tools.read_file({{target_file:p}}))); return r.filter(s=>s.includes('nested-needle')).length;");
+        let code=format!("const paths=[{path_json},{path_json}]; const r=await Promise.all(paths.map(p=>tools.read_file({{target_file:p}}))); return r.filter(v=>v.kind==='text'&&v.content==='nested-needle\\n').length;");
         let request=crate::sampling::types::ToolCallResponse{id:"outer-worker".into(),kind:"function".into(),function:crate::sampling::types::ToolCallFunction::new("execute",json!({"code":code}).to_string())};
         actor.chat_state_handle.push_assistant_response(ConversationItem::assistant_tool_calls(vec![xai_grok_sampling_types::ToolCall {
             id: request.id.clone().into(), name: request.function.name.clone(), arguments: request.function.arguments.clone().into(),
@@ -605,7 +725,7 @@ async fn real_worker_saturated_in_flight_calls_share_the_session_pipeline() {
                 })
                 .collect();
             let code = format!(
-                "const r=await Promise.all({}.map(p=>tools.read_file({{target_file:p}}))); return r.map((s,i)=>s.includes('needle-'+i));",
+                "const r=await Promise.all({}.map(p=>tools.read_file({{target_file:p}}))); return r.map((v,i)=>v.content.includes('needle-'+i));",
                 serde_json::to_string(&paths).unwrap()
             );
             let request = crate::sampling::types::ToolCallResponse {
@@ -733,7 +853,7 @@ async fn mcp_tools_enter_the_catalog_and_dispatch_through_use_tool() {
             for hidden in ["use_tool", "search_tool", "execute"] {
                 assert!(!inventory.contains_key(hidden), "{hidden}");
             }
-            let (text, failed, _, _, prepared, _) = tokio::time::timeout(
+            let (value, _, _, prepared, _) = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 actor.execute_nested_code_call(
                     "outer",
@@ -748,8 +868,11 @@ async fn mcp_tools_enter_the_catalog_and_dispatch_through_use_tool() {
             .await
             .expect("must not deadlock")
             .unwrap();
-            assert!(!failed, "{text}");
-            assert!(text.contains("MCP-RECEIPT"), "{text}");
+            let value = value.expect("MCP call resolves");
+            assert!(
+                value["text"].as_str().unwrap().contains("MCP-RECEIPT"),
+                "{value}"
+            );
             assert_eq!(receiver.0.lock().as_slice(), [json!({"body":"hello"})]);
             assert!(
                 prepared.is_some(),
@@ -827,7 +950,7 @@ async fn nested_mcp_output_is_complete_for_the_script() {
                     input_schema: json!({"type":"object"}),
                 }];
             let definition = actor.code_mode_inventory().await["fixture__list"].clone();
-            let (text, failed, _, _, _, reminders) = actor
+            let (value, _, _, _, reminders) = actor
                 .execute_nested_code_call(
                     "outer",
                     "outer/code/1",
@@ -839,11 +962,15 @@ async fn nested_mcp_output_is_complete_for_the_script() {
                 )
                 .await
                 .unwrap();
-            assert!(!failed, "{}", &text[..text.len().min(300)]);
+            let value = value.expect("MCP call resolves");
+            let text = value["text"].as_str().unwrap();
             assert!(!text.contains("MCP output truncated"));
-            let parsed: Vec<serde_json::Value> =
-                serde_json::from_str(&text).expect("complete JSON");
-            assert_eq!(parsed.len(), 1500);
+            assert_eq!(text, document, "complete text");
+            assert_eq!(
+                value["data"].as_array().map(Vec::len),
+                Some(1500),
+                "text decoded as JSON"
+            );
             assert!(reminders.is_empty());
             let resources = resources.lock().await;
             assert!(

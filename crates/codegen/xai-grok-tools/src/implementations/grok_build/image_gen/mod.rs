@@ -399,6 +399,11 @@ struct ImageGenData {
 pub struct ImageGenTool;
 
 impl crate::types::tool_metadata::ToolMetadata for ImageGenTool {
+    fn script_output_schema(&self) -> Option<serde_json::Value> {
+        Some(crate::script_value::schema_of::<
+            crate::script_value::MediaValue,
+        >())
+    }
     fn kind(&self) -> ToolKind {
         ToolKind::ImageGen
     }
@@ -464,7 +469,9 @@ impl xai_tool_runtime::Tool for ImageGenTool {
         // the upsell prose instead of a doomed request (the tool stays
         // advertised so the model can surface the nudge in-conversation).
         if client.is_tier_restricted() {
-            return Ok(ToolOutput::Text(TIER_RESTRICTED_UPSELL.into()));
+            return Ok(ToolOutput::Text(crate::types::output::TextOutput::failure(
+                TIER_RESTRICTED_UPSELL,
+            )));
         }
 
         let generate_span = tracing::info_span!(

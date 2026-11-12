@@ -12,9 +12,10 @@ use xai_grok_tools::types::tool::ToolKind;
 
 type FileLocks =
     Arc<parking_lot::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>;
+/// A nested call's script outcome (its typed value, or the text it rejects with),
+/// delivered messages, loop outcome, prepared identity and split-off reminders.
 type NestedResult = (
-    String,
-    bool,
+    xai_grok_tools::script_value::ScriptResult,
     Vec<ConversationItem>,
     Option<ToolLoop>,
     Option<serde_json::Value>,
@@ -31,10 +32,18 @@ struct NestedSink {
     failed: Cell<bool>,
     locks: FileLocks,
     prepared: RefCell<Option<serde_json::Value>>,
+    value: RefCell<Option<xai_grok_tools::script_value::ScriptResult>>,
 }
 
 pub(super) fn mark_failed() {
     let _ = NESTED.try_with(|sink| sink.failed.set(true));
+}
+/// Record the typed value a nested call's script receives. Evaluated only for nested
+/// calls; direct calls never build it.
+pub(super) fn record_script_value(
+    value: impl FnOnce() -> xai_grok_tools::script_value::ScriptResult,
+) {
+    let _ = NESTED.try_with(|sink| *sink.value.borrow_mut() = Some(value()));
 }
 pub(super) fn parent_id() -> Option<String> {
     NESTED.try_with(|sink| sink.parent.clone()).ok()
@@ -129,12 +138,11 @@ When not to use:
 
 Writing the program:
 - `code` is an async function body: use await and an explicit return (otherwise null).
-- Find tools with catalog.search(query, offset) (a string; every word must match a name or description; 20 per page) and catalog.describe(name) (input schema), then call tools[name](args), e.g. tools["server__tool"]({{...}}). MCP tools found with search_tool use the same names. Catalog functions return objects.
-- Tool calls resolve to their text output. When that text is JSON, JSON.parse it first and work on parsed fields; never reuse character offsets from the raw text.
-- An MCP result's text blocks are joined with newlines, so several JSON blocks arrive as JSON Lines; structuredContent not already in the text is appended as a final JSON line. Split lines before parsing when one JSON.parse fails.
-- read_file text marks line numbers as N→ on its first line and every 10th line; strip them (text.replace(/^\d+→/gm, "")) before parsing file contents.
-- Decide what the question needs before calling, and extract it by field, heading or keyword, not by opening characters or guessed offsets. If you have not seen a tool's output format, look at one small call first instead of guessing its structure.
-- Use Promise.allSettled when partial failure is acceptable. Await all required work: unfinished calls are interrupted at return, and completed effects are not rolled back.
+- Find tools with catalog.search(query, offset) (a string; every word must match a name or description; 20 per page) and catalog.describe(name), which gives the input schema (parameters) and the result schema (returns); then call tools[name](args), e.g. tools["server__tool"]({{...}}). MCP tools found with search_tool use the same names.
+- Every tool call resolves to a JSON value shaped like its returns schema: read fields directly, never parse display text. For example, file reads give the text without line-number prefixes plus start_line and total_lines; searches give each match's path, line_number and line; shell commands give exit_code and output (a nonzero exit_code still resolves). MCP tools give {{text, data}}: data is the server's structuredContent, or the text parsed as JSON, or null when the text is not JSON.
+- A failed call rejects with a ToolCallError: e.tool names the tool and e.message holds the failure the tool reported. Use try/catch, or Promise.allSettled when partial failure is acceptable.
+- Decide what the question needs before calling, and check returns instead of guessing a result's structure. Extract by field, heading or keyword, not by opening characters or guessed offsets.
+- Await all required work: unfinished calls are interrupted at return, and completed effects are not rolled back.
 
 Returning results:
 - Return JSON sufficient for the question: the requested facts with their supporting context, irrelevant content removed. Never return only a preview.
@@ -593,7 +601,17 @@ impl SessionActor {
             "Code Mode source exceeds limit"
         );
         let inventory = self.code_mode_inventory().await;
-        let catalog = inventory.values().map(|d| json!({"name":d.function.name,"description":d.function.description,"parameters":d.function.parameters})).collect();
+        let catalog = inventory
+            .values()
+            .map(|d| {
+                json!({
+                    "name": d.function.name,
+                    "description": d.function.description,
+                    "parameters": d.function.parameters,
+                    "returns": self.script_output_schema(&d.function.name),
+                })
+            })
+            .collect();
         let dir = crate::session::persistence::ensure_owner_only_session_dir(&self.session_info)?;
         let trace_name = format!("code-mode-{}.jsonl", uuid::Uuid::new_v4());
         let permit = WORKERS.clone().acquire_owned().await?;
@@ -728,9 +746,14 @@ impl SessionActor {
                     }
                 }
                 Some((id, child_id, result)) = running.next(), if !running.is_empty() => {
-                    let (payload, failed, messages, tool_loop, prepared, reminders) = match result {
+                    let (value, messages, tool_loop, prepared, reminders) = match result {
                         Ok(result) => result,
-                        Err(error) => (error.to_string(), true, Vec::new(), None, None, Vec::new()),
+                        Err(error) => (Err(error.to_string()), Vec::new(), None, None, Vec::new()),
+                    };
+                    let failed = value.is_err();
+                    let payload = match &value {
+                        Ok(value) => value.clone(),
+                        Err(error) => json!(error),
                     };
                     let row = trace.rows.get_mut(&child_id).ok_or_else(|| anyhow::anyhow!("Unknown nested call"))?;
                     row["status"] = json!(if failed { "failed" } else { "completed" });
@@ -750,7 +773,10 @@ impl SessionActor {
                     for reminder in reminders {
                         if !delivery.reminders.contains(&reminder) { delivery.reminders.push(reminder); }
                     }
-                    let reply = bounded_reply(runtime::Reply { id, ok: !failed, payload: if failed { payload } else { serde_json::to_string(&payload)? } })?;
+                    let reply = bounded_reply(match value {
+                        Ok(value) => runtime::Reply { id, ok: true, payload: serde_json::to_string(&value)? },
+                        Err(error) => runtime::Reply { id, ok: false, payload: error },
+                    })?;
                     let mut frame = Vec::new();
                     runtime::write_frame(&mut frame, &reply)?;
                     stdin.write_all(&frame).await?;
@@ -831,6 +857,15 @@ impl SessionActor {
             }
         }
         inventory
+    }
+    /// What a script receives from `name`: the tool's declared schema, or, for a
+    /// managed-gateway MCP tool the bridge does not hold, the MCP result shape.
+    fn script_output_schema(&self, name: &str) -> serde_json::Value {
+        self.agent
+            .borrow()
+            .tool_bridge()
+            .script_output_schema(name)
+            .unwrap_or_else(|| xai_grok_tools::script_value::mcp_value_schema(None))
     }
     fn mcp_tools(&self) -> Vec<crate::session::tool_index::ToolMetadata> {
         self.tool_metadata_snapshot
@@ -926,19 +961,17 @@ impl SessionActor {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                let failed = sink.failed.get()
-                    || outcome
-                        .as_ref()
-                        .is_some_and(|v| !matches!(v, ToolLoop::Continue));
+                let interrupted = outcome
+                    .as_ref()
+                    .is_some_and(|v| !matches!(v, ToolLoop::Continue));
+                // Resolve only with a typed value from a completed call; every other
+                // path (dispatch error, denial, cancellation) rejects with its text.
+                let value = match sink.value.take() {
+                    Some(value) if !sink.failed.get() && !interrupted => value,
+                    _ => Err(text),
+                };
                 results.extend(followups);
-                Ok((
-                    text,
-                    failed,
-                    results,
-                    outcome,
-                    sink.prepared.take(),
-                    reminders,
-                ))
+                Ok((value, results, outcome, sink.prepared.take(), reminders))
             })
             .await
     }
