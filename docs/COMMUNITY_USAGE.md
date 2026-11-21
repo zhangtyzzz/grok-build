@@ -90,6 +90,12 @@ for OpenAI Responses, Anthropic Messages, and Anthropic prompt-cache options.
 
 ### Compare two models on the same task
 
+Authenticate the CLI with `grok login` (`grok login --device-code` on a
+machine without a browser), or set `XAI_API_KEY` as described in the
+[authentication guide](../crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md).
+CLI sign-in is separate from the inference credentials configured above.
+The stable headless CLI checks for sign-in before starting a session.
+
 Open a repository that you can share with both configured providers. In
 separate sessions, use the same model prompt and compare the results. An
 example using the headless CLI:
