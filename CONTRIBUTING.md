@@ -1,19 +1,30 @@
-# Contributing
+# Contributing to this fork
 
-This repository does **not** accept external pull requests or unsolicited
-patches.
+`zhangtyzzz/grok-build` is independently maintained by Tianyi. This policy
+applies to this fork. The
+[upstream contribution policy](https://github.com/xai-org/grok-build/blob/main/CONTRIBUTING.md)
+applies to SpaceXAI's upstream repository.
 
-SpaceXAI develops this software internally. The public tree is published for
-source transparency and local builds under the terms of the Apache License,
-Version 2.0 (see [`LICENSE`](LICENSE)).
+## Bug reports and feature requests
+
+Use this fork's [GitHub Issues](https://github.com/zhangtyzzz/grok-build/issues)
+for installation problems, reproducible bugs, documentation corrections,
+and feature requests. Include the output of `grok --version`, your operating
+system and architecture, the steps to reproduce, and what you expected to
+happen. For provider issues, include the API protocol and a redacted
+configuration excerpt. Remove API keys, tokens, private endpoints, prompts,
+and sensitive tool output before posting.
+
+The fork accepts feedback through Issues. For now, the maintainer handles
+code changes and is the sole submitter of pull requests.
 
 ## Security reports
 
-Please report security issues through the process described in
-[`SECURITY.md`](SECURITY.md). Do not open a public issue for vulnerabilities.
+Use the [private reporting process](SECURITY.md) for suspected
+vulnerabilities. Keep vulnerability details out of public issues.
 
-## Licensing of this source
+## License
 
-By downloading or using this source, you agree that your use is governed by
-the Apache License, Version 2.0. No contributor license agreement is offered
-because external contributions are not accepted.
+The fork's first-party source is available under the
+[Apache License, Version 2.0](LICENSE). Third-party sources retain their
+respective licenses, listed in [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES).

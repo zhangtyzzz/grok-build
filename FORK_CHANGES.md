@@ -1,5 +1,10 @@
 # Fork maintenance contract
 
+For installation, configuration, and runnable examples, start with the
+[community guide](docs/COMMUNITY_USAGE.md). The
+[README](README.md#what-this-fork-adds) maps the fork's additions to source
+code and public releases.
+
 本文件供维护者和上游同步任务使用，回答四个问题：这个 fork 为什么存在、哪些行为必须保留、哪些实现应当跟随上游、冲突解决后怎样证明没有回归。它不是所有历史提交的流水账，也不把“当前存在差异”自动等同于“维护者要求保留”。
 
 Fork：`zhangtyzzz/grok-build`。上游：`xai-org/grok-build`。两者的主分支均为 `main`。
