@@ -1,7 +1,7 @@
 # Contributing to this fork
 
-`zhangtyzzz/grok-build` is independently maintained by Tianyi. This policy
-applies to this fork. The
+`zhangtyzzz/grok-build` has one independent maintainer. This policy applies
+to this fork. The
 [upstream contribution policy](https://github.com/xai-org/grok-build/blob/main/CONTRIBUTING.md)
 applies to SpaceXAI's upstream repository.
 
