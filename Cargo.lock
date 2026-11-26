@@ -14367,7 +14367,7 @@ dependencies = [
 
 [[package]]
 name = "xai-grok-pager-bin"
-version = "1.0.47-alpha.5"
+version = "1.0.47-alpha.6"
 dependencies = [
  "anyhow",
  "clap",

@@ -5775,6 +5775,27 @@ fn config_warns_on_section_typo() {
     );
     assert!(unused.iter().any(|k| k == "endpoint"), "got: {unused:?}");
 }
+/// The removed fork `[team]` section must stay a harmless warning, not a startup failure.
+#[test]
+fn removed_team_section_is_ignored_without_blocking_config_load() {
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [team]
+            enabled = true
+            worker_model = "cheap-model"
+        "#,
+    )
+    .unwrap();
+    Config::new_from_toml_cfg(&raw).expect("a removed [team] section must not block startup");
+    let unused = unused_keys_from_toml(
+        r#"
+            [team]
+            enabled = true
+            worker_model = "cheap-model"
+        "#,
+    );
+    assert!(unused.iter().any(|k| k == "team"), "got: {unused:?}");
+}
 #[test]
 fn known_non_serde_config_paths_are_not_reported_unused() {
     let unused = unused_keys_from_toml(
