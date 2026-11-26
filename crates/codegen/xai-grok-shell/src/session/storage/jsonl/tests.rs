@@ -2320,6 +2320,65 @@ async fn read_updates_jsonl_skips_invalid_utf8_line() {
             "valid line kept, invalid-UTF8 line skipped"
         );
 }
+/// A removed `team_mode_changed` replay entry decodes as the existing `Unknown` catch-all
+/// and must not take its neighboring updates with it.
+#[tokio::test]
+async fn read_updates_jsonl_keeps_neighbors_of_removed_team_mode_update() {
+    let temp_dir = TempDir::new().unwrap();
+    let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
+    let info = create_test_info();
+    adapter.init_session(&info, default_model_id()).await.unwrap();
+    let user_update = |text: &str| {
+        SessionUpdate::Acp(Box::new(acp::SessionNotification::new(
+            info.id.clone(),
+            acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(
+                acp::ContentBlock::Text(acp::TextContent::new(text.to_string())),
+            )),
+        )))
+    };
+    adapter
+        .append_update(&info, &user_update("before the removed update"))
+        .await
+        .unwrap();
+    adapter
+        .append_update(&info, &user_update("after the removed update"))
+        .await
+        .unwrap();
+    let updates_path = adapter.updates_file(&info);
+    let raw = std::fs::read_to_string(&updates_path).unwrap();
+    let removed = r#"{"timestamp":0,"method":"_x.ai/session/update","params":{"sessionId":"test-session-123","update":{"sessionUpdate":"team_mode_changed","enabled":true}}}"#;
+    let mut lines: Vec<&str> = raw.lines().collect();
+    lines.insert(1, removed);
+    std::fs::write(&updates_path, format!("{}\n", lines.join("\n"))).unwrap();
+    let updates = adapter.read_updates_jsonl(updates_path).unwrap();
+    assert_eq!(
+        updates.len(),
+        3,
+        "catch-all entry plus both valid neighbors kept"
+    );
+    assert!(matches!(
+        updates.get(1),
+        Some(SessionUpdate::Xai(notification))
+            if notification.update == crate::extensions::notification::SessionUpdate::Unknown
+    ));
+    let texts: Vec<&str> = updates
+        .iter()
+        .filter_map(|update| match update {
+            SessionUpdate::Acp(notification) => match &notification.update {
+                acp::SessionUpdate::UserMessageChunk(chunk) => match &chunk.content {
+                    acp::ContentBlock::Text(text) => Some(text.text.as_str()),
+                    _ => None,
+                },
+                _ => None,
+            },
+            SessionUpdate::Xai(_) => None,
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        ["before the removed update", "after the removed update"]
+    );
+}
 /// A clean file must not leave a quarantine copy behind.
 #[test]
 fn read_chat_history_clean_file_writes_no_quarantine() {
